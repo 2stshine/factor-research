@@ -1,0 +1,147 @@
+"""Append-safe local research trial ledger.
+
+Repeated execution of an identical definition is not a new trial.  Any change
+to source, parameters, sign, inputs, or rebalance policy changes the definition
+hash and therefore increases the multiplicity count.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
+
+import pandas as pd
+
+
+@dataclass(frozen=True)
+class TrialSummary:
+    count: int
+    sharpes: tuple[float, ...]
+    pvalues: tuple[tuple[str, float], ...]
+
+
+class TrialLedger:
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS trial (
+                    definition_hash TEXT PRIMARY KEY,
+                    factor_name TEXT NOT NULL,
+                    family TEXT NOT NULL,
+                    params_json TEXT NOT NULL,
+                    data_cutoff TEXT,
+                    ruleset_version TEXT NOT NULL,
+                    net_ir REAL,
+                    hac_pvalue REAL,
+                    verdict TEXT NOT NULL,
+                    first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                """
+            )
+
+    def _connect(self):
+        return sqlite3.connect(self.path, timeout=30)
+
+    def summary(
+        self,
+        current_hashes: list[str] | tuple[str, ...] = (),
+        external: list[tuple[str, float | None, float | None]] | tuple[tuple[str, float | None, float | None], ...] = (),
+        ruleset_version: str | None = None,
+    ) -> TrialSummary:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT definition_hash, net_ir, hac_pvalue, ruleset_version FROM trial"
+            ).fetchall()
+        merged = {
+            str(row[0]): (
+                row[1],
+                row[2] if ruleset_version is None or row[3] == ruleset_version else None,
+            )
+            for row in rows
+        }
+        for definition_hash, net_ir, hac_pvalue in external:
+            merged[str(definition_hash)] = (net_ir, hac_pvalue)
+        count = len(set(merged) | set(current_hashes))
+        sharpes = tuple(float(values[0]) for values in merged.values() if values[0] is not None)
+        pvalues = tuple(
+            (definition_hash, float(values[1]))
+            for definition_hash, values in merged.items()
+            if values[1] is not None
+        )
+        return TrialSummary(max(count, 1), sharpes, pvalues)
+
+    def fixed_oos_start(
+        self,
+        months: list[pd.Period],
+        *,
+        requested: str | None = None,
+        default_months: int = 36,
+        min_in_sample: int = 60,
+    ) -> pd.Period:
+        ordered = sorted(set(months))
+        if len(ordered) < min_in_sample + 24:
+            raise ValueError(
+                f"T4에는 최소 {min_in_sample + 24}개월이 필요합니다: 현재 {len(ordered)}개월"
+            )
+        if requested:
+            chosen = pd.Period(requested, freq="M")
+        else:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT value FROM metadata WHERE key='oos_start'"
+                ).fetchone()
+                if row:
+                    chosen = pd.Period(row[0], freq="M")
+                else:
+                    index = max(min_in_sample, len(ordered) - default_months)
+                    chosen = ordered[index]
+                    conn.execute(
+                        "INSERT INTO metadata(key,value) VALUES('oos_start',?)",
+                        (str(chosen),),
+                    )
+        if chosen not in ordered:
+            raise ValueError(f"OOS_START={chosen}가 패널 기간에 없습니다")
+        if ordered.index(chosen) < min_in_sample:
+            raise ValueError(f"OOS_START={chosen}: in-sample이 {min_in_sample}개월보다 짧습니다")
+        return chosen
+
+    def record(self, factor, result, *, data_cutoff: str, ruleset_version: str) -> None:
+        metrics = result.metrics
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO trial(
+                    definition_hash, factor_name, family, params_json,
+                    data_cutoff, ruleset_version, net_ir, hac_pvalue, verdict
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(definition_hash) DO UPDATE SET
+                    data_cutoff=excluded.data_cutoff,
+                    ruleset_version=excluded.ruleset_version,
+                    net_ir=excluded.net_ir,
+                    hac_pvalue=excluded.hac_pvalue,
+                    verdict=excluded.verdict,
+                    last_seen=CURRENT_TIMESTAMP
+                """,
+                (
+                    factor.definition_hash,
+                    factor.name,
+                    factor.family or factor.name,
+                    json.dumps(factor.params, ensure_ascii=False, sort_keys=True),
+                    data_cutoff,
+                    ruleset_version,
+                    metrics.get("net_ir"),
+                    # Legacy column name retained for SQLite compatibility;
+                    # ruleset v3 stores the investable-universe IC p-value.
+                    metrics.get("ic_p_investable"),
+                    result.verdict.value,
+                ),
+            )

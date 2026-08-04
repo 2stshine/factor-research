@@ -1,6 +1,7 @@
 # factor-research
 
-TeamAlpha Silver(RDS `public`)를 읽어 팩터를 만들고 **Gold 승격 여부를 판정**하는 엔진.
+TeamAlpha의 **DQ 인증된 RDS Silver(`public`)만** 읽어 팩터를 만들고 Gold 승격 여부를 판정하는 엔진.
+Bronze는 Silver 품질 대사 외에는 리서치 입력으로 사용하지 않는다.
 
 > 임계값·귀무분포·판별력 분석은 `private/CALIBRATION.md` 에 있고 git 에 올리지 않는다.
 > 팩터를 제안하는 쪽(사람이든 에이전트든)이 임계값을 알면 게이트가 목적함수가 되고,
@@ -10,12 +11,33 @@ TeamAlpha Silver(RDS `public`)를 읽어 팩터를 만들고 **Gold 승격 여�
 
 ```bash
 uv sync
-python scripts/run.py build          # 패널 캐시 (최초 1회, ~10분)
+python scripts/run.py build          # 인증 Silver → PIT 패널 캐시
+python scripts/run.py null --n 25    # 현재 snapshot/ruleset 위양성률 보정(최소 100개)
 python scripts/run.py gate           # 등록 팩터 전체 판정
-python scripts/run.py null --n 25    # 게이트 자체 위양성률 재측정
+python scripts/run.py publish --apply --approved-by "검토자"  # 사람 승인 후 Gold 적재
 ```
 
-환경변수: `BRONZE_DIR`(기본 `~/Documents/GitHub/TeamAlpha-data/data`), `CACHE_DIR`(기본 `.cache`)
+환경변수: `SILVER_DB_URL`(필수), `CACHE_DIR`(기본 `.cache`), `OOS_START`(선택, 최초 실행 후 고정).
+RDS가 SSM 터널 뒤에 있으면 `build/gate/publish` 전에 터널을 연다.
+
+모든 팩터의 공통 평가 시작일은 `2018-03`으로 고정한다. 개발 표본은 고정 OOS 직전
+1개월을 embargo하며, 평가 시작일과 OOS 시작일을 결과에 맞춰 변경하지 않는다.
+
+## 자율 연구 루프
+
+Codex의 `$factor-research-loop` 스킬은 현재 Silver 패널과 누적 연구 이력을 읽고 후보 하나를
+사전등록한 뒤 검증한다. 후보 파일은 `factors/candidates/*.py`에 두며 `FACTOR`와
+`RESEARCH_SPEC`을 반드시 제공한다.
+
+```bash
+uv run python scripts/research.py context
+uv run python scripts/research.py evaluate --factor operating_roa
+```
+
+평가할 때마다 `research/runs/cycle-NNNN-<factor>/`에 JSON과 Markdown 보고서가 생성되고,
+`research/history.jsonl`과 `research/context/latest.md`가 갱신된다. 다음 루프는 반드시 이
+컨텍스트를 먼저 읽는다. 이 명령은 Gold에 쓰지 않으며, 결과를 본 뒤 기존 후보 파일을
+덮어쓰는 대신 변경된 정의를 새 시행으로 등록해야 한다.
 
 ## 왜 통계가 마지막인가
 
@@ -41,10 +63,10 @@ python scripts/run.py null --n 25    # 게이트 자체 위양성률 재측정
 |---|---|---|---|
 | T0 | 등록·결정성·타입안전 | 0회 | 결정론 |
 | **T1** | **표본틀 무결성** | 0회 (SQL) | 결정론 — 공격 11/18 격추 |
-| T2 | 체결가능성 (비용·유동성) | 3~4회 | |
-| T3 | 강건성 (파라미터·레짐) | 30~60회 | |
-| T4 | 다중성·홀드아웃 | 최다 | 통계 (미구현) |
-| T5 | 직교성 + 사람 거부권 | — | |
+| T2 | IC 최소요건·투자가능 IC·체결 무결성 | 진단 1회 | 결정론 + 통계 |
+| T3 | 기간별·레짐·중립화 IC 강건성 | IC 재계산 | 통계 |
+| T4 | 고정 OOS IC·IC BY FDR·귀무 보정 | 최다 | 통계 + 시행 원장 |
+| T5 | 기존 Gold 신호와 직교성 + 사람 승인 | — | 신호 |
 
 판정: `PROMOTE` / `PROVISIONAL`(리스크 상한 + 자동 만료) / `REJECT`
 
@@ -57,11 +79,33 @@ python scripts/run.py null --n 25    # 게이트 자체 위양성률 재측정
 U0 = KOSPI/KOSDAQ · 보통주(코드 끝 0) · SPAC 제외 · 리츠 제외 · 상장 250거래일 경과
 ```
 
-**상장폐지 종착수익률 3점 스트레스** — 사망 종목의 마지막 관측에 `{0%, −50%, −100%}` 를
+**상장폐지 종착수익률 3점 스트레스** — 비활성·상폐 종목의 마지막 관측에 `{0%, −50%, −100%}` 를
 강제 부여하고 세 시나리오 전부에서 부호가 유지되어야 한다. 안 하면 롱레그의 최악 실현값만
 표본에서 증발한다.
 
-## 왜 롱온리가 주판정인가
+## 수익률은 진단값이지 승격 기준이 아니다
+
+ruleset `fr-3.1.0`부터 절대 순알파, net IR, Deflated Sharpe, 비용 스트레스 수익률은
+승격 판정에서 제외한다. 표본 기간과 포트폴리오 구성에 민감한 절대 수익률 컷 대신 다음을 본다.
+
+- 전체 IC `>= 0.02`, 투자 가능 유니버스 IC `>= 0.01`
+- 투자 가능 IC 유지율 `>= 50%`, IC HAC 단측 p값 `<= 0.10`
+- 4개 비중첩 구간 중 3개 이상 IC 방향 일치, IC 레짐 집중도 `<= 0.60`
+- 시장·규모·유동성 중립화 후 IC `>= 0.01` 및 p값 `<= 0.10`
+- 고정 OOS IC `>= 0.01` 및 p값 `<= 0.10`, IC 기준 BY FDR `<= 0.10`
+
+비용 후 수익률·IR·회전율·미래수익 결측은 보고서에 계속 계산하지만 모두 설명·용량 검토용
+진단값이다. 진단 포트폴리오를 만들 표본이 부족해도 IC 연구 판정을 중단하지 않는다.
+
+## 단일 팩터 계약
+
+후보 하나는 하나의 경제적 신호만 검증한다. `value rank + quality rank`,
+`small rank + low-vol rank`처럼 이미 정규화된 여러 팩터 점수를 가중합하지 않는다.
+여러 원천 필드가 하나의 의미 있는 비율을 만드는 것은 허용한다. 예를 들어
+`영업이익 / 총자산`은 단일 영업ROA 팩터다. 게이트는 둘 이상의 횡단면 rank 결합이나
+등록 팩터 컬럼 재사용을 T0에서 거부한다.
+
+## 롱온리 진단을 유지하는 이유
 
 표본의 43.5%가 공매도 제약 구간이다.
 
@@ -86,15 +130,16 @@ U0 = KOSPI/KOSDAQ · 보통주(코드 끝 0) · SPAC 제외 · 리츠 제외 · 
 그 외:
 - 분기값은 **단독 3개월**. `Q2 − Q1` 하면 안 된다
 - `fs_type` CFS/OFS 공존 → 반드시 필터 (엔진이 CFS 우선 처리)
-- `available_date` 로 PIT 정렬. `period_end` 로 조인하면 look-ahead
+- Silver의 모든 revision을 `available_date` 순으로 재생한다. `fundamental_current`를 과거에
+  붙이면 최신 정정공시가 새므로 사용하지 않는다
 
 ## 한국시장에서 확인된 사실
 
 | 사실 | 함의 |
 |---|---|
 | **모멘텀 부호가 반대** (6-1 t = −2.57) | 미국식 팩터를 이식하면 정확히 반대로 베팅한다 |
-| IC 가 강해도 롱온리는 죽을 수 있다 | `rev_1m` IC t=4.05 인데 롱온리 순알파는 마이너스 |
-| 회전율이 최대 살상 요인 | 신호가 좋아도 비용을 못 이기면 끝 |
+| IC 와 롱온리 수익은 다를 수 있다 | 수익률은 승격 컷이 아니라 별도 진단으로 해석한다 |
+| 회전율이 높으면 구현 부담이 커진다 | IC 승격 뒤 용량·비용 검토에서 별도로 다룬다 |
 | KOSDAQ 소형주가 통계를 지배 | 전체 유니버스 IC 는 투자불가 종목의 통계일 수 있다 |
 
 ## 팩터 등록
@@ -119,10 +164,13 @@ REGISTRY.add(Factor(
 `hypothesis` 없이는 `Factor` 생성 자체가 예외를 던진다. 게이트가 소스의 숫자 리터럴을
 스캔해 **선언되지 않은 파라미터**도 잡는다.
 
-## 알려진 한계
+## 판정 안전장치와 남은 한계
 
-- **T3.4 섹터 중립화 미구현** (WICS 섹터 라벨 미수집) — 현재 최우선 병목
-- **T4 미구현** (DSR·홀드아웃·순열검정)
-- 데이터는 로컬 bronze 기준. prod RDS 직결 미구현
-- 비용 모델은 추정치 (시변 증권거래세 + 수수료 + 시장충격)
-- `adj_close` 는 배당 미반영 → 총수익이 아님
+- 수익률은 Silver `total_return_close`만 사용하며 결측·비양수 값이 있으면 build를 중단한다
+- WICS 등 `sector` 커버리지가 80% 미만이면 T3.4 soft fail로 **PROMOTE를 허용하지 않는다**
+- 비용 모델의 시장충격은 아직 AUM·참여율 함수가 아닌 보수적 추정치다
+- 고정 OOS와 모든 고유 정의의 시행횟수는 `.cache/trials.sqlite3`에 보존한다. 팀 공용 운영에서는
+  이 원장을 RDS 테이블로 승격해야 여러 연구자의 시행을 합산할 수 있다
+- 동일 Silver cutoff·ruleset으로 만든 귀무 팩터가 100개 미만이거나 전체 게이트 위양성률이
+  10%를 넘으면 T4.4가 실패한다. `build` 뒤 `null --n 25` 이상을 먼저 실행한다
+- `publish --apply`로 APPROVED를 적재하려면 `--approved-by`가 필수다

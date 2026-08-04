@@ -1,0 +1,440 @@
+{
+  "cycle_id": "cycle-0009-earnings_confirmed_small_value",
+  "ruleset_version": "fr-2.0.0",
+  "data_cutoff": "2026-08-03",
+  "factor": {
+    "name": "earnings_confirmed_small_value",
+    "family": "catalyst_small_value",
+    "category": "earnings",
+    "definition_hash": "89e7b296449ec6b2",
+    "predicted_sign": 1,
+    "params": {
+      "component_weight": 0.3333333333333333,
+      "neutral_rank": 0.5
+    },
+    "rebalance_months": 3,
+    "needs": [
+      "total_equity",
+      "sue_score"
+    ],
+    "source": "def compute(frame):\n    ordered = frame.sort_values([\"asset_id\", \"ym\"])\n    market_cap = ordered[\"market_cap\"].where(ordered[\"market_cap\"] > 0)\n    book_to_price = ordered[\"total_equity\"] / market_cap\n    value_rank = book_to_price.groupby(ordered[\"ym\"]).rank(pct=True)\n    small_rank = (-market_cap).groupby(ordered[\"ym\"]).rank(pct=True)\n    surprise_rank = ordered[\"sue_score\"].groupby(ordered[\"ym\"]).rank(pct=True)\n    surprise_rank = surprise_rank.fillna(NEUTRAL_RANK)\n    composite = COMPONENT_WEIGHT * (value_rank + small_rank + surprise_rank)\n    return composite.reindex(frame.index)\n"
+  },
+  "research_spec": {
+    "thesis": "월별 가치·소형·표준화 이익 서프라이즈 순위를 동일 비중으로 결합하면, 단순 소형가치보다 가격 오류를 해소할 실적 촉매가 있는 종목을 식별해 투자 가능한 롱온리 초과수익을 얻는다.",
+    "mechanism": "소형 저평가주는 정보 반영이 느리지만 가치함정일 수 있다. 예상 밖의 이익 개선은 저평가가 악화된 펀더멘털만 반영한 것이 아님을 확인하고, 제한된 애널리스트 커버리지 아래에서 후속 가격 조정을 유발한다.",
+    "falsification": "투자가능 IC 유지율과 비용 후 성과가 충분하지 않거나, 강건성·고정 OOS·다중검정·Gold 직교성 중 하나라도 hard fail이면 실적 촉매 소형가치 가설을 기각한다.",
+    "expected_relationship": "small_value 및 value_bp와 양의 관계를 예상하지만 독립성이 높은 sue_score를 결합하므로 단순 가치·규모 복합체보다는 관계가 낮아질 것으로 예상한다.",
+    "data_notes": "Silver PIT total_equity, market_cap, sue_score만 사용한다. SUE가 PIT로 제공되지 않는 과거 또는 종목에는 중립 순위 0.5를 부여해 표본을 재정의하거나 미래 가용성을 소급하지 않는다.",
+    "factor_name": "earnings_confirmed_small_value",
+    "strategy_file": "factors/candidates/earnings_confirmed_small_value.py"
+  },
+  "evaluation": {
+    "factor": "earnings_confirmed_small_value",
+    "definition_hash": "89e7b296449ec6b2",
+    "verdict": "REJECT",
+    "metrics": {
+      "ic_full": 0.06808847036097229,
+      "ic_t_full": 5.0190607005275085,
+      "ic_p_full": 1.244357554345798e-06,
+      "months": 67,
+      "turnover": 345.4762822237345,
+      "gross": 9.625762164740156,
+      "cost": 1.6900518385286865,
+      "net": 7.935710326211466,
+      "net_ir": 1.1136690128387612,
+      "hac_t": 2.33352450851502,
+      "hac_pvalue": 0.011338267472357454,
+      "missing_return_rate": 0.0014778931811650724,
+      "oos_start": "2023-09",
+      "oos_months": 30,
+      "oos_net": -3.662981895590691,
+      "oos_ir": -0.43451118331114874,
+      "oos_hac_pvalue": 0.7371500888687741,
+      "n_trials": 21,
+      "dsr_probability": 0.4287438733879923,
+      "fdr_qvalue": 0.26793619511880734,
+      "null_count": 100,
+      "realized_fdr": 0.0
+    },
+    "labels": [
+      "high_turnover"
+    ],
+    "checks": [
+      {
+        "tier": "T0.1",
+        "name": "미선언 상수",
+        "passed": true,
+        "value": 0,
+        "threshold": "0개",
+        "note": "[]"
+      },
+      {
+        "tier": "T0.2",
+        "name": "입력 계약",
+        "passed": true,
+        "value": 0,
+        "threshold": "누락 0개",
+        "note": "[]"
+      },
+      {
+        "tier": "T0.3",
+        "name": "출력 타입·인덱스",
+        "passed": true,
+        "value": null,
+        "threshold": "numeric Series / 동일 index",
+        "note": ""
+      },
+      {
+        "tier": "T0.3",
+        "name": "유한값",
+        "passed": true,
+        "value": null,
+        "threshold": "±inf 없음",
+        "note": ""
+      },
+      {
+        "tier": "T0.4",
+        "name": "결정성",
+        "passed": true,
+        "value": null,
+        "threshold": "동일 입력 2회 일치",
+        "note": ""
+      },
+      {
+        "tier": "T0.4",
+        "name": "캐시 정의 일치",
+        "passed": true,
+        "value": null,
+        "threshold": "현재 정의와 캐시 일치",
+        "note": ""
+      },
+      {
+        "tier": "T1.1",
+        "name": "전체 커버리지",
+        "passed": true,
+        "value": 0.8807842480100545,
+        "threshold": ">=50%",
+        "note": ""
+      },
+      {
+        "tier": "T1.1",
+        "name": "월별 커버리지 하위10%",
+        "passed": true,
+        "value": 0.6048051684183939,
+        "threshold": ">=30%",
+        "note": ""
+      },
+      {
+        "tier": "T1.2",
+        "name": "종착수익률 3점 방향",
+        "passed": true,
+        "value": null,
+        "threshold": "세 시나리오 IC > 0",
+        "note": "{'opt': 0.0617, 'mid': 0.0602, 'pess': 0.0601}"
+      },
+      {
+        "tier": "T1.3",
+        "name": "총수익 필드",
+        "passed": true,
+        "value": null,
+        "threshold": "Silver total_return_close",
+        "note": ""
+      },
+      {
+        "tier": "T2.1",
+        "name": "투자가능 IC 유지율",
+        "passed": true,
+        "value": 0.551923329254517,
+        "threshold": ">=0.5 & 양수",
+        "note": ""
+      },
+      {
+        "tier": "T2.1",
+        "name": "투자가능 IC HAC 유의성",
+        "passed": true,
+        "value": 0.004015343475661524,
+        "threshold": "one-sided p<=0.05",
+        "note": ""
+      },
+      {
+        "tier": "T2.2",
+        "name": "미래수익 결측",
+        "passed": true,
+        "value": 0.0014778931811650724,
+        "threshold": "<=1.0%",
+        "note": ""
+      },
+      {
+        "tier": "T2.3",
+        "name": "회전율",
+        "passed": true,
+        "value": 345.4762822237345,
+        "threshold": "<=400.0%/yr",
+        "note": ""
+      },
+      {
+        "tier": "T2.4",
+        "name": "실비용 순알파",
+        "passed": true,
+        "value": 7.935710326211466,
+        "threshold": ">=3.0%/yr",
+        "note": ""
+      },
+      {
+        "tier": "T2.4",
+        "name": "net_IR",
+        "passed": true,
+        "value": 1.1136690128387612,
+        "threshold": ">=0.74",
+        "note": ""
+      },
+      {
+        "tier": "T3.1",
+        "name": "리밸런싱 고원성",
+        "passed": true,
+        "value": null,
+        "threshold": "1/3/6개월 모두 양수, max/min<=3.0",
+        "note": "[8.04, 7.94, 7.41]"
+      },
+      {
+        "tier": "T3.1",
+        "name": "분위수 강건성",
+        "passed": true,
+        "value": null,
+        "threshold": "10/20/30% 모두 순알파 > 0",
+        "note": "[11.61, 7.94, 6.32]"
+      },
+      {
+        "tier": "T3.2",
+        "name": "2배 비용 스트레스",
+        "passed": true,
+        "value": 6.245658487682783,
+        "threshold": ">0%/yr",
+        "note": ""
+      },
+      {
+        "tier": "T3.2",
+        "name": "상폐 -100% 포트폴리오",
+        "passed": true,
+        "value": 7.710268021588409,
+        "threshold": ">0%/yr",
+        "note": ""
+      },
+      {
+        "tier": "T3.3",
+        "name": "비중첩 구간 순알파",
+        "passed": true,
+        "value": 3,
+        "threshold": ">=3/4",
+        "note": "[nan, 6.36, 12.14, 2.82]"
+      },
+      {
+        "tier": "T3.3",
+        "name": "레짐 집중도",
+        "passed": true,
+        "value": 0.5693666470130905,
+        "threshold": "<=0.6",
+        "note": ""
+      },
+      {
+        "tier": "T3.4",
+        "name": "시장·규모·유동성 중립",
+        "passed": true,
+        "value": 5.621358446817021,
+        "threshold": ">0%/yr",
+        "note": ""
+      },
+      {
+        "tier": "T3.4",
+        "name": "섹터 중립화 가능",
+        "passed": false,
+        "value": 0.0,
+        "threshold": ">=80% sector coverage",
+        "note": "Silver sector 컬럼 필요"
+      },
+      {
+        "tier": "T4.1",
+        "name": "고정 OOS",
+        "passed": false,
+        "value": 0.7371500888687741,
+        "threshold": "net>0 & HAC p<=0.1",
+        "note": ""
+      },
+      {
+        "tier": "T4.2",
+        "name": "Deflated Sharpe",
+        "passed": false,
+        "value": 0.4287438733879923,
+        "threshold": ">=95%",
+        "note": ""
+      },
+      {
+        "tier": "T4.3",
+        "name": "다중검정 FDR",
+        "passed": false,
+        "value": 0.26793619511880734,
+        "threshold": "BY q<=0.1",
+        "note": "전체 고유 시행 12개"
+      },
+      {
+        "tier": "T5.1",
+        "name": "Gold 신호 직교성",
+        "passed": true,
+        "value": 0.19783961125344407,
+        "threshold": "median |rho|<=0.8",
+        "note": "momentum_12_1"
+      },
+      {
+        "tier": "T5.1",
+        "name": "Gold 수익 직교성",
+        "passed": true,
+        "value": 0.0,
+        "threshold": "|rho|<=0.8",
+        "note": ""
+      },
+      {
+        "tier": "T4.4",
+        "name": "게이트 귀무 보정",
+        "passed": true,
+        "value": 0.0,
+        "threshold": "n>=100 & FPR<=10%",
+        "note": "동일 snapshot/ruleset 귀무 100개, 위양성률 0.0%"
+      }
+    ]
+  },
+  "relationships": [
+    {
+      "factor": "small_value",
+      "category": "value",
+      "median_spearman": 0.8077265027127551,
+      "abs_median_spearman": 0.8077265027127551,
+      "months": 126
+    },
+    {
+      "factor": "defensive_small_value",
+      "category": "value",
+      "median_spearman": 0.6903710735913853,
+      "abs_median_spearman": 0.6903710735913853,
+      "months": 126
+    },
+    {
+      "factor": "value_bp",
+      "category": "value",
+      "median_spearman": 0.6486640583122096,
+      "abs_median_spearman": 0.6486640583122096,
+      "months": 126
+    },
+    {
+      "factor": "size",
+      "category": "size",
+      "median_spearman": 0.5610092777026304,
+      "abs_median_spearman": 0.5610092777026304,
+      "months": 126
+    },
+    {
+      "factor": "sue",
+      "category": "earnings",
+      "median_spearman": 0.5542610356688978,
+      "abs_median_spearman": 0.5542610356688978,
+      "months": 102
+    },
+    {
+      "factor": "value_sp",
+      "category": "value",
+      "median_spearman": 0.49163556328917857,
+      "abs_median_spearman": 0.49163556328917857,
+      "months": 114
+    },
+    {
+      "factor": "defensive_value",
+      "category": "value",
+      "median_spearman": 0.4681118145034587,
+      "abs_median_spearman": 0.4681118145034587,
+      "months": 126
+    },
+    {
+      "factor": "solvent_value",
+      "category": "value",
+      "median_spearman": 0.4509254619138639,
+      "abs_median_spearman": 0.4509254619138639,
+      "months": 126
+    },
+    {
+      "factor": "value_ep",
+      "category": "value",
+      "median_spearman": 0.1900932736470412,
+      "abs_median_spearman": 0.1900932736470412,
+      "months": 114
+    },
+    {
+      "factor": "asset_turnover",
+      "category": "quality",
+      "median_spearman": 0.12746483143702725,
+      "abs_median_spearman": 0.12746483143702725,
+      "months": 114
+    },
+    {
+      "factor": "low_vol_12m",
+      "category": "other",
+      "median_spearman": 0.10793630770921618,
+      "abs_median_spearman": 0.10793630770921618,
+      "months": 126
+    },
+    {
+      "factor": "mom_12_1",
+      "category": "momentum",
+      "median_spearman": -0.08917663987100286,
+      "abs_median_spearman": 0.08917663987100286,
+      "months": 126
+    },
+    {
+      "factor": "asset_growth_12m",
+      "category": "other",
+      "median_spearman": 0.08334011690546142,
+      "abs_median_spearman": 0.08334011690546142,
+      "months": 114
+    },
+    {
+      "factor": "qual_opm",
+      "category": "quality",
+      "median_spearman": -0.03916196245471274,
+      "abs_median_spearman": 0.03916196245471274,
+      "months": 114
+    },
+    {
+      "factor": "qual_lev",
+      "category": "quality",
+      "median_spearman": -0.036443218656452406,
+      "abs_median_spearman": 0.036443218656452406,
+      "months": 126
+    },
+    {
+      "factor": "downside_vol_12m",
+      "category": "other",
+      "median_spearman": 0.03586898036725699,
+      "abs_median_spearman": 0.03586898036725699,
+      "months": 126
+    },
+    {
+      "factor": "qual_roe",
+      "category": "quality",
+      "median_spearman": 0.0305373687507087,
+      "abs_median_spearman": 0.0305373687507087,
+      "months": 114
+    },
+    {
+      "factor": "high_12m_proximity",
+      "category": "momentum",
+      "median_spearman": -0.0031649710750854473,
+      "abs_median_spearman": 0.0031649710750854473,
+      "months": 126
+    },
+    {
+      "factor": "rev_1m",
+      "category": "momentum",
+      "median_spearman": -0.0024738962782527947,
+      "abs_median_spearman": 0.0024738962782527947,
+      "months": 126
+    }
+  ]
+}

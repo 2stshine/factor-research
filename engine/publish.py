@@ -16,14 +16,12 @@ TeamAlpha-data 의 `pipeline/gold/` 가 한다. 계약은 `gold.factor` 테이�
 from __future__ import annotations
 
 import json
-import os
 import re
-from dataclasses import asdict
 
 from engine.factors import Factor
-from engine.gate import TH, Result, Verdict
+from engine.gate import RULESET_VERSION, TH, Result, Verdict
+from engine import silver
 
-RULESET_VERSION = "fr-1.0.0"
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # 우리 판정 → 팀 status.
@@ -51,7 +49,8 @@ def _py(v):
 
 
 def build_row(factor: Factor, result: Result, *, n_trials: int | None = None,
-              realized_fdr: float | None = None, data_cutoff: str | None = None) -> dict:
+              realized_fdr: float | None = None, data_cutoff: str | None = None,
+              approved_by: str | None = None) -> dict:
     """gold.factor 한 행. 판정 근거를 재검토 가능한 형태로 전부 담는다."""
     if not KEY_RE.match(factor.name):
         raise ValueError(f"factor_key 규칙 위반(^[a-z][a-z0-9_]*$): {factor.name}")
@@ -65,6 +64,7 @@ def build_row(factor: Factor, result: Result, *, n_trials: int | None = None,
         "ruleset_version": RULESET_VERSION,
         "criteria_defined": True,
         "research_certified": result.verdict == Verdict.PROMOTE,
+        "approved_by": approved_by,
         "metrics": {k: _py(v) for k, v in result.metrics.items()},
         "checks": [
             {"tier": c.tier, "name": c.name, "passed": _py(c.passed),
@@ -147,10 +147,5 @@ def publish(conn, rows: list[dict], *, apply: bool = False) -> list[dict]:
 
 
 def connect():
-    """SILVER_DB_URL 로 접속. SSM 터널 사용 시 host 를 127.0.0.1 로 바꿔야 한다
-    (localhost 는 macOS 에서 IPv6 로 먼저 풀려 연결이 거부된다)."""
-    import psycopg
-    url = os.environ.get("GOLD_DB_URL") or os.environ.get("SILVER_DB_URL")
-    if not url:
-        raise SystemExit("GOLD_DB_URL 또는 SILVER_DB_URL 환경변수가 필요합니다")
-    return psycopg.connect(url)
+    """Gold shares the Silver database; this is the only mutating connection."""
+    return silver.connect(read_only=False)

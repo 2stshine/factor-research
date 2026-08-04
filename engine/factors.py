@@ -9,6 +9,8 @@ from __future__ import annotations
 import ast
 import hashlib
 import inspect
+import json
+import re
 import textwrap
 from dataclasses import dataclass, field
 from typing import Callable
@@ -17,6 +19,8 @@ import pandas as pd
 
 # 리터럴로 나와도 파라미터가 아닌 것들(인덱스·항등원·부호)
 _BENIGN = {0, 1, -1, 2, 0.0, 1.0, -1.0, 100, 12, 4}
+_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+_CATEGORIES = {"value", "quality", "momentum", "size", "earnings", "other"}
 
 
 @dataclass(frozen=True)
@@ -29,12 +33,19 @@ class Factor:
     params: dict = field(default_factory=dict)   # 선언된 파라미터(그리드 축이 된다)
     rebalance_months: int = 1
     needs: tuple[str, ...] = ()        # 필요한 재무 컬럼
+    family: str | None = None          # 변형 팩터의 trial lineage
 
     def __post_init__(self):
+        if not _NAME.fullmatch(self.name):
+            raise ValueError(f"{self.name}: name 은 ^[a-z][a-z0-9_]*$ 형식이어야 한다")
+        if self.category not in _CATEGORIES:
+            raise ValueError(f"{self.name}: 지원하지 않는 category={self.category!r}")
         if not self.hypothesis.strip():
             raise ValueError(f"{self.name}: hypothesis 없이는 등록할 수 없다 (T0.5)")
         if self.predicted_sign not in (1, -1):
             raise ValueError(f"{self.name}: predicted_sign 은 +1 또는 -1")
+        if self.rebalance_months < 1:
+            raise ValueError(f"{self.name}: rebalance_months 는 1 이상")
 
     @property
     def source(self) -> str:
@@ -45,9 +56,20 @@ class Factor:
 
     @property
     def definition_hash(self) -> str:
-        """정의 해시 — 같은 해시면 같은 값이 나와야 한다(T0.2 결정성)."""
-        payload = f"{self.name}|{self.source}|{sorted(self.params.items())}|{self.rebalance_months}"
-        return hashlib.sha256(payload.encode()).hexdigest()[:16]
+        """Hash every declared input that can change the factor definition."""
+        payload = {
+            "name": self.name,
+            "family": self.family or self.name,
+            "category": self.category,
+            "hypothesis": self.hypothesis.strip(),
+            "predicted_sign": self.predicted_sign,
+            "source": self.source,
+            "params": self.params,
+            "rebalance_months": self.rebalance_months,
+            "needs": list(self.needs),
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(encoded.encode()).hexdigest()[:16]
 
     def undeclared_constants(self) -> list[float]:
         """T0.5 — 소스의 숫자 리터럴 중 선언되지 않은 것. 있으면 게이트가 REJECT."""
@@ -67,6 +89,42 @@ class Factor:
                     continue
                 found.append(v)
         return sorted(set(found))
+
+    def composite_evidence(self) -> list[str]:
+        """Return structural evidence that this definition blends factor scores.
+
+        A factor may use several raw fields to form one economically meaningful
+        ratio (for example operating income / assets).  What is disallowed is
+        blending multiple already-normalized cross-sectional signals or other
+        registered factor columns into a weighted score.
+        """
+        src = self.source
+        if not src:
+            return []
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            return []
+        rank_calls = 0
+        factor_columns: set[str] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "rank"
+            ):
+                rank_calls += 1
+            if isinstance(node, ast.Subscript):
+                value = node.slice
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    if value.value.startswith("f_"):
+                        factor_columns.add(value.value)
+        evidence = []
+        if rank_calls > 1:
+            evidence.append(f"횡단면 rank {rank_calls}개 결합")
+        if factor_columns:
+            evidence.append(f"등록 팩터 컬럼 참조 {sorted(factor_columns)}")
+        return evidence
 
 
 class Registry:
@@ -94,6 +152,9 @@ class Registry:
 
     def __len__(self):
         return len(self._f)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._f
 
     @property
     def needs(self) -> list[str]:
