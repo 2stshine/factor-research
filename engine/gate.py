@@ -17,7 +17,7 @@ from engine.factors import Factor
 from engine.panel import Panel
 
 
-RULESET_VERSION = "fr-3.1.0"
+RULESET_VERSION = "fr-3.2.0"
 RESEARCH_START = pd.Period("2018-03", freq="M")
 
 SECURITIES_TAX = {
@@ -33,9 +33,9 @@ TH = {
     "min_oos_months": 24,
     "coverage": 0.50,
     "monthly_coverage_p10": 0.30,
-    "min_ic": 0.02,
-    "min_investable_ic": 0.01,
-    "investable_retention": 0.50,
+    "min_ic": 0.03,
+    "min_investable_ic": 0.02,
+    "min_rank_icir": 0.15,
     "ic_p": 0.10,
     "turnover_warn": 250.0,
     "turnover_fail": 400.0,
@@ -43,7 +43,7 @@ TH = {
     "max_corr": 0.80,
     "regime_conc": 0.60,
     "neutral_ic": 0.01,
-    "oos_ic": 0.01,
+    "oos_ic": 0.02,
     "oos_p": 0.10,
     "fdr_q": 0.10,
     "max_missing_return": 0.01,
@@ -420,16 +420,15 @@ def evaluate(
         "T2.1", "전체 IC 최소요건",
         bool(ic_full >= TH["min_ic"]), ic_full, f">={TH['min_ic']}",
     ))
-    add(Check(
-        "T2.1", "전체 IC HAC 유의성",
-        bool(ic_full_p <= TH["ic_p"]), ic_full_p, f"one-sided p<={TH['ic_p']}",
-    ))
-
     ic_investable_series = _ic_series(research[research["_eligible"]], col, "fwd_mid")
     ic_inv, ic_inv_t, ic_inv_p = _hac_mean_test(ic_investable_series)
+    ic_inv_std = float(ic_investable_series.std(ddof=1))
+    rank_icir = ic_inv / ic_inv_std if np.isfinite(ic_inv_std) and ic_inv_std > 0 else float("nan")
     retention = ic_inv / ic_full if ic_full > 0 else float("nan")
     result.metrics.update({
         "ic_investable": ic_inv,
+        "ic_std_investable": ic_inv_std,
+        "rank_icir_investable": rank_icir,
         "ic_t_investable": ic_inv_t,
         "ic_p_investable": ic_inv_p,
         "ic_retention": retention,
@@ -439,7 +438,11 @@ def evaluate(
         bool(ic_inv >= TH["min_investable_ic"]), ic_inv,
         f">={TH['min_investable_ic']}",
     ))
-    add(Check("T2.1", "투자가능 IC 유지율", bool(retention >= TH["investable_retention"]), retention, f">={TH['investable_retention']}"))
+    add(Check(
+        "T2.1", "투자가능 Rank ICIR 최소요건",
+        bool(rank_icir >= TH["min_rank_icir"]), rank_icir,
+        f">={TH['min_rank_icir']} (월평균 Rank IC / 월별 Rank IC 표준편차, 비연율화)",
+    ))
     add(Check("T2.1", "투자가능 IC HAC 유의성", bool(ic_inv_p <= TH["ic_p"]), ic_inv_p, f"one-sided p<={TH['ic_p']}"))
 
     base = backtest(

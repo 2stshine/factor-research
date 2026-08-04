@@ -9,7 +9,7 @@
 - Common evaluation period: `2018-03` ~ `2026-08`
 - Rows/months/assets: `334,354` / `140` / `3,301`
 - Return field: `total_return_close`
-- Gate ruleset: `fr-3.1.0`
+- Gate ruleset: `fr-3.2.0`
 - Recorded autonomous cycles: `12`
 
 ## Available strategy inputs

@@ -351,7 +351,8 @@ def record_cycle(
         "metrics": {
             key: serialized["metrics"].get(key)
             for key in (
-                "ic_full", "ic_investable", "ic_t_full", "ic_p_investable",
+                "ic_full", "ic_investable", "rank_icir_investable",
+                "ic_t_full", "ic_p_investable",
                 "oos_ic", "oos_ic_p", "turnover", "net", "net_ir",
             )
             if key in serialized["metrics"]

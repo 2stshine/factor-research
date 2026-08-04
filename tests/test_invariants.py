@@ -224,13 +224,21 @@ def test_composite_rank_signals_are_rejected_but_single_ratio_is_allowed():
 
 
 def test_return_hurdles_are_not_part_of_ruleset_v3():
-    assert gate.RULESET_VERSION == "fr-3.1.0"
+    assert gate.RULESET_VERSION == "fr-3.2.0"
     assert "net_alpha" not in gate.TH
     assert "net_ir" not in gate.TH
     assert "dsr_probability" not in gate.TH
+    assert gate.TH["min_ic"] == 0.03
+    assert gate.TH["min_investable_ic"] == 0.02
+    assert gate.TH["min_rank_icir"] == 0.15
+    assert gate.TH["oos_ic"] == 0.02
+    assert "investable_retention" not in gate.TH
     source = inspect.getsource(gate.evaluate)
     assert 'Check("T2.4"' not in source
     assert '"백테스트 표본", False' not in source
+    assert '"전체 IC HAC 유의성"' not in source
+    assert '"투자가능 IC 유지율"' not in source
+    assert '"투자가능 Rank ICIR 최소요건"' in source
 
 
 def test_common_research_start_is_fixed_after_financial_warmup():
