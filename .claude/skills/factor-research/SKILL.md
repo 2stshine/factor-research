@@ -26,10 +26,20 @@ Silver(RDS `public`)를 읽어 팩터를 만들고 Gold 승격을 판정한다.
 ## 한 사이클
 
 ```bash
-python scripts/run.py build     # 패널 캐시 (최초 1회, ~10분)
-python scripts/run.py gate      # 등록 팩터 전체 판정
-python scripts/run.py null      # 게이트 자체 위양성률 재측정
+export FR=/Users/mac/Documents/GitHub/factor-research
+
+uv --directory $FR run python scripts/run.py gate        # 판정 (~10초)
+uv --directory $FR run python scripts/run.py gate --factor <이름>
+uv --directory $FR run python scripts/run.py publish      # gold.factor 페이로드 (dry-run)
+uv --directory $FR run python scripts/run.py null --n 25  # 게이트 자체 검증 (~5분)
+uv --directory $FR run python scripts/run.py build        # 패널 재빌드 (~10분, 새 재무컬럼 필요할 때만)
 ```
+
+`build` 는 이미 되어 있다. **새 팩터는 `gate` 만으로 10초** 안에 판정된다
+(캐시에 없는 컬럼은 즉석 계산한다). 패널에 없는 재무 컬럼을 쓸 때만 `build` 가 필요하고,
+그때는 에러가 어떤 컬럼이 없는지 알려준다.
+
+팩터 정의 파일: `$FR/factors/builtin.py`
 
 새 팩터는 `factors/` 에 등록한다:
 
