@@ -40,7 +40,7 @@ def serialize_result(result: Result) -> dict:
             {
                 "tier": check.tier,
                 "name": check.name,
-                "passed": bool(check.passed),
+                "passed": None if check.passed is None else bool(check.passed),
                 "value": _jsonable(check.value),
                 "threshold": check.threshold,
                 "note": check.note,
@@ -148,6 +148,17 @@ def write_context(
     context_dir = root / "context"
     context_dir.mkdir(parents=True, exist_ok=True)
     history = _read_history(root / "history.jsonl")
+    finalized_cycles: dict[str, dict] = {}
+    campaigns = epochs.context_rows(root)
+    for campaign_row in campaigns:
+        campaign = epochs.load_campaign(root, campaign_row["campaign_id"])
+        for reference in campaign["epochs"]:
+            epoch = epochs.load_epoch(root, campaign["campaign_id"], reference["epoch_id"])
+            if epoch["status"] != "CLOSED":
+                continue
+            for candidate in epoch["candidates"]:
+                if candidate.get("cycle_id"):
+                    finalized_cycles[candidate["cycle_id"]] = candidate
     df = panel.monthly
     base_inputs = {
         "return_close", "market_cap", "adv20", "trading_value", "shares", "market",
@@ -172,7 +183,6 @@ def write_context(
         "## Sealed-OOS campaigns",
         "",
     ]
-    campaigns = epochs.context_rows(root)
     if campaigns:
         lines += [
             "| campaign | status | data cutoff | OOS | OOS start | epochs | survivors | latest reflection |",
@@ -219,7 +229,10 @@ def write_context(
             "|---|---|---|---|---|---|---|---|",
         ]
         for row in history[-30:]:
-            failed = ", ".join(row.get("failed_checks", [])) or "-"
+            finalized = finalized_cycles.get(row["cycle_id"], {})
+            failed = ", ".join(
+                finalized.get("failed_checks", row.get("failed_checks", []))
+            ) or "-"
             relation = row.get("strongest_relationship") or {}
             relation_text = (
                 f"{relation.get('factor')} ({relation.get('median_spearman', 0):.2f})"
@@ -229,7 +242,8 @@ def write_context(
             report_text = f"`{_safe(report)}`" if report != "-" else "-"
             lines.append(
                 f"| `{row['cycle_id']}` | `{row['factor']}` | `{row.get('family') or row['factor']}` | "
-                f"`{row.get('ruleset_version') or '-'}` | {row['verdict']} | {_safe(failed)} | "
+                f"`{row.get('ruleset_version') or '-'}` | {finalized.get('verdict', row['verdict'])} | "
+                f"{_safe(failed)} | "
                 f"{_safe(relation_text)} | {report_text} |"
             )
     lines.append("")
@@ -291,10 +305,14 @@ def record_cycle(
         encoding="utf-8",
     )
 
-    failed = [check for check in serialized["checks"] if not check["passed"]]
+    failed = [check for check in serialized["checks"] if check["passed"] is False]
+    verdict_label = (
+        f"PRE_FDR / {serialized['verdict']}"
+        if phase == "discovery" else serialized["verdict"]
+    )
     lines = [
         f"# {cycle_id}", "",
-        f"- Verdict: **{serialized['verdict']}**",
+        f"- Verdict: **{verdict_label}**",
         f"- Research phase: **{phase.upper()}**",
         f"- Campaign / epoch: `{campaign_id or '-'}` / `{epoch_id or '-'}`",
         f"- OOS: **{'SEALED' if phase == 'discovery' else 'REVEALED'}**",
@@ -302,6 +320,11 @@ def record_cycle(
         f"- Data cutoff / ruleset: `{payload['data_cutoff']}` / `{RULESET_VERSION}`",
         f"- Common evaluation start: `{RESEARCH_START}`",
         f"- Strategy file: `{research_spec.get('strategy_file', '-')}`",
+        (
+            "- Final discovery decision: campaign freeze의 `multiple-testing.json`을 확인"
+            if phase == "discovery"
+            else "- Final confirmation decision: campaign confirmation artifact를 확인"
+        ),
         "",
         "## Hypothesis", "",
         research_spec["thesis"], "",
@@ -320,8 +343,9 @@ def record_cycle(
         "|---|---|---:|---:|---|",
     ]
     for check in serialized["checks"]:
+        status = "PENDING" if check["passed"] is None else ("Y" if check["passed"] else "N")
         lines.append(
-            f"| {check['tier']} | {_safe(check['name'])} | {'Y' if check['passed'] else 'N'} | "
+            f"| {check['tier']} | {_safe(check['name'])} | {status} | "
             f"{_safe(check['value'])} | {_safe(check['threshold'])} |"
         )
     lines += ["", "## Result", ""]

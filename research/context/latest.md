@@ -9,8 +9,8 @@
 - Common evaluation period: `2018-03` ~ `2026-08`
 - Rows/months/assets: `334,354` / `140` / `3,301`
 - Return field: `total_return_close`
-- Gate ruleset: `fr-3.3.0`
-- Research protocol: `epoch-1.0`
+- Gate ruleset: `fr-3.5.0`
+- Research protocol: `epoch-1.2`
 - Recorded autonomous cycles: `27`
 
 ## Sealed-OOS campaigns

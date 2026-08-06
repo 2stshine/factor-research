@@ -1,6 +1,8 @@
 """Certified Silver price panel and the immutable research universe."""
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -10,7 +12,10 @@ from engine import silver
 
 
 MIN_LISTING_DAYS = 250
-INVESTABLE_ADV = 5e8
+# Research does not know the user's AUM or order size, so an arbitrary KRW
+# capacity cutoff would redefine the evidence.  Keep only a basic "traded"
+# contract here; capacity is assessed later as order size / ADV20.
+INVESTABLE_ADV = 0.0
 SUPPORTED_MARKETS = ("KOSPI", "KOSDAQ")
 INACTIVE_DAYS = 45
 
@@ -36,7 +41,38 @@ class Panel:
 
     @property
     def investable(self) -> pd.Series:
-        return self.universe & (self.monthly["adv20"] >= INVESTABLE_ADV)
+        return self.universe & (self.monthly["adv20"] > INVESTABLE_ADV)
+
+
+def snapshot_digest(panel: Panel) -> str:
+    """Hash the exact non-factor panel, terminal set, and boundary metadata."""
+    columns = sorted(
+        column for column in panel.monthly.columns
+        if not str(column).startswith("f_")
+    )
+    order = [
+        column for column in ("asset_id", "ym", "trade_date")
+        if column in panel.monthly.columns
+    ]
+    frame = panel.monthly[columns]
+    if order:
+        frame = frame.sort_values(order, kind="mergesort")
+    frame = frame.reset_index(drop=True)
+    schema = [(str(column), str(frame[column].dtype)) for column in columns]
+    metadata = {str(key): str(value) for key, value in sorted(panel.meta.items())}
+    dead = sorted(
+        (str(asset_id), str(pd.Timestamp(last_seen)))
+        for asset_id, last_seen in panel.dead.items()
+    )
+    digest = hashlib.sha256()
+    digest.update(json.dumps(
+        {"schema": schema, "meta": metadata, "dead": dead},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8"))
+    digest.update(pd.util.hash_pandas_object(
+        frame, index=False, categorize=True,
+    ).values.tobytes())
+    return digest.hexdigest()
 
 
 def _numeric(d: pd.DataFrame, columns: tuple[str, ...]) -> None:

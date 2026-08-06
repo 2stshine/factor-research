@@ -13,11 +13,19 @@ import pytest
 from engine import epochs
 from engine import fundamentals as FU
 from engine import gate
+from engine import null as null_engine
 from engine import research
 from engine.factors import Factor, Registry
-from engine.panel import Panel, forward_returns, from_silver_frame
+from engine.panel import (
+    INVESTABLE_ADV,
+    Panel,
+    forward_returns,
+    from_silver_frame,
+    snapshot_digest,
+)
 from engine.trials import TrialLedger
 from factors.candidate_loader import load_candidates
+from scripts import research as research_script
 from scripts import run as run_script
 
 
@@ -197,6 +205,17 @@ def test_total_return_is_required():
         from_silver_frame(frame, verbose=False)
 
 
+def test_panel_snapshot_digest_binds_values_and_terminal_membership():
+    panel = from_silver_frame(_silver_prices(), verbose=False)
+    original = snapshot_digest(panel)
+    changed_values = Panel(panel.monthly.copy(), panel.dead.copy(), dict(panel.meta))
+    changed_values.monthly.loc[0, "return_close"] += 1.0
+    assert snapshot_digest(changed_values) != original
+    changed_dead = Panel(panel.monthly.copy(), panel.dead.copy(), dict(panel.meta))
+    changed_dead.dead.loc[999] = pd.Timestamp("2024-01-31")
+    assert snapshot_digest(changed_dead) != original
+
+
 def test_campaign_discovery_scope_honors_exact_cutoff_and_oos_boundary():
     panel = from_silver_frame(_silver_prices(), verbose=False)
     scoped = run_script._scope_discovery_panel(
@@ -210,21 +229,91 @@ def test_campaign_discovery_scope_honors_exact_cutoff_and_oos_boundary():
         )
 
 
+def test_confirmation_scope_discards_months_after_fixed_oos_label():
+    frame = _silver_prices()
+    partial = from_silver_frame(frame, verbose=False)
+    with pytest.raises(ValueError, match="다음 달"):
+        run_script._scope_confirmation_panel(partial, oos_end="2024-02")
+    april = frame[frame["trade_date"].eq(pd.Timestamp("2024-03-31"))].copy()
+    april["trade_date"] = pd.Timestamp("2024-04-30")
+    april["total_return_close"] *= 1.01
+    april["adj_close"] = april["total_return_close"]
+    april["close"] = april["total_return_close"]
+    panel = from_silver_frame(pd.concat([frame, april], ignore_index=True), verbose=False)
+    scoped = run_script._scope_confirmation_panel(panel, oos_end="2024-02")
+    assert scoped.monthly["ym"].max() == pd.Period("2024-03", freq="M")
+    assert scoped.meta["confirmation_closure_month"] == "2024-04"
+
+
+def test_campaign_snapshot_boundary_handles_partial_and_lagged_silver():
+    panel = from_silver_frame(_silver_prices(), verbose=False)
+    cutoff, oos_start = research_script._campaign_snapshot_boundary(
+        panel, as_of_date="2024-03-15",
+    )
+    assert cutoff == "2024-02-29"
+    assert oos_start == "2024-04"
+
+    cutoff, oos_start = research_script._campaign_snapshot_boundary(
+        panel, as_of_date="2024-04-15",
+    )
+    assert cutoff == "2024-03-31"
+    assert oos_start == "2024-05"
+
+
+def test_campaign_snapshot_boundary_rejects_future_silver_month():
+    panel = from_silver_frame(_silver_prices(), verbose=False)
+    with pytest.raises(ValueError, match="미래"):
+        research_script._campaign_snapshot_boundary(
+            panel, as_of_date="2024-02-15",
+        )
+
+
+def test_scoped_panel_recomputes_terminal_labels_without_future_reappearance():
+    rows = []
+    for asset_id, dates in (
+        (1, ["2024-01-31", "2024-02-29", "2024-03-31", "2024-04-30", "2024-05-31", "2024-06-28"]),
+        (2, ["2024-01-31", "2024-06-28"]),
+    ):
+        for index, trade_date in enumerate(dates):
+            rows.append({
+                "asset_id": asset_id,
+                "trade_date": pd.Timestamp(trade_date),
+                "ym": pd.Timestamp(trade_date).to_period("M"),
+                "return_close": 100.0 + index,
+                "fwd_opt": np.nan,
+                "fwd_mid": np.nan,
+                "fwd_pess": np.nan,
+            })
+    panel = Panel(pd.DataFrame(rows), pd.Series(dtype="datetime64[ns]"))
+    scoped = run_script._scope_confirmation_panel(panel, oos_end="2024-03")
+    disappeared = scoped.monthly["asset_id"].eq(2)
+    assert scoped.monthly.loc[disappeared, "fwd_mid"].iloc[0] == -.50
+
+
 def test_by_multiple_testing_updates_pending_check_and_verdict():
     result = gate.Result(
         factor="x", definition_hash="hash", metrics={"ic_p_investable": 1e-6},
-        checks=[gate.Check("T4.3", "다중검정 FDR", False)],
+        checks=[gate.Check("T4.3", "다중검정 FDR", None)],
     )
     gate.apply_multiple_testing([result])
     assert result.metrics["fdr_qvalue"] <= gate.TH["fdr_q"]
     assert result.verdict == gate.Verdict.PROMOTE
 
 
+def test_discovery_evidence_digest_normalizes_numpy_scalars():
+    result = gate.Result(
+        factor="x", definition_hash="hash",
+        metrics={"ic_investable": np.float64(.02)},
+        checks=[gate.Check("T1.1", "coverage", np.bool_(True), np.float64(.5))],
+    )
+    assert len(gate.discovery_evidence_digest(result)) == 64
+
+
 def test_discovery_survivor_cannot_promote_while_oos_is_sealed():
     result = gate.Result(
         factor="x", definition_hash="hash", metrics={"ic_p_investable": 1e-6},
         labels=["oos_sealed"],
-        checks=[gate.Check("T4.3", "다중검정 FDR", False)],
+        checks=[gate.Check("T4.3", "다중검정 FDR", None)],
     )
     gate.apply_multiple_testing([result])
     assert result.verdict == gate.Verdict.PROVISIONAL
@@ -254,23 +343,267 @@ def test_composite_rank_signals_are_rejected_but_single_ratio_is_allowed():
 
 
 def test_return_hurdles_are_not_part_of_ruleset_v3():
-    assert gate.RULESET_VERSION == "fr-3.3.0"
+    assert gate.RULESET_VERSION == "fr-3.5.0"
     assert "net_alpha" not in gate.TH
     assert "net_ir" not in gate.TH
     assert "dsr_probability" not in gate.TH
     assert gate.TH["min_ic"] == 0.03
-    assert gate.TH["min_investable_ic"] == 0.02
+    assert gate.TH["min_investable_ic"] == 0.03
     assert gate.TH["min_rank_icir"] == 0.15
-    assert gate.TH["oos_ic"] == 0.02
+    assert gate.TH["oos_ic"] == 0.05
+    assert gate.TH["min_oos_months"] == 60
+    assert INVESTABLE_ADV == 0.0
     assert "investable_retention" not in gate.TH
     source = inspect.getsource(gate.evaluate)
     assert 'Check("T2.4"' not in source
     assert '"백테스트 표본", False' not in source
     assert '"전체 IC HAC 유의성"' not in source
     assert '"투자가능 IC 유지율"' not in source
+    assert '"투자가능 IC HAC 유의성"' not in source
     assert '"투자가능 Rank ICIR 최소요건"' in source
     assert '"T3.4"' not in source
     assert '"sector"' not in inspect.getsource(gate._neutralized_signal)
+
+
+def test_discovery_rank_ic_floor_is_three_percent(monkeypatch):
+    months = pd.period_range("2020-01", periods=60, freq="M")
+    frame = pd.DataFrame({
+        "asset_id": 1,
+        "ym": months,
+        "trade_date": months.to_timestamp(how="end").normalize(),
+        "in_universe": True,
+        "market_cap": 100.0,
+        "return_close": 100.0,
+        "adv20": 1.0,
+        "market": "KOSPI",
+        "f_candidate": 100.0,
+        "fwd_opt": 0.0,
+        "fwd_mid": 0.0,
+        "fwd_pess": 0.0,
+    })
+    panel = Panel(
+        frame, pd.Series(dtype="datetime64[ns]"),
+        meta={"return_field": "total_return_close"},
+    )
+    factor = Factor(
+        name="candidate", category="other", hypothesis="경계값 검사",
+        predicted_sign=1, compute=lambda data: data["market_cap"],
+    )
+    measured_ic = [.03]
+
+    def fake_ic_series(*_args, **_kwargs):
+        return pd.Series(np.tile([measured_ic[0] - .05, measured_ic[0] + .05], 30))
+
+    monkeypatch.setattr(gate, "_ic_series", fake_ic_series)
+    monkeypatch.setattr(
+        gate, "_hac_mean_test",
+        lambda _series: (measured_ic[0], 5.0, .001),
+    )
+    monkeypatch.setattr(gate, "backtest", lambda *_args, **_kwargs: None)
+
+    at_floor = gate.evaluate(factor, panel, frame, phase="discovery")
+    for name in ("전체 IC 최소요건", "투자가능 IC 최소요건"):
+        check = next(item for item in at_floor.checks if item.name == name)
+        assert check.passed is True
+        assert check.threshold == ">=0.03"
+
+    measured_ic[0] = .0299
+    below = gate.evaluate(factor, panel, frame, phase="discovery")
+    for name in ("전체 IC 최소요건", "투자가능 IC 최소요건"):
+        assert next(item for item in below.checks if item.name == name).passed is False
+
+
+def test_deferred_fdr_is_pending_not_a_false_failure():
+    result = gate.Result(
+        factor="x", definition_hash="hash",
+        metrics={"ic_p_investable": .01},
+        labels=["oos_sealed"],
+        checks=[gate.Check("T4.3", "다중검정 FDR", None)],
+    )
+    gate.apply_multiple_testing([result], defer=True)
+    assert not result.failed
+    assert result.pending[0].name == "다중검정 FDR"
+    assert result.verdict == gate.Verdict.PROVISIONAL
+
+
+def test_discovery_fdr_counts_registered_definitions_without_ic_pvalues():
+    result = gate.Result(
+        factor="x", definition_hash="hash",
+        metrics={"ic_p_investable": .001},
+        checks=[gate.Check("T4.3", "다중검정 FDR", None)],
+    )
+    gate.apply_multiple_testing([result], total_trials=100)
+    assert result.metrics["fdr_qvalue"] > gate.TH["fdr_q"]
+    assert result.verdict == gate.Verdict.REJECT
+
+
+def test_oos_pvalues_are_corrected_as_one_survivor_family():
+    results = [
+        gate.Result(
+            factor=name, definition_hash=name,
+            metrics={"oos_ic_p": pvalue},
+            checks=[
+                gate.Check("T4.1", "고정 OOS IC", True),
+                gate.Check("T4.3", "다중검정 FDR", True),
+            ],
+        )
+        for name, pvalue in (("a", .06), ("b", .07))
+    ]
+    gate.apply_oos_multiple_testing(results)
+    assert all(result.metrics["oos_fdr_qvalue"] > gate.TH["fdr_q"] for result in results)
+    assert all(result.verdict == gate.Verdict.REJECT for result in results)
+    assert all(any(check.name == "OOS 다중검정 FDR" for check in result.failed) for result in results)
+
+
+def test_missing_oos_pvalue_is_an_explicit_not_testable_failure():
+    result = gate.Result(
+        factor="a", definition_hash="a",
+        checks=[
+            gate.Check("T4.1", "고정 OOS IC", False),
+            gate.Check("T4.3", "다중검정 FDR", True),
+        ],
+    )
+    gate.apply_oos_multiple_testing([result])
+    check = next(check for check in result.checks if check.name == "OOS 다중검정 FDR")
+    assert check.passed is False
+    assert result.metrics["oos_fdr_status"] == "NOT_TESTABLE"
+    assert result.metrics["oos_fdr_qvalue"] == 1.0
+    assert result.verdict == gate.Verdict.REJECT
+
+
+def test_oos_early_failure_preserves_the_frozen_window():
+    factor = Factor(
+        name="broken", category="other", hypothesis="계산 실패", predicted_sign=1,
+        compute=lambda frame: frame["missing_input"],
+    )
+    frame = pd.DataFrame({"asset_id": [1], "ym": [pd.Period("2030-01", freq="M")]})
+    panel = Panel(frame, pd.Series(dtype="datetime64[ns]"), meta={})
+    result = gate.evaluate_oos(
+        factor, panel, frame,
+        oos_start=pd.Period("2030-01", freq="M"),
+        oos_end=pd.Period("2034-12", freq="M"),
+    )
+    assert result.metrics["oos_start"] == "2030-01"
+    assert result.metrics["oos_end"] == "2034-12"
+    assert result.metrics["oos_months"] == 0
+    assert result.tier_failed("T0")
+
+
+def test_oos_gold_effect_floor_is_five_percent_rank_ic(monkeypatch):
+    months = pd.period_range("2030-01", periods=60, freq="M")
+    frame = pd.DataFrame({
+        "asset_id": 1,
+        "ym": months,
+        "in_universe": True,
+        "market_cap": 100.0,
+        "return_close": 100.0,
+        "adv20": 1.0,
+        "f_candidate": 100.0,
+        "fwd_mid": 0.0,
+    })
+    panel = Panel(
+        frame, pd.Series(dtype="datetime64[ns]"),
+        meta={"return_field": "total_return_close"},
+    )
+    factor = Factor(
+        name="candidate", category="other", hypothesis="경계값 검사",
+        predicted_sign=1, compute=lambda data: data["market_cap"],
+    )
+
+    measured_ic = [.049]
+    monkeypatch.setattr(
+        gate, "_ic_series", lambda *_args, **_kwargs: pd.Series([0.0] * 60),
+    )
+    monkeypatch.setattr(
+        gate, "_hac_mean_test",
+        lambda _series: (measured_ic[0], 5.0, .001),
+    )
+    below = gate.evaluate_oos(
+        factor, panel, frame,
+        oos_start=months[0], oos_end=months[-1],
+    )
+    assert next(check for check in below.checks if check.name == "고정 OOS IC").passed is False
+
+    measured_ic[0] = .05
+    at_floor = gate.evaluate_oos(
+        factor, panel, frame,
+        oos_start=months[0], oos_end=months[-1],
+    )
+    assert next(
+        check for check in at_floor.checks if check.name == "고정 OOS IC"
+    ).passed is True
+
+
+def test_null_calibration_outputs_campaign_family_units(monkeypatch):
+    discovery_signals = {}
+    events = []
+
+    def fake_evaluate(factor, scoped_panel, scoped_df, **kwargs):
+        events.append((factor.name, "discovery"))
+        assert kwargs["phase"] == "discovery"
+        assert scoped_df["trade_date"].max() == pd.Timestamp("2025-12-31")
+        discovery_signals[factor.name] = scoped_df[f"f_{factor.name}"].copy()
+        return gate.Result(
+            factor=factor.name, definition_hash=factor.definition_hash,
+            labels=["oos_sealed"],
+            metrics={"ic_p_investable": .001, "ic_investable": .03},
+            checks=[
+                gate.Check("T4.3", "다중검정 FDR", None),
+            ],
+        )
+
+    def fake_evaluate_oos(factor, _panel, confirmation_df, **_kwargs):
+        events.append((factor.name, "oos"))
+        assert confirmation_df["ym"].max() == pd.Period("2026-02", freq="M")
+        pd.testing.assert_series_equal(
+            discovery_signals[factor.name],
+            confirmation_df[f"f_{factor.name}"].reindex(
+                discovery_signals[factor.name].index
+            ),
+        )
+        return gate.Result(
+            factor=factor.name, definition_hash=factor.definition_hash,
+            metrics={"oos_ic_p": .001},
+            checks=[gate.Check("T4.1", "고정 OOS IC", True)],
+        )
+
+    original_discovery_by = gate.apply_multiple_testing
+    original_oos_by = gate.apply_oos_multiple_testing
+
+    def spy_discovery_by(results, **kwargs):
+        events.append((results[0].factor, "discovery_by"))
+        return original_discovery_by(results, **kwargs)
+
+    def spy_oos_by(results):
+        events.append((results[0].factor if results else "none", "oos_by"))
+        return original_oos_by(results)
+
+    monkeypatch.setattr(gate, "evaluate", fake_evaluate)
+    monkeypatch.setattr(gate, "evaluate_oos", fake_evaluate_oos)
+    monkeypatch.setattr(gate, "apply_multiple_testing", spy_discovery_by)
+    monkeypatch.setattr(gate, "apply_oos_multiple_testing", spy_oos_by)
+    frame = pd.DataFrame({
+        "asset_id": [1, 1, 1],
+        "ym": pd.period_range("2025-12", "2026-02", freq="M"),
+        "trade_date": pd.to_datetime(["2025-12-31", "2026-01-31", "2026-02-28"]),
+        "in_universe": [True, True, True],
+        "market_cap": [100.0, 100.0, 100.0],
+        "return_close": [100.0, 101.0, 102.0],
+    })
+    panel = Panel(frame, pd.Series(dtype="datetime64[ns]"))
+    output = null_engine.measure(
+        panel, n=1, oos_start=pd.Period("2026-01", freq="M"),
+        oos_end=pd.Period("2026-01", freq="M"),
+        research_data_cutoff="2025-12-31",
+        discovery_family_size=2, oos_family_size=1, verbose=False,
+    )
+    assert len(output) == 4
+    assert set(output["kind"]) == {"random", "ar1_095", "ar1_0999", "frozen"}
+    assert output["calibration_unit"].eq("null_campaign_family").all()
+    assert output["revealed_count"].eq(1).all()
+    assert [event for _, event in events] == [
+        "discovery", "discovery", "discovery_by", "oos", "oos_by",
+    ] * 4
 
 
 def test_latest_context_is_a_compact_index_not_a_policy_or_report_copy():
@@ -321,12 +654,47 @@ def test_promotion_requires_current_null_calibration():
         "ruleset_version": [gate.RULESET_VERSION] * 100,
         "data_cutoff": ["2026-01-31"] * 100,
         "oos_start": ["2023-01"] * 100,
+        "calibration_unit": ["null_campaign_family"] * 100,
+        "generator_suite": ["null-v1"] * 100,
+        "kind": np.repeat(["random", "ar1_095", "ar1_0999", "frozen"], 25),
+        "discovery_family_size": [5] * 100,
+        "oos_family_size": [2] * 100,
+        "discovery_family_digest": ["family-hash"] * 100,
+        "oos_family_digest": ["oos-hash"] * 100,
+        "gold_family_digest": ["gold-hash"] * 100,
+        "confirmation_snapshot_digest": ["snapshot-hash"] * 100,
+        "fdr_q": [gate.TH["fdr_q"]] * 100,
+        "research_data_cutoff": ["2022-12-31"] * 100,
+        "oos_end": ["2027-12"] * 100,
         "pass": [False] * 100,
     })
     gate.apply_null_calibration(
-        [result], calibration, data_cutoff="2026-01-31", oos_start="2023-01"
+        [result], calibration, data_cutoff="2026-01-31", oos_start="2023-01",
+        discovery_family_size=5, oos_family_size=2,
+        discovery_family_digest="family-hash",
+        oos_family_digest="oos-hash", gold_family_digest="gold-hash",
+        confirmation_snapshot_digest="snapshot-hash",
+        research_data_cutoff="2022-12-31", oos_end="2027-12",
     )
     assert result.verdict == gate.Verdict.PROMOTE
+    preflight = gate.assert_null_calibration(
+        calibration, data_cutoff="2026-01-31", oos_start="2023-01",
+        discovery_family_size=5, oos_family_size=2,
+        discovery_family_digest="family-hash",
+        oos_family_digest="oos-hash", gold_family_digest="gold-hash",
+        confirmation_snapshot_digest="snapshot-hash",
+        research_data_cutoff="2022-12-31", oos_end="2027-12",
+    )
+    assert preflight["null_count"] == 100
+    with pytest.raises(ValueError, match="OOS는 아직 계산하지 않았습니다"):
+        gate.assert_null_calibration(
+            None, data_cutoff="2026-01-31", oos_start="2023-01",
+            discovery_family_size=5, oos_family_size=2,
+            discovery_family_digest="family-hash",
+            oos_family_digest="oos-hash", gold_family_digest="gold-hash",
+            confirmation_snapshot_digest="snapshot-hash",
+            research_data_cutoff="2022-12-31", oos_end="2027-12",
+        )
     wrong_boundary = gate.Result(
         factor="y", definition_hash="other",
         checks=[gate.Check("T4.3", "다중검정 FDR", True)],
@@ -334,9 +702,50 @@ def test_promotion_requires_current_null_calibration():
     gate.apply_null_calibration(
         [wrong_boundary], calibration,
         data_cutoff="2026-01-31", oos_start="2024-01",
+        discovery_family_size=5, oos_family_size=2,
+        discovery_family_digest="family-hash",
+        oos_family_digest="oos-hash", gold_family_digest="gold-hash",
+        confirmation_snapshot_digest="snapshot-hash",
+        research_data_cutoff="2022-12-31", oos_end="2027-12",
     )
     assert wrong_boundary.verdict == gate.Verdict.REJECT
     assert wrong_boundary.metrics["null_count"] == 0
+
+    wrong_family = gate.Result(
+        factor="z", definition_hash="third",
+        checks=[gate.Check("T4.3", "다중검정 FDR", True)],
+    )
+    gate.apply_null_calibration(
+        [wrong_family], calibration,
+        data_cutoff="2026-01-31", oos_start="2023-01",
+        discovery_family_size=5, oos_family_size=1,
+        discovery_family_digest="family-hash",
+        oos_family_digest="oos-hash", gold_family_digest="gold-hash",
+        confirmation_snapshot_digest="snapshot-hash",
+        research_data_cutoff="2022-12-31", oos_end="2027-12",
+    )
+    assert wrong_family.verdict == gate.Verdict.REJECT
+    assert wrong_family.metrics["null_count"] == 0
+
+    concentrated = calibration.copy()
+    random_rows = concentrated.index[concentrated["kind"].eq("random")][:3]
+    concentrated.loc[random_rows, "pass"] = True
+    worst_kind = gate.Result(
+        factor="w", definition_hash="fourth",
+        checks=[gate.Check("T4.3", "다중검정 FDR", True)],
+    )
+    gate.apply_null_calibration(
+        [worst_kind], concentrated,
+        data_cutoff="2026-01-31", oos_start="2023-01",
+        discovery_family_size=5, oos_family_size=2,
+        discovery_family_digest="family-hash",
+        oos_family_digest="oos-hash", gold_family_digest="gold-hash",
+        confirmation_snapshot_digest="snapshot-hash",
+        research_data_cutoff="2022-12-31", oos_end="2027-12",
+    )
+    assert worst_kind.verdict == gate.Verdict.REJECT
+    assert worst_kind.metrics["null_family_error_rate"] == pytest.approx(.03)
+    assert worst_kind.metrics["null_worst_kind_error_rate"] == pytest.approx(.12)
 
 
 def test_trial_ledger_counts_unique_definitions_and_freezes_oos():
@@ -346,7 +755,43 @@ def test_trial_ledger_counts_unique_definitions_and_freezes_oos():
         first = ledger.fixed_oos_start(months)
         extended = months + list(pd.period_range("2025-01", periods=6, freq="M"))
         assert ledger.fixed_oos_start(extended) == first
-        assert ledger.summary(["a", "a", "b"]).count == 2
+        summary = ledger.summary(["a", "a", "b"])
+        assert summary.count == 2
+        assert summary.ic_count == 2
+        scoped = ledger.summary(
+            ["a"], external=[("legacy-gold", None, None)],
+            ruleset_version=gate.RULESET_VERSION,
+        )
+        assert scoped.count == 2
+        assert scoped.ic_count == 1
+
+
+def test_trial_ledger_never_rewrites_first_observation(tmp_path):
+    ledger = TrialLedger(tmp_path / "trials.sqlite3")
+    factor = Factor(
+        name="candidate_x", category="other", hypothesis="가설",
+        predicted_sign=1, compute=lambda frame: frame["market_cap"],
+    )
+    first = gate.Result(
+        factor=factor.name, definition_hash=factor.definition_hash,
+        verdict=gate.Verdict.PROVISIONAL,
+        metrics={"ic_p_investable": .01, "net_ir": .2},
+    )
+    second = gate.Result(
+        factor=factor.name, definition_hash=factor.definition_hash,
+        verdict=gate.Verdict.REJECT,
+        metrics={"ic_p_investable": .90, "net_ir": -1.0},
+    )
+    ledger.record(factor, first, data_cutoff="2026-01-31", ruleset_version="first")
+    ledger.record(factor, second, data_cutoff="2027-01-31", ruleset_version="second")
+    original = ledger.summary(ruleset_version="first")
+    collision = ledger.summary(
+        external=[(factor.definition_hash, None, None)], ruleset_version="first",
+    )
+    rewritten = ledger.summary(ruleset_version="second")
+    assert original.pvalues == ((factor.definition_hash, .01),)
+    assert collision.pvalues == original.pvalues
+    assert rewritten.pvalues == ()
 
 
 def test_candidate_loader_requires_preregistered_research_spec():
@@ -404,7 +849,7 @@ def test_epoch_lifecycle_freezes_candidates_and_seals_oos(tmp_path):
     campaign = json.loads(campaign_path.read_text())
     assert campaign["oos"]["status"] == "SEALED"
     assert campaign["oos"]["start"] == "2026-09"
-    assert campaign["oos"]["earliest_data_month"] == "2028-09"
+    assert campaign["oos"]["earliest_data_month"] == "2031-10"
 
     epochs.start_epoch(tmp_path, "campaign-001", "epoch-001", [first, second])
     epochs.assert_candidate_ready(tmp_path, "campaign-001", "epoch-001", first)
@@ -418,6 +863,7 @@ def test_epoch_lifecycle_freezes_candidates_and_seals_oos(tmp_path):
     survivor = gate.Result(
         factor=first.name, definition_hash=first.definition_hash,
         verdict=gate.Verdict.PROVISIONAL,
+        metrics={"ic_p_investable": .001},
         labels=["oos_sealed", "discovery_pass"],
     )
     rejected = gate.Result(
@@ -441,15 +887,183 @@ def test_epoch_lifecycle_freezes_candidates_and_seals_oos(tmp_path):
         tmp_path, "campaign-001", "epoch-001"
     )
     assert "OOS 상태: **SEALED**" in reflection.read_text()
-    assert json.loads(reflection_json.read_text())["duplicates"] == ["candidate_b"]
+    reflection_payload = json.loads(reflection_json.read_text())
+    assert reflection_payload["duplicates"] == ["candidate_b"]
+    assert reflection_payload["discovery_fdr_status"] == "PENDING_UNTIL_CAMPAIGN_FREEZE"
     with pytest.raises(ValueError, match="REJECT"):
         epochs.freeze_campaign(tmp_path, "campaign-001", ["candidate_b"])
     epochs.freeze_campaign(tmp_path, "campaign-001", ["candidate_a"])
-    with pytest.raises(ValueError, match="아직 24개월"):
+    frozen = epochs.load_campaign(tmp_path, "campaign-001")
+    fdr = json.loads(Path(frozen["discovery_multiple_testing"]).read_text())
+    assert fdr["method"] == "Benjamini-Yekutieli"
+    assert fdr["results"][0]["status"] == "PASS"
+    assert fdr["family_digest"] == frozen["discovery_family_digest"]
+    assert epochs.load_discovery_multiple_testing(
+        tmp_path, "campaign-001",
+    )["family_digest"] == frozen["discovery_family_digest"]
+    tampered = json.loads(json.dumps(fdr))
+    tampered["results"][0]["qvalue"] = .99
+    Path(frozen["discovery_multiple_testing"]).write_text(
+        json.dumps(tampered), encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="artifact 무결성"):
+        epochs.load_discovery_multiple_testing(tmp_path, "campaign-001")
+    Path(frozen["discovery_multiple_testing"]).write_text(
+        json.dumps(fdr), encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="아직 60개월"):
         epochs.assert_reveal_ready(
-            tmp_path, "campaign-001", pd.Period("2028-08", freq="M")
+            tmp_path, "campaign-001", pd.Period("2031-09", freq="M")
         )
     ready = epochs.assert_reveal_ready(
-        tmp_path, "campaign-001", pd.Period("2028-09", freq="M")
+        tmp_path, "campaign-001", pd.Period("2031-10", freq="M")
     )
     assert ready["survivors"][0]["definition_hash"] == first.definition_hash
+
+
+def test_campaign_enforces_oos_floor_and_nonoverlapping_active_holdouts(tmp_path):
+    with pytest.raises(ValueError, match="현재 ruleset 고정값 60"):
+        epochs.start_campaign(
+            tmp_path, "campaign-short", data_cutoff="2026-08-03",
+            min_oos_months=59,
+        )
+    epochs.start_campaign(tmp_path, "campaign-001", data_cutoff="2026-08-03")
+    with pytest.raises(ValueError, match="봉인 OOS 기간이 겹칩니다"):
+        epochs.start_campaign(tmp_path, "campaign-002", data_cutoff="2026-08-03")
+    second = epochs.start_campaign(
+        tmp_path, "campaign-003", data_cutoff="2026-08-03", oos_start="2031-10",
+    )
+    assert second.exists()
+
+
+def test_campaign_can_close_without_survivors_instead_of_optional_stopping(tmp_path):
+    factor = Factor(
+        name="candidate_a", category="other", hypothesis="가설", predicted_sign=1,
+        compute=lambda frame: frame["market_cap"],
+    )
+    epochs.start_campaign(tmp_path, "campaign-001", data_cutoff="2026-08-03")
+    epochs.start_epoch(tmp_path, "campaign-001", "epoch-001", [factor])
+    rejected = gate.Result(
+        factor=factor.name, definition_hash=factor.definition_hash,
+        verdict=gate.Verdict.REJECT,
+        checks=[gate.Check("T2.1", "투자가능 IC 최소요건", False)],
+    )
+    epochs.mark_evaluated(
+        tmp_path, "campaign-001", "epoch-001", factor, rejected,
+        report="research/runs/candidate_a/report.md", strongest_relationship=None,
+    )
+    epochs.close_epoch(tmp_path, "campaign-001", "epoch-001")
+    epochs.freeze_campaign(tmp_path, "campaign-001", [])
+    campaign = epochs.load_campaign(tmp_path, "campaign-001")
+    assert campaign["status"] == "CLOSED_NO_SURVIVOR"
+    assert campaign["oos"]["status"] == "NOT_USED"
+
+
+def test_campaign_freeze_finalizes_discovery_fdr_as_one_order_independent_batch(tmp_path):
+    factors = [
+        Factor(
+            name=name, family=name, category="other", hypothesis=name,
+            predicted_sign=1, params={"candidate": name},
+            compute=lambda frame: frame["market_cap"],
+        )
+        for name in ("candidate_a", "candidate_b")
+    ]
+    epochs.start_campaign(tmp_path, "campaign-001", data_cutoff="2026-08-03")
+    epochs.start_epoch(tmp_path, "campaign-001", "epoch-001", factors)
+    for factor, pvalue in zip(factors, (.01, .02), strict=True):
+        result = gate.Result(
+            factor=factor.name, definition_hash=factor.definition_hash,
+            verdict=gate.Verdict.PROVISIONAL,
+            metrics={"ic_p_investable": pvalue},
+            labels=["oos_sealed", "fdr_pending"],
+            checks=[gate.Check("T4.3", "다중검정 FDR", None)],
+        )
+        epochs.mark_evaluated(
+            tmp_path, "campaign-001", "epoch-001", factor, result,
+            report=f"research/runs/{factor.name}/report.md",
+            strongest_relationship=None,
+        )
+    epochs.close_epoch(tmp_path, "campaign-001", "epoch-001")
+    epoch = epochs.load_epoch(tmp_path, "campaign-001", "epoch-001")
+    assert [row["fdr_status"] for row in epoch["candidates"]] == ["PENDING", "PENDING"]
+    epochs.freeze_campaign(tmp_path, "campaign-001", ["candidate_a", "candidate_b"])
+    epoch = epochs.load_epoch(tmp_path, "campaign-001", "epoch-001")
+    assert [row["fdr_status"] for row in epoch["candidates"]] == ["PASS", "PASS"]
+    assert [row["verdict"] for row in epoch["candidates"]] == ["PROVISIONAL", "PROVISIONAL"]
+
+    (tmp_path / "history.jsonl").write_text(
+        json.dumps({
+            "cycle_id": "candidate_a", "factor": "candidate_a",
+            "family": "candidate_a", "ruleset_version": gate.RULESET_VERSION,
+            "verdict": "PROVISIONAL", "failed_checks": [],
+            "report": "research/runs/candidate_a/report.md",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    panel = Panel(
+        monthly=pd.DataFrame({
+            "asset_id": [1], "ym": [pd.Period("2026-08", freq="M")],
+            "return_close": [1.0], "market_cap": [100.0], "adv20": [10.0],
+            "trading_value": [10.0], "shares": [1.0], "market": ["KOSPI"],
+        }),
+        dead=pd.Series(dtype="datetime64[ns]"),
+        meta={"source": "RDS public Silver", "return_field": "total_return_close"},
+    )
+    context = research.write_context(panel, Registry(), research_dir=tmp_path).read_text()
+    assert "| `candidate_a` | `candidate_a` | `candidate_a` |" in context
+    assert "| `fr-3.5.0` | PROVISIONAL | - |" in context
+
+
+def test_campaign_fdr_is_identical_when_epoch_order_is_reversed(tmp_path):
+    pvalues = {"candidate_a": .01, "candidate_b": .02}
+
+    def run_campaign(root, order):
+        epochs.start_campaign(root, "campaign-001", data_cutoff="2026-08-03")
+        factors = {}
+        for index, name in enumerate(order, 1):
+            factor = Factor(
+                name=name, family=name, category="other", hypothesis=name,
+                predicted_sign=1, params={"candidate": name},
+                compute=lambda frame: frame["market_cap"],
+            )
+            factors[name] = factor
+            epoch_id = f"epoch-{index:03d}"
+            epochs.start_epoch(root, "campaign-001", epoch_id, [factor])
+            result = gate.Result(
+                factor=name, definition_hash=factor.definition_hash,
+                verdict=gate.Verdict.PROVISIONAL,
+                metrics={"ic_p_investable": pvalues[name]},
+                checks=[gate.Check("T4.3", "다중검정 FDR", None)],
+            )
+            epochs.mark_evaluated(
+                root, "campaign-001", epoch_id, factor, result,
+                report=f"research/runs/{name}/report.md",
+                strongest_relationship=None,
+            )
+            epochs.close_epoch(root, "campaign-001", epoch_id)
+        epochs.freeze_campaign(root, "campaign-001", list(order))
+        campaign = epochs.load_campaign(root, "campaign-001")
+        artifact = json.loads(Path(campaign["discovery_multiple_testing"]).read_text())
+        return {row["factor"]: row["qvalue"] for row in artifact["results"]}
+
+    forward = run_campaign(tmp_path / "forward", ("candidate_a", "candidate_b"))
+    reverse = run_campaign(tmp_path / "reverse", ("candidate_b", "candidate_a"))
+    assert forward == reverse
+
+
+def test_old_protocol_campaign_is_read_only(tmp_path):
+    factor = Factor(
+        name="candidate_a", category="other", hypothesis="가설", predicted_sign=1,
+        compute=lambda frame: frame["market_cap"],
+    )
+    campaign_path = epochs.start_campaign(
+        tmp_path, "campaign-001", data_cutoff="2026-08-03",
+    )
+    epochs.start_epoch(tmp_path, "campaign-001", "epoch-001", [factor])
+    campaign = json.loads(campaign_path.read_text())
+    campaign["protocol_version"] = "epoch-1.0"
+    campaign_path.write_text(json.dumps(campaign), encoding="utf-8")
+    with pytest.raises(ValueError, match="protocol"):
+        epochs.assert_candidate_ready(
+            tmp_path, "campaign-001", "epoch-001", factor,
+        )

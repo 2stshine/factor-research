@@ -3,16 +3,16 @@
 TeamAlpha의 **DQ 인증된 RDS Silver(`public`)만** 읽어 팩터를 만들고 Gold 승격 여부를 판정하는 엔진.
 Bronze는 Silver 품질 대사 외에는 리서치 입력으로 사용하지 않는다.
 
-> 현재 운영 임계값은 이 문서와 `engine/gate.py`에 공개한다. 임계값의 상세 캘리브레이션과
-> 공격 분석은 `private/CALIBRATION.md`에 보존한다. 후보는 결과나 임계값에 맞춰 튜닝하지
-> 않고 경제적 가설과 PIT 입력을 기준으로 사전등록한다.
+> 현재 운영 임계값은 이 문서, `engine/gate.py`,
+> [좋은 주식 팩터의 판정 기준](docs/factor-promotion-criteria.md)에 공개한다.
+> `private/CALIBRATION.md`는 fr-2.x Bronze 기반의 **보존용 구형 기록**으로 현재 판정에 쓰지 않는다.
+> 후보는 결과나 임계값에 맞춰 튜닝하지 않고 경제적 가설과 PIT 입력을 기준으로 사전등록한다.
 
 ## 사용
 
 ```bash
 uv sync
 uv run python scripts/run.py build          # 인증 Silver → PIT 패널 캐시
-uv run python scripts/run.py null --n 25    # 귀무 4종×25개 = 최소 100개 보정
 uv run python scripts/run.py gate           # discovery 판정; 최종 OOS는 SEALED
 ```
 
@@ -38,16 +38,24 @@ uv run python scripts/research.py epoch-close \
   --campaign campaign-001 --epoch epoch-001
 uv run python scripts/research.py campaign-freeze \
   --campaign campaign-001 --factors factor_a
-# 최소 24 OOS IC개월이 쌓인 뒤 한 번만 실행
+# 고정 OOS의 유효 IC 60개가 쌓인 뒤, 같은 campaign 크기로 귀무 보정 후 한 번만 실행
+uv run python scripts/run.py null --campaign campaign-001 --n 25
 uv run python scripts/research.py campaign-reveal --campaign campaign-001
 ```
 
 평가할 때마다 `research/runs/cycle-NNNN-<factor>/`에 JSON과 Markdown 보고서가 생성되고,
 `research/history.jsonl`과 `research/context/latest.md`가 갱신된다. 다음 루프는 반드시 이
 컨텍스트를 먼저 읽는다. discovery에는 OOS 수치가 생성되지 않고 최대 `PROVISIONAL`까지만
-가능하다. `research/campaigns/`에는 epoch 성찰과 봉인 상태가 저장된다. reveal은 Gold에 쓰지
+가능하다. 후보별 FDR은 campaign freeze 전까지 `PENDING`이며, 모든 epoch 후보를 한꺼번에
+BY 보정한다. `research/campaigns/`에는 epoch 성찰과 봉인 상태가 저장된다. reveal은 Gold에 쓰지
 않으며, 결과를 본 뒤 기존 후보 파일을 수정하거나 같은 OOS로 다시 확인할 수 없다. discovery
 입력도 manifest의 data cutoff 이하로 고정하며 현재 캐시가 그 cutoff를 재현하지 못하면 중단한다.
+현재 월 Silver가 부분 적재돼 있으면 직전 완료월까지만 discovery에 쓰고 현재 월은 embargo한다.
+OOS는 cache가 지연됐더라도 이미 실현된 역사 월을 쓰지 않고 campaign 생성 다음 달부터 시작한다.
+모두 탈락하면 `campaign-freeze --campaign <id>`처럼 `--factors`를 생략해 campaign을 종료한다.
+active campaign끼리는 봉인 OOS 기간을 겹쳐 재사용할 수 없다.
+reveal은 귀무 보정과 동결 discovery 재현을 먼저 검사하고, 복구 가능한 사전조건이 실패하면
+survivor OOS를 계산하지 않은 채 중단한다.
 
 ## 왜 통계가 마지막인가
 
@@ -73,9 +81,9 @@ uv run python scripts/research.py campaign-reveal --campaign campaign-001
 |---|---|---|---|
 | T0 | 등록·결정성·타입안전 | 0회 | 결정론 |
 | **T1** | **표본틀 무결성** | 0회 (SQL) | 결정론 — 공격 11/18 격추 |
-| T2 | 전체·투자 가능 IC 최소요건과 투자 가능 IC 유의성 | 진단 1회 | 통계 |
+| T2 | 전체·투자 가능 IC 최소효과와 투자 가능 Rank ICIR | 진단 1회 | 통계 |
 | T3 | 기간별·레짐·중립화 IC 강건성 | IC 재계산 | 통계 |
-| T4 | discovery BY FDR + campaign 최종 OOS·귀무 보정 | 최다 | 통계 + 시행 원장 |
+| T4 | campaign discovery BY FDR + survivor OOS BY FDR·귀무 보정 | 최다 | 통계 + 시행 원장 |
 | T5 | 기존 Gold 신호와 직교성 | — | 신호 |
 
 최종 confirmation 판정은 T0·T1·T2·T4·T5 중 하나라도 실패하면 `REJECT`, T3 soft fail이 하나면
@@ -91,29 +99,31 @@ discovery survivor는 OOS가 봉인되어 있으므로 soft fail이 없어도 �
 ```
 전체 유니버스 = KOSPI/KOSDAQ · 보통주 · SPAC/리츠 제외 · 상장 250거래일 경과
                 · 시가총액과 total_return_close가 정상인 종목
-투자 가능 유니버스 = 전체 유니버스 중 ADV20(최근 20거래일 일평균 거래대금) >= 5억원
+투자 가능 유니버스 = 전체 유니버스 중 ADV20(최근 20거래일 일평균 거래대금) > 0
 ```
 
-`5억원`은 모든 투자자에게 절대적인 체결 가능선이 아니라 현재 엔진의 유동성 가정이다.
-소액으로는 기준 미만 종목도 살 수 있지만, 여러 종목을 반복 리밸런싱할 때 가격 충격이 커질 수
-있어 별도 투자 가능 유니버스로 검사한다. 향후 목표 AUM과 허용 거래 참여율이 정해지면 이 고정
-금액 대신 `종목별 주문금액 / ADV20` 방식으로 바꾸는 것이 더 적절하다.
+고정 `5억원` 문턱은 제거했다. 연구 단계에는 목표 AUM과 주문금액이 없으므로 임의 금액으로
+예측 근거를 잘라내지 않고, 최근 거래가 실제로 관측된 종목만 별도 유니버스로 검사한다. 진짜
+체결 가능성은 승격 뒤 목표 주문금액과 허용 거래 참여율을 정해 `종목별 주문금액 / ADV20`으로
+판정해야 한다.
 
 **상장폐지 종착수익률 3점 스트레스** — 비활성·상폐 종목의 마지막 관측에 `{0%, −50%, −100%}` 를
 강제 부여하고 세 시나리오 전부에서 부호가 유지되어야 한다. 안 하면 롱레그의 최악 실현값만
 표본에서 증발한다.
 
-## 현재 판정 기준: `fr-3.3.0`
+## 현재 판정 기준: `fr-3.5.0`
 
 절대 순알파, net IR, Deflated Sharpe, 비용 스트레스 수익률은 승격 기준이 아니다.
 표본 기간과 포트폴리오 구성에 민감한 절대 수익률 컷 대신 다음을 본다.
 
-- 전체 IC `>= 0.03`, 투자 가능 유니버스 IC `>= 0.02`
+- discovery 전체 IC `>= 0.03`, 투자 가능 유니버스 IC `>= 0.03`
 - 투자 가능 유니버스 Rank ICIR `>= 0.15` (비연율화)
-- 투자 가능 IC의 HAC 단측 p값 `<= 0.10`
+- 투자 가능 IC의 HAC 단측 p값은 계산·보고하고 campaign BY의 입력으로 사용
 - 4개 비중첩 구간 중 3개 이상 IC 방향 일치, IC 레짐 집중도 `<= 0.60`
-- 시장·규모·유동성 중립화 후 IC `>= 0.01` 및 p값 `<= 0.10`
-- 고정 OOS 투자 가능 IC `>= 0.02` 및 p값 `<= 0.10`, IC 기준 BY FDR `<= 0.10`
+- 시장구분·유동성·비의도 규모 노출 제거 후 투자 가능 IC `>= 0.01`
+  (soft gate, size category는 규모 노출 보존, HAC p는 진단)
+- 고정 60 signal개월에서 유효한 투자 가능 OOS IC 60개 및 평균 IC `>= 0.05`
+- discovery는 campaign 전체, OOS는 동시 공개 survivor 전체에서 각각 BY FDR `<= 0.10`
 - 기존 Gold 팩터와 월별 신호 순위의 중앙값 절대 Spearman 상관 `<= 0.80`
 
 전체 IC의 HAC p값과 `투자 가능 IC / 전체 IC` 유지율은 보고서에 진단값으로 남기되
@@ -121,11 +131,23 @@ discovery survivor는 OOS가 봉인되어 있으므로 soft fail이 없어도 �
 추가 hard gate로 두지 않으며, 실제 운용 대상인 투자 가능 IC의 유의성만 판정한다.
 
 IC는 매월 팩터 순위와 미래수익률 순위의 Spearman 상관이다. Rank ICIR은 투자 가능 유니버스의
-`월평균 Rank IC / 월별 Rank IC 표준편차`로 계산하며 연율화하지 않는다. 평균 IC가 높더라도
-월별 흔들림이 지나치게 크면 0.15를 넘지 못한다. HAC는 연속된 월의 IC가 서로 독립적이지 않고
-시기별 변동성도 다르다는 점을 Newey-West 방식으로 보정한다. 단측 p값은 실제 평균 IC가 0
-이하라는 가정 아래 지금 같은 양의 결과가 나올 가능성을 나타내며, 팩터가 틀릴 확률 그 자체는
-아니다.
+`월평균 Rank IC / 월별 Rank IC 표준편차`로 계산하며 연율화하지 않는다. `0.15`는 문헌의
+보편적 임계값이 아니라 내부 안정성 guardrail이다. 평균 IC가 높더라도 월별 흔들림이 지나치게
+크면 0.15를 넘지 못한다. HAC는 연속된 월의 IC가 서로 독립적이지 않고
+시기별 변동성도 다르다는 점을 Newey-West 방식으로 보정한다. 단측 p값은 팩터가 틀릴 확률이
+아니며, 평균 IC가 0 이하라는 귀무가설 아래 현재와 같거나 더 극단적인 검정통계량이 나올
+확률이다. 같은 HAC p값을
+BY 보정한 `q <= 0.10`이 더 강한 조건이므로 원시 p값을 별도 hard
+gate로 중복 적용하지 않는다.
+
+`0.03`은 discovery 후보선이고 `0.05`는 Gold OOS 효과선이다. `0.10` 이상은 매우 강한 신호로
+자동 신뢰하지 않고 누수·PIT·표본 오류를 먼저 재점검한다. 숫자 하나만으로 합격시키지 않고,
+동일 방향이 여러 기간에 반복되는지와 다중검정 후에도 남는지를 함께 본다. `0.05`는 MSCI의
+실무적 good IC를 현재 Rank IC에 보수적으로 차용한 정책값이지 모든 시장에 통용되는 표준은
+아니다. 자세한 정의·검출력·문헌 근거는
+[좋은 주식 팩터의 판정 기준](docs/factor-promotion-criteria.md)에 정리했다. 후보별 discovery
+보고서의 FDR은 campaign이 동결될 때까지 `PENDING`이며, 모든 epoch의 사전등록 후보 p값을
+모은 뒤 한 번에 확정된다.
 
 비용 후 수익률·IR·회전율·미래수익 결측은 보고서에 계속 계산하지만 모두 설명·용량 검토용
 진단값이다. 진단 포트폴리오를 만들 표본이 부족해도 IC 연구 판정을 중단하지 않는다.
@@ -169,8 +191,9 @@ IC는 매월 팩터 순위와 미래수익률 순위의 Spearman 상관이다. R
 ## 섹터 한계와 기업행위 데이터
 
 Silver에 과거 시점별 업종분류 이력이 없고 현재 업종을 과거에 복사하면 미래정보가 새므로,
-`fr-3.3.0`부터 T3.4 섹터 검사를 판정 기준에서 제거했다. T3.2는 모든 후보에 동일하게
-시장·규모·유동성만 통제한다. 따라서 현재 판정은 섹터 중립성을 보장하지 않으며, 특정 업종 쏠림은
+`fr-3.3.0`부터 T3.4 섹터 검사를 판정 기준에서 제거했다. T3.2는 시장구분·유동성과 비의도
+규모 노출을 통제하되, size category에서는 가설 자체인 규모 노출을 보존한다. 따라서 현재 판정은
+섹터 중립성을 보장하지 않으며, 특정 업종 쏠림은
 보고서 해석과 후속 운용 검토에서 별도 한계로 취급한다. 과거 PIT 업종 이력이 확보되기 전에는
 섹터 검사를 다시 활성화하지 않는다.
 
@@ -219,8 +242,10 @@ REGISTRY.add(Factor(
 - 모든 고유 정의의 시행횟수는 `.cache/trials.sqlite3`에, 봉인 OOS 상태는
   `research/campaigns/`에 보존한다. 팀 공용 운영에서는 이 원장을 RDS 테이블로 승격해야 여러
   연구자의 시행을 합산할 수 있다
-- 동일 Silver cutoff·ruleset으로 만든 귀무 팩터가 100개 미만이거나 전체 게이트 위양성률이
-  10%를 넘으면 T4.4가 실패한다. `build` 뒤 `null --n 25` 이상을 먼저 실행한다
-- 현재 ruleset이 `fr-3.3.0`으로 변경됐으므로 이 버전의 귀무 보정을 새로 만들기 전에는
+- 동일 Silver cutoff·ruleset·campaign family로 만든 귀무 campaign이 종류별 25개·총 100개
+  미만이거나, 네 종류 중 최악의 family 오류율이 10%를 넘으면 T4.4가 실패한다. survivor 동결과
+  OOS 데이터 축적 뒤 `null --campaign <id> --n 25`를 실행한다. 보정은 closure Silver panel
+  content digest와 Gold 신호 digest에도 결박되어 값이 바뀌면 다시 만들어야 한다
+- 현재 ruleset이 `fr-3.5.0`으로 변경됐으므로 이 버전의 귀무 보정을 새로 만들기 전에는
   안전장치상 `PROMOTE`가 나오지 않는다
-- epoch-1.0에서는 campaign reveal과 별도 사람 검토 전 `publish --apply`를 차단한다
+- epoch-1.2에서는 campaign reveal과 별도 사람 검토 전 `publish --apply`를 차단한다

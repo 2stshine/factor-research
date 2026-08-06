@@ -20,6 +20,7 @@ import re
 
 from engine.factors import Factor
 from engine.gate import RULESET_VERSION, TH, Result, Verdict
+from engine.panel import INVESTABLE_ADV
 from engine import silver
 
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -49,7 +50,7 @@ def _py(v):
 
 
 def build_row(factor: Factor, result: Result, *, n_trials: int | None = None,
-              realized_fdr: float | None = None, data_cutoff: str | None = None,
+              null_family_error_rate: float | None = None, data_cutoff: str | None = None,
               approved_by: str | None = None) -> dict:
     """gold.factor 한 행. 판정 근거를 재검토 가능한 형태로 전부 담는다."""
     if not KEY_RE.match(factor.name):
@@ -75,7 +76,7 @@ def build_row(factor: Factor, result: Result, *, n_trials: int | None = None,
         "labels": result.labels,
         "thresholds": TH,
         "n_trials": n_trials,
-        "realized_fdr": realized_fdr,
+        "null_family_error_rate": null_family_error_rate,
         "data_cutoff": data_cutoff,
     }
     config = {
@@ -88,7 +89,9 @@ def build_row(factor: Factor, result: Result, *, n_trials: int | None = None,
         "universe": {
             "source": "KRX", "markets": ["KOSPI", "KOSDAQ"], "asset_type": "stock",
             "common_stock_only": True, "exclude": ["SPAC", "REIT"],
-            "min_listing_days": 250, "investable_adv_krw": 5e8,
+            "min_listing_days": 250,
+            "investable_rule": "adv20 > investable_adv_krw",
+            "investable_adv_krw": INVESTABLE_ADV,
         },
         "pit": {"fundamental": "available_date", "market": "price_daily.market(날짜별)"},
     }

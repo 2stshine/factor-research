@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -21,12 +25,58 @@ def cmd_context(_args) -> None:
     print(f"연구 컨텍스트 갱신: {path}")
 
 
+def _campaign_snapshot_boundary(
+    panel,
+    *,
+    as_of_date: date | str | None = None,
+) -> tuple[str, str]:
+    """Return the last completed cutoff and first wholly unseen OOS month."""
+    months = sorted(panel.monthly["ym"].dropna().unique())
+    if not months:
+        raise ValueError("Silver 월 데이터가 없습니다")
+    today = as_of_date or datetime.now(ZoneInfo("Asia/Seoul")).date()
+    current_month = pd.Timestamp(today).to_period("M")
+    latest_month = pd.Period(months[-1], freq="M")
+    if latest_month > current_month:
+        raise ValueError(
+            f"Silver 최신 월 {latest_month}이 현재 월 {current_month}보다 미래입니다"
+        )
+    if latest_month == current_month:
+        completed = [
+            pd.Period(month, freq="M") for month in months if month < current_month
+        ]
+        if not completed:
+            raise ValueError("완료 여부를 확인할 과거 Silver 월이 부족합니다")
+        completed_month = completed[-1]
+    else:
+        completed_month = latest_month
+    cutoff_value = panel.monthly.loc[
+        panel.monthly["ym"].eq(completed_month), "trade_date"
+    ].max()
+    if pd.isna(cutoff_value):
+        raise ValueError(f"완료 월 {completed_month}의 cutoff를 찾을 수 없습니다")
+    # A sealed confirmation must be prospective.  A lagged cache must never
+    # turn already-realized historical months into a newly declared "OOS".
+    # Everything through the current calendar month is therefore embargoed.
+    first_unseen_month = current_month + 1
+    return str(pd.Timestamp(cutoff_value).date()), str(first_unseen_month)
+
+
 def cmd_campaign_start(args) -> None:
     run.load_registry()
     panel = run._load()
-    cutoff = str(panel.monthly["trade_date"].max().date())
+    try:
+        cutoff, first_unseen_month = _campaign_snapshot_boundary(panel)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    oos_start = args.oos_start or first_unseen_month
+    if pd.Period(oos_start, freq="M") < pd.Period(first_unseen_month, freq="M"):
+        raise SystemExit(
+            "OOS 시작은 campaign 생성 때 완전히 보지 않은 월이어야 합니다: "
+            f"최소 {first_unseen_month}"
+        )
     path = epochs.start_campaign(
-        "research", args.campaign, data_cutoff=cutoff, oos_start=args.oos_start,
+        "research", args.campaign, data_cutoff=cutoff, oos_start=oos_start,
     )
     print(f"campaign 생성: {path}")
     print("최종 OOS: SEALED")
@@ -78,6 +128,7 @@ def cmd_evaluate(args) -> None:
             phase="discovery",
             data_cutoff=campaign["data_cutoff"],
             oos_start=campaign["oos"]["start"],
+            defer_multiple_testing=True,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
@@ -94,33 +145,45 @@ def cmd_evaluate(args) -> None:
     )
     print(f"\n연구 사이클 기록: {report}")
     print(f"다음 루프 컨텍스트: {context}")
-    print(f"최종 판정: {result.verdict.value}")
+    print(f"Discovery 사전 판정(FDR 대기): {result.verdict.value}")
     print("최종 OOS: SEALED (계산·기록 없음)")
     print("Gold write: 없음")
 
 
 def cmd_epoch_close(args) -> None:
     try:
-        report, result = epochs.close_epoch("research", args.campaign, args.epoch)
+        report, result = epochs.close_epoch(
+            "research", args.campaign, args.epoch,
+        )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     print(f"epoch 종료: {report}")
     print(f"구조화 성찰: {result}")
+    print("Discovery FDR: PENDING (campaign freeze에서 전체 후보 일괄 판정)")
     print("최종 OOS: SEALED")
 
 
 def cmd_campaign_freeze(args) -> None:
+    run.load_registry()
+    panel = run._load()
     try:
         path = epochs.freeze_campaign("research", args.campaign, args.factors)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     campaign = epochs.load_campaign("research", args.campaign)
-    print(f"campaign 동결: {path}")
-    print(f"survivor {len(campaign['survivors'])}개 정의 해시 고정")
-    print(
-        f"OOS {campaign['oos']['start']}부터 최소 {campaign['oos']['min_months']}개월; "
-        f"가장 이른 공개 가능 데이터 월 {campaign['oos']['earliest_data_month']}"
-    )
+    context = research.write_context(panel, F.REGISTRY)
+    if campaign["status"] == "CLOSED_NO_SURVIVOR":
+        print(f"campaign 종료(통과 survivor 없음): {path}")
+    else:
+        print(f"campaign 동결: {path}")
+        print(f"survivor {len(campaign['survivors'])}개 정의 해시 고정")
+    print(f"Discovery BY 확정: {campaign['discovery_multiple_testing']}")
+    print(f"다음 루프 컨텍스트 갱신: {context}")
+    if campaign["status"] == "FROZEN":
+        print(
+            f"OOS {campaign['oos']['start']}부터 최소 {campaign['oos']['min_months']}개월; "
+            f"가장 이른 공개 가능 데이터 월 {campaign['oos']['earliest_data_month']}"
+        )
 
 
 def cmd_campaign_reveal(args) -> None:
@@ -132,6 +195,13 @@ def cmd_campaign_reveal(args) -> None:
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     names = [row["name"] for row in campaign["survivors"]]
+    discovery_artifact = epochs.load_discovery_multiple_testing(
+        "research", args.campaign,
+    )
+    frozen_discovery = {
+        row["definition_hash"]: row
+        for row in discovery_artifact["results"]
+    }
     for row in campaign["survivors"]:
         if row["name"] not in F.REGISTRY:
             raise SystemExit(f"동결 후보 소스가 없습니다: {row['name']}")
@@ -142,7 +212,17 @@ def cmd_campaign_reveal(args) -> None:
         namespace,
         phase="full",
         oos_start=campaign["oos"]["start"],
+        oos_end=campaign["oos"]["signal_end"],
+        data_cutoff=campaign["data_cutoff"],
         factor_names=names,
+        calibration_scope={
+            "discovery_family_size": campaign["discovery_family_size"],
+            "oos_family_size": len(campaign["survivors"]),
+            "discovery_family_digest": campaign["discovery_family_digest"],
+            "oos_family_digest": campaign["oos_family_digest"],
+            "research_data_cutoff": campaign["data_cutoff"],
+        },
+        frozen_discovery=frozen_discovery,
     )
     confirmations = []
     for factor, result in zip(factors, results, strict=True):
@@ -157,9 +237,11 @@ def cmd_campaign_reveal(args) -> None:
         report, result = epochs.record_reveal("research", args.campaign, confirmations)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    context = research.write_context(panel, F.REGISTRY)
     print(f"봉인 OOS 공개 및 campaign 종료: {report}")
     print(f"전체 확인 결과: {result}")
     print("이 OOS 결과는 종료된 campaign 후보 수정에 사용할 수 없습니다")
+    print(f"다음 루프 컨텍스트 갱신: {context}")
     print("Gold write: 없음")
 
 
@@ -183,7 +265,10 @@ def main() -> None:
     epoch_close.add_argument("--epoch", required=True)
     campaign_freeze = commands.add_parser("campaign-freeze", help="survivor 정의 동결")
     campaign_freeze.add_argument("--campaign", required=True)
-    campaign_freeze.add_argument("--factors", nargs="+", required=True)
+    campaign_freeze.add_argument(
+        "--factors", nargs="*", default=[],
+        help="OOS survivor. 모두 탈락이면 생략해 campaign을 종료",
+    )
     campaign_reveal = commands.add_parser("campaign-reveal", help="충분히 쌓인 봉인 OOS를 한 번 공개")
     campaign_reveal.add_argument("--campaign", required=True)
     args = parser.parse_args()

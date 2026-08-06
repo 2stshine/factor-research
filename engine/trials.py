@@ -17,6 +17,7 @@ import pandas as pd
 @dataclass(frozen=True)
 class TrialSummary:
     count: int
+    ic_count: int
     sharpes: tuple[float, ...]
     pvalues: tuple[tuple[str, float], ...]
 
@@ -69,28 +70,43 @@ class TrialLedger:
             for row in rows
         }
         for definition_hash, net_ir, hac_pvalue in external:
-            merged[str(definition_hash)] = (net_ir, hac_pvalue)
+            # Gold history contributes previously attempted hashes, but must not
+            # erase a richer immutable local observation of the same definition.
+            merged.setdefault(str(definition_hash), (net_ir, hac_pvalue))
         count = len(set(merged) | set(current_hashes))
+        ic_definitions = set(current_hashes)
+        ic_definitions.update(
+            str(row[0])
+            for row in rows
+            if ruleset_version is None or row[3] == ruleset_version
+        )
+        ic_definitions.update(
+            str(definition_hash)
+            for definition_hash, _net_ir, hac_pvalue in external
+            if hac_pvalue is not None
+        )
         sharpes = tuple(float(values[0]) for values in merged.values() if values[0] is not None)
         pvalues = tuple(
             (definition_hash, float(values[1]))
             for definition_hash, values in merged.items()
             if values[1] is not None
         )
-        return TrialSummary(max(count, 1), sharpes, pvalues)
+        return TrialSummary(max(count, 1), len(ic_definitions), sharpes, pvalues)
 
     def fixed_oos_start(
         self,
         months: list[pd.Period],
         *,
         requested: str | None = None,
-        default_months: int = 36,
+        default_months: int = 60,
         min_in_sample: int = 60,
+        min_oos_months: int = 60,
     ) -> pd.Period:
         ordered = sorted(set(months))
-        if len(ordered) < min_in_sample + 24:
+        if len(ordered) < min_in_sample + min_oos_months:
             raise ValueError(
-                f"T4에는 최소 {min_in_sample + 24}개월이 필요합니다: 현재 {len(ordered)}개월"
+                "T4에는 개발/OOS를 합쳐 최소 "
+                f"{min_in_sample + min_oos_months}개월이 필요합니다: 현재 {len(ordered)}개월"
             )
         if requested:
             chosen = pd.Period(requested, freq="M")
@@ -124,11 +140,6 @@ class TrialLedger:
                     data_cutoff, ruleset_version, net_ir, hac_pvalue, verdict
                 ) VALUES(?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(definition_hash) DO UPDATE SET
-                    data_cutoff=excluded.data_cutoff,
-                    ruleset_version=excluded.ruleset_version,
-                    net_ir=excluded.net_ir,
-                    hac_pvalue=excluded.hac_pvalue,
-                    verdict=excluded.verdict,
                     last_seen=CURRENT_TIMESTAMP
                 """,
                 (

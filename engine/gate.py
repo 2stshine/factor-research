@@ -6,6 +6,8 @@ value versus the already-approved Gold catalog.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -17,7 +19,7 @@ from engine.factors import Factor
 from engine.panel import Panel
 
 
-RULESET_VERSION = "fr-3.3.0"
+RULESET_VERSION = "fr-3.5.0"
 RESEARCH_START = pd.Period("2018-03", freq="M")
 EVALUATION_PHASES = {"discovery", "full"}
 
@@ -31,24 +33,25 @@ IMPACT = 0.0010
 
 TH = {
     "min_months": 60,
-    "min_oos_months": 24,
+    "min_oos_months": 60,
     "coverage": 0.50,
     "monthly_coverage_p10": 0.30,
     "min_ic": 0.03,
-    "min_investable_ic": 0.02,
+    "min_investable_ic": 0.03,
     "min_rank_icir": 0.15,
-    "ic_p": 0.10,
     "turnover_warn": 250.0,
     "turnover_fail": 400.0,
     "subperiod_agree": 3,
     "max_corr": 0.80,
     "regime_conc": 0.60,
     "neutral_ic": 0.01,
-    "oos_ic": 0.02,
-    "oos_p": 0.10,
+    "oos_ic": 0.05,
     "fdr_q": 0.10,
     "max_missing_return": 0.01,
 }
+# Effect-size cutoffs are pre-declared research policy, not fitted to candidate
+# outcomes.  Definitions, power checks, and literature are documented in
+# docs/factor-promotion-criteria.md; changing one requires a new ruleset.
 
 
 class Verdict(str, Enum):
@@ -61,7 +64,7 @@ class Verdict(str, Enum):
 class Check:
     tier: str
     name: str
-    passed: bool
+    passed: bool | None
     value: float | None = None
     threshold: str = ""
     note: str = ""
@@ -79,10 +82,53 @@ class Result:
 
     @property
     def failed(self) -> list[Check]:
-        return [check for check in self.checks if not check.passed]
+        return [check for check in self.checks if check.passed is False]
+
+    @property
+    def pending(self) -> list[Check]:
+        return [check for check in self.checks if check.passed is None]
 
     def tier_failed(self, prefix: str) -> bool:
-        return any(not c.passed and c.tier.startswith(prefix) for c in self.checks)
+        return any(c.passed is False and c.tier.startswith(prefix) for c in self.checks)
+
+
+def discovery_evidence_digest(result: Result) -> str:
+    """Hash immutable T0-T3 development evidence, excluding OOS and live Gold."""
+    def value(raw):
+        if isinstance(raw, (np.bool_, np.integer, np.floating)):
+            raw = raw.item()
+        if isinstance(raw, float):
+            return round(raw, 14) if np.isfinite(raw) else None
+        return raw
+
+    metrics = {
+        key: value(raw)
+        for key, raw in result.metrics.items()
+        if key.startswith(("ic_", "rank_icir_", "neutral_"))
+        and not key.startswith("oos_")
+    }
+    payload = {
+        "ruleset_version": RULESET_VERSION,
+        "definition_hash": result.definition_hash,
+        "checks": [
+            {
+                "tier": check.tier,
+                "name": check.name,
+                "passed": value(check.passed),
+                "value": value(check.value),
+                "threshold": check.threshold,
+                "note": check.note,
+            }
+            for check in result.checks
+            if check.tier.startswith(("T0", "T1", "T2", "T3"))
+        ],
+        "metrics": metrics,
+    }
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _hac_mean_test(values: pd.Series, *, alternative: str = "greater") -> tuple[float, float, float]:
@@ -338,6 +384,7 @@ def _validate_factor(factor: Factor, df: pd.DataFrame, cached: str) -> list[Chec
 def _finalize(result: Result) -> None:
     hard = [c for c in result.failed if c.tier.startswith(("T0", "T1", "T2", "T4", "T5"))]
     soft = [c for c in result.failed if c.tier.startswith("T3")]
+    pending = [c for c in result.pending if c.tier.startswith(("T0", "T1", "T2", "T4", "T5"))]
     if hard or len(soft) > 1:
         result.verdict = Verdict.REJECT
     elif len(soft) == 1:
@@ -346,7 +393,7 @@ def _finalize(result: Result) -> None:
         if label not in result.labels:
             result.labels.append(label)
     else:
-        if "oos_sealed" in result.labels:
+        if pending or "oos_sealed" in result.labels:
             result.verdict = Verdict.PROVISIONAL
             if "discovery_pass" not in result.labels:
                 result.labels.append("discovery_pass")
@@ -363,6 +410,8 @@ def evaluate(
     trial_count: int = 1,
     prior_sharpes: tuple[float, ...] | list[float] = (),
     oos_start: pd.Period | None = None,
+    oos_end: pd.Period | None = None,
+    data_cutoff: str | pd.Timestamp | None = None,
     phase: str = "full",
 ) -> Result:
     """Run the integrity/IC/robustness gate.
@@ -391,8 +440,21 @@ def evaluate(
     work = df.loc[universe & df["ym"].ge(RESEARCH_START)].copy()
     work["_eligible"] = investable.loc[work.index].astype(bool)
 
-    coverage = work[col].notna().mean()
-    monthly_coverage = work.groupby("ym")[col].apply(lambda x: x.notna().mean())
+    # Every discovery check remains bound to the campaign's original Silver
+    # snapshot.  In particular, a delayed OOS start must not turn the intervening
+    # years into new development data at reveal time.
+    research = work
+    if data_cutoff is not None:
+        cutoff = pd.Timestamp(data_cutoff).normalize()
+        research = research[
+            pd.to_datetime(research["trade_date"]).dt.normalize().le(cutoff)
+            & research["ym"].lt(cutoff.to_period("M"))
+        ].copy()
+    if oos_start is not None:
+        research = research[research["ym"] < (oos_start - 1)].copy()
+
+    coverage = research[col].notna().mean()
+    monthly_coverage = research.groupby("ym")[col].apply(lambda x: x.notna().mean())
     coverage_p10 = float(monthly_coverage.quantile(.10)) if len(monthly_coverage) else 0.0
     add(Check("T1.1", "전체 커버리지", coverage >= TH["coverage"], coverage, f">={TH['coverage']:.0%}"))
     add(Check("T1.1", "월별 커버리지 하위10%", coverage_p10 >= TH["monthly_coverage_p10"], coverage_p10, f">={TH['monthly_coverage_p10']:.0%}"))
@@ -401,8 +463,8 @@ def evaluate(
     scenario_means: dict[str, float] = {}
     for tag in ("opt", "mid", "pess"):
         fwd = f"fwd_{tag}"
-        if fwd in work:
-            series = _ic_series(work, col, fwd)
+        if fwd in research:
+            series = _ic_series(research, col, fwd)
             ic_scenarios[tag] = series
             scenario_means[tag] = float(series.mean()) if len(series) else float("nan")
     terminal_stable = len(scenario_means) == 3 and all(value > 0 for value in scenario_means.values())
@@ -411,11 +473,6 @@ def evaluate(
     if result.tier_failed("T1"):
         return result
 
-    # T2/T3 are development-sample tests.  The month immediately preceding the
-    # OOS formation boundary is embargoed because its forward label overlaps OOS.
-    research = work
-    if oos_start is not None:
-        research = work[work["ym"] < (oos_start - 1)].copy()
     if research["ym"].nunique() < TH["min_months"]:
         add(Check("T2.0", "개발 표본", False, research["ym"].nunique(), f">={TH['min_months']}개월"))
         return result
@@ -450,7 +507,8 @@ def evaluate(
         bool(rank_icir >= TH["min_rank_icir"]), rank_icir,
         f">={TH['min_rank_icir']} (월평균 Rank IC / 월별 Rank IC 표준편차, 비연율화)",
     ))
-    add(Check("T2.1", "투자가능 IC HAC 유의성", bool(ic_inv_p <= TH["ic_p"]), ic_inv_p, f"one-sided p<={TH['ic_p']}"))
+    # The raw HAC p-value is the input to campaign-wide BY correction.  It is
+    # reported, but a second p<=q hard check would be logically redundant.
 
     base = backtest(
         research, col, "fwd_mid", hold=factor.rebalance_months,
@@ -495,9 +553,9 @@ def evaluate(
         "neutral_ic_p": neutral_p,
     })
     add(Check(
-        "T3.2", "시장·규모·유동성 중립 IC",
-        bool(neutral_ic >= TH["neutral_ic"] and neutral_p <= TH["ic_p"]),
-        neutral_ic, f"IC>={TH['neutral_ic']} & p<={TH['ic_p']}",
+        "T3.2", "시장구분·유동성·비의도 규모 노출 제거 후 IC",
+        bool(neutral_ic >= TH["neutral_ic"]),
+        neutral_ic, f"IC>={TH['neutral_ic']} (size category는 규모 노출 보존; HAC p는 진단값)",
     ))
     if phase == "discovery":
         # The final holdout belongs to the campaign, not to an individual cycle.
@@ -506,11 +564,19 @@ def evaluate(
     elif oos_start is None:
         add(Check("T4.1", "고정 OOS 설정", False, None, "campaign OOS_START 고정"))
     else:
-        oos = work[(work["ym"] >= oos_start) & work["_eligible"]]
+        fixed_end = oos_end or (oos_start + TH["min_oos_months"] - 1)
+        if fixed_end < oos_start:
+            raise ValueError("OOS end는 OOS start보다 빠를 수 없습니다")
+        oos = work[
+            (work["ym"] >= oos_start)
+            & (work["ym"] <= fixed_end)
+            & work["_eligible"]
+        ]
         oos_series = _ic_series(oos, col, "fwd_mid")
         oos_ic, oos_t, oos_p = _hac_mean_test(oos_series)
         result.metrics.update({
             "oos_start": str(oos_start),
+            "oos_end": str(fixed_end),
             "oos_months": len(oos_series),
             "oos_ic": oos_ic,
             "oos_ic_t": oos_t,
@@ -519,12 +585,15 @@ def evaluate(
         oos_pass = bool(
             len(oos_series) >= TH["min_oos_months"]
             and oos_ic >= TH["oos_ic"]
-            and oos_p <= TH["oos_p"]
         )
-        add(Check("T4.1", "고정 OOS IC", oos_pass, oos_ic, f"IC>={TH['oos_ic']} & p<={TH['oos_p']}"))
+        add(Check(
+            "T4.1", "고정 OOS IC", oos_pass, oos_ic,
+            f"months>={TH['min_oos_months']} & IC>={TH['oos_ic']}",
+            "HAC p는 동시 공개 survivor의 BY 입력값",
+        ))
 
     result.metrics.update({"n_trials": trial_count})
-    add(Check("T4.3", "다중검정 FDR", False, None, f"BY q<={TH['fdr_q']}", "배치 보정 대기"))
+    add(Check("T4.3", "다중검정 FDR", None, None, f"BY q<={TH['fdr_q']}", "배치 보정 대기"))
 
     if existing:
         max_signal = 0.0
@@ -532,9 +601,9 @@ def evaluate(
         for name, values in existing.items():
             gold_col = f"_gold_{name}"
             aligned = values.reindex(df.index)
-            work[gold_col] = aligned.reindex(work.index)
+            research[gold_col] = aligned.reindex(research.index)
             monthly_corr = []
-            for _, group in work[work["_eligible"]].groupby("ym"):
+            for _, group in research[research["_eligible"]].groupby("ym"):
                 sample = group[[col, gold_col]].dropna()
                 if len(sample) >= 30:
                     rho = stats.spearmanr(sample[col], sample[gold_col]).statistic
@@ -550,25 +619,126 @@ def evaluate(
     return result
 
 
+def evaluate_oos(
+    factor: Factor,
+    panel: Panel,
+    df: pd.DataFrame,
+    *,
+    oos_start: pd.Period,
+    oos_end: pd.Period,
+) -> Result:
+    """Evaluate only the sealed OOS endpoint on its own fixed snapshot.
+
+    Discovery evidence belongs to the cutoff snapshot and is merged by the
+    caller.  Keeping this path separate prevents confirmation-boundary dead/
+    forward labels from rewriting historical T1-T3 evidence.
+    """
+    col = f"f_{factor.name}"
+    result = Result(factor=factor.name, definition_hash=factor.definition_hash)
+    # The frozen window is audit metadata even when confirmation cannot be
+    # computed.  A legitimate T0/data-contract failure must close the campaign
+    # as REJECT, not leave it permanently unrevealable because the window keys
+    # disappeared on an early return.
+    result.metrics.update({
+        "evaluation_phase": "confirmation_oos",
+        "oos_start": str(oos_start),
+        "oos_end": str(oos_end),
+        "oos_months": 0,
+        "oos_ic": None,
+        "oos_ic_t": None,
+        "oos_ic_p": None,
+    })
+    result.checks.extend(_validate_factor(factor, df, col))
+    if result.tier_failed("T0"):
+        return result
+    if panel.meta.get("return_field") != "total_return_close":
+        result.checks.append(Check(
+            "T4.1", "고정 OOS IC", False, None,
+            "Silver total_return_close", "총수익 필드 계약 실패",
+        ))
+        return result
+    work = df.loc[
+        panel.universe
+        & panel.investable
+        & df["ym"].ge(oos_start)
+        & df["ym"].le(oos_end)
+    ].copy()
+    oos_series = _ic_series(work, col, "fwd_mid")
+    oos_ic, oos_t, oos_p = _hac_mean_test(oos_series)
+    result.metrics.update({
+        "oos_start": str(oos_start),
+        "oos_end": str(oos_end),
+        "oos_months": len(oos_series),
+        "oos_ic": oos_ic,
+        "oos_ic_t": oos_t,
+        "oos_ic_p": oos_p,
+    })
+    passed = bool(
+        len(oos_series) >= TH["min_oos_months"]
+        and oos_ic >= TH["oos_ic"]
+    )
+    result.checks.append(Check(
+        "T4.1", "고정 OOS IC", passed, oos_ic,
+        f"months>={TH['min_oos_months']} & IC>={TH['oos_ic']}",
+        "HAC p는 동시 공개 survivor의 BY 입력값",
+    ))
+    result.series["oos_ic"] = oos_series
+    return result
+
+
+def by_qvalues(
+    pvalues: dict[str, float]
+    | tuple[tuple[str, float], ...]
+    | list[tuple[str, float]],
+) -> dict[str, float]:
+    """Benjamini-Yekutieli q-values, valid under arbitrary dependence."""
+    if not isinstance(pvalues, dict):
+        pvalues = dict(pvalues)
+    clean = {
+        str(key): min(max(float(value), 0.0), 1.0)
+        for key, value in pvalues.items()
+        if value is not None and np.isfinite(value)
+    }
+    ordered = sorted(clean.items(), key=lambda item: item[1])
+    m = len(ordered)
+    if not m:
+        return {}
+    dependence_penalty = sum(1 / rank for rank in range(1, m + 1))
+    adjusted = [
+        min(1.0, p * m * dependence_penalty / rank)
+        for rank, (_, p) in enumerate(ordered, 1)
+    ]
+    for i in range(m - 2, -1, -1):
+        adjusted[i] = min(adjusted[i], adjusted[i + 1])
+    return {ordered[i][0]: adjusted[i] for i in range(m)}
+
+
 def apply_multiple_testing(
     results: list[Result],
     historical_pvalues: tuple[tuple[str, float], ...] | list[tuple[str, float]] = (),
+    *,
+    defer: bool = False,
+    total_trials: int | None = None,
 ) -> None:
-    """Apply Benjamini-Yekutieli FDR control, valid under arbitrary dependence."""
+    """Apply discovery IC BY-FDR, or leave it pending for an epoch batch."""
+    if defer:
+        for result in results:
+            if "fdr_pending" not in result.labels:
+                result.labels.append("fdr_pending")
+            _finalize(result)
+        return
+
     pvalues = {key: float(value) for key, value in historical_pvalues if np.isfinite(value)}
     for result in results:
         pvalue = result.metrics.get("ic_p_investable")
         if pvalue is not None and np.isfinite(pvalue):
             pvalues[result.definition_hash] = float(pvalue)
+    target_count = max(int(total_trials or 0), len(pvalues))
+    for index in range(target_count - len(pvalues)):
+        pvalues[f"__untested_definition_{index}"] = 1.0
+    qvalues = by_qvalues(pvalues)
     ordered = sorted(pvalues.items(), key=lambda item: item[1])
     m = len(ordered)
-    qvalues: dict[str, float] = {}
-    if m:
-        dependence_penalty = sum(1 / rank for rank in range(1, m + 1))
-        adjusted = [min(1.0, p * m * dependence_penalty / rank) for rank, (_, p) in enumerate(ordered, 1)]
-        for i in range(m - 2, -1, -1):
-            adjusted[i] = min(adjusted[i], adjusted[i + 1])
-        qvalues = {ordered[i][0]: adjusted[i] for i in range(m)}
 
     for result in results:
         for index, check in enumerate(result.checks):
@@ -584,48 +754,157 @@ def apply_multiple_testing(
         _finalize(result)
 
 
+def apply_oos_multiple_testing(results: list[Result]) -> None:
+    """Control BY-FDR across every pre-registered survivor revealed together."""
+    # A survivor that stops before T4 still counts as an attempted confirmation.
+    # Assigning p=1 preserves the registered family size without manufacturing
+    # OOS evidence for a result that never reached the OOS test.
+    hashes = [result.definition_hash for result in results]
+    if len(hashes) != len(set(hashes)):
+        raise ValueError("OOS survivor definition hash는 고유해야 합니다")
+    pvalues = {
+        result.definition_hash: (
+            float(result.metrics["oos_ic_p"])
+            if result.metrics.get("oos_ic_p") is not None
+            and np.isfinite(result.metrics["oos_ic_p"])
+            else 1.0
+        )
+        for result in results
+    }
+    qvalues = by_qvalues(pvalues)
+    m = len(pvalues)
+    for result in results:
+        pvalue = result.metrics.get("oos_ic_p")
+        qvalue = qvalues[result.definition_hash]
+        result.metrics["oos_fdr_qvalue"] = qvalue
+        testable = pvalue is not None and np.isfinite(pvalue)
+        result.metrics["oos_fdr_status"] = (
+            "PASS" if testable and qvalue <= TH["fdr_q"]
+            else "FAIL" if testable else "NOT_TESTABLE"
+        )
+        result.checks.append(Check(
+            "T4.2", "OOS 다중검정 FDR",
+            bool(testable and qvalue <= TH["fdr_q"]), qvalue,
+            f"BY q<={TH['fdr_q']}",
+            f"동시 공개 survivor {m}개; "
+            + ("유효 HAC p" if testable else "HAC p 누락으로 p=1 대입"),
+        ))
+        _finalize(result)
+
+
 def apply_null_calibration(
     results: list[Result],
     calibration: pd.DataFrame | None,
     *,
     data_cutoff: str,
     oos_start: str | pd.Period | None = None,
+    discovery_family_size: int | None = None,
+    oos_family_size: int | None = None,
+    discovery_family_digest: str | None = None,
+    oos_family_digest: str | None = None,
+    gold_family_digest: str | None = None,
+    confirmation_snapshot_digest: str | None = None,
+    research_data_cutoff: str | None = None,
+    oos_end: str | pd.Period | None = None,
     min_nulls: int = 100,
+    min_nulls_per_kind: int = 25,
     max_false_positive_rate: float = .10,
 ) -> None:
     """Require a recent full-gate null calibration before allowing PROMOTE."""
     valid = calibration is not None and not calibration.empty
     note = ""
     rate = float("nan")
+    worst_kind_rate = float("nan")
     count = 0
     if valid:
-        required = {"ruleset_version", "data_cutoff", "pass"}
+        required = {
+            "ruleset_version", "data_cutoff", "pass", "calibration_unit", "fdr_q",
+            "kind", "generator_suite",
+        }
         if oos_start is not None:
-            required.add("oos_start")
+            required.update({
+                "oos_start", "discovery_family_size", "oos_family_size",
+                "discovery_family_digest", "oos_family_digest", "gold_family_digest",
+                "confirmation_snapshot_digest", "research_data_cutoff", "oos_end",
+            })
         valid = required.issubset(calibration.columns)
         if valid:
             current = calibration[
                 calibration["ruleset_version"].eq(RULESET_VERSION)
                 & calibration["data_cutoff"].astype(str).eq(data_cutoff)
+                & calibration["calibration_unit"].eq("null_campaign_family")
+                & calibration["fdr_q"].eq(TH["fdr_q"])
+                & calibration["generator_suite"].eq("null-v1")
             ]
             if oos_start is not None:
-                current = current[
-                    current["oos_start"].astype(str).eq(str(pd.Period(oos_start, freq="M")))
-                ]
+                if (
+                    discovery_family_size is None
+                    or oos_family_size is None
+                    or discovery_family_digest is None
+                    or oos_family_digest is None
+                    or gold_family_digest is None
+                    or confirmation_snapshot_digest is None
+                    or research_data_cutoff is None
+                    or oos_end is None
+                ):
+                    current = current.iloc[0:0]
+                else:
+                    current = current[
+                        current["oos_start"].astype(str).eq(str(pd.Period(oos_start, freq="M")))
+                        & current["discovery_family_size"].eq(int(discovery_family_size))
+                        & current["oos_family_size"].eq(int(oos_family_size))
+                        & current["discovery_family_digest"].astype(str).eq(discovery_family_digest)
+                        & current["oos_family_digest"].astype(str).eq(oos_family_digest)
+                        & current["gold_family_digest"].astype(str).eq(gold_family_digest)
+                        & current["confirmation_snapshot_digest"].astype(str).eq(
+                            confirmation_snapshot_digest
+                        )
+                        & current["research_data_cutoff"].astype(str).eq(research_data_cutoff)
+                        & current["oos_end"].astype(str).eq(str(pd.Period(oos_end, freq="M")))
+                    ]
             count = len(current)
             rate = float(current["pass"].astype(bool).mean()) if count else float("nan")
-            valid = count >= min_nulls and np.isfinite(rate) and rate <= max_false_positive_rate
-            scope = "동일 snapshot/ruleset/OOS" if oos_start is not None else "동일 snapshot/ruleset"
-            note = f"{scope} 귀무 {count}개, 위양성률 {rate:.1%}" if count else f"{scope} 기록 없음"
+            expected_kinds = {"random", "ar1_095", "ar1_0999", "frozen"}
+            kind_counts = current.groupby("kind").size().to_dict()
+            kind_rates = current.groupby("kind")["pass"].apply(
+                lambda values: float(values.astype(bool).mean())
+            ).to_dict()
+            worst_kind_rate = max(kind_rates.values(), default=float("nan"))
+            valid = (
+                count >= min_nulls
+                and expected_kinds.issubset(kind_counts)
+                and all(kind_counts[kind] >= min_nulls_per_kind for kind in expected_kinds)
+                and np.isfinite(rate)
+                and np.isfinite(worst_kind_rate)
+                and worst_kind_rate <= max_false_positive_rate
+            )
+            scope = (
+                "동일 snapshot/ruleset/OOS/campaign family"
+                if oos_start is not None else "동일 snapshot/ruleset"
+            )
+            note = (
+                f"{scope} 귀무 campaign {count}개, 전체/최악 종류 오류율 "
+                f"{rate:.1%}/{worst_kind_rate:.1%}"
+                if count else f"{scope} 기록 없음"
+            )
     if not note:
         note = "null_dist.parquet 없음 또는 구형 형식"
     for result in results:
         result.metrics["null_count"] = count
-        result.metrics["realized_fdr"] = rate if np.isfinite(rate) else None
+        result.metrics["null_family_error_rate"] = rate if np.isfinite(rate) else None
+        result.metrics["null_worst_kind_error_rate"] = (
+            worst_kind_rate if np.isfinite(worst_kind_rate) else None
+        )
+        result.metrics["null_discovery_family_size"] = discovery_family_size
+        result.metrics["null_oos_family_size"] = oos_family_size
+        result.metrics["null_oos_family_digest"] = oos_family_digest
+        result.metrics["null_gold_family_digest"] = gold_family_digest
+        result.metrics["null_confirmation_snapshot_digest"] = confirmation_snapshot_digest
         if any(check.tier.startswith("T4") for check in result.checks):
             calibrated = Check(
                 "T4.4", "게이트 귀무 보정", bool(valid), rate if np.isfinite(rate) else None,
-                f"n>={min_nulls} & FPR<={max_false_positive_rate:.0%}", note,
+                f"n>={min_nulls}, kind n>={min_nulls_per_kind}, "
+                f"worst FPR<={max_false_positive_rate:.0%}", note,
             )
             existing_index = next(
                 (i for i, check in enumerate(result.checks) if check.tier == "T4.4"),
@@ -636,3 +915,27 @@ def apply_null_calibration(
             else:
                 result.checks[existing_index] = calibrated
         _finalize(result)
+
+
+def assert_null_calibration(
+    calibration: pd.DataFrame | None,
+    **scope,
+) -> dict:
+    """Abort before sealed OOS computation unless null calibration is valid."""
+    probe = Result(
+        factor="__null_calibration_preflight__",
+        definition_hash="__preflight__",
+        checks=[Check("T4.4", "게이트 귀무 보정", None)],
+    )
+    apply_null_calibration([probe], calibration, **scope)
+    check = next(
+        item for item in probe.checks
+        if item.tier == "T4.4" and item.name == "게이트 귀무 보정"
+    )
+    if check.passed is not True:
+        raise ValueError(
+            "봉인 OOS 공개 전 귀무 보정 사전조건 실패: "
+            f"{check.note}. `python scripts/run.py null --campaign <id> --n 25`를 "
+            "현재 snapshot에서 다시 실행하세요. OOS는 아직 계산하지 않았습니다."
+        )
+    return dict(probe.metrics)
