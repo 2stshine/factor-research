@@ -94,6 +94,7 @@ def measure(
     output = pd.DataFrame(rows)
     output["ruleset_version"] = gate.RULESET_VERSION
     output["data_cutoff"] = str(df["trade_date"].max().date())
+    output["oos_start"] = str(oos_start) if oos_start is not None else None
     if verbose:
         for kind in generators:
             subset = output[output["kind"] == kind]

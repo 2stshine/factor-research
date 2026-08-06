@@ -40,8 +40,12 @@ def cmd_build(args):
     with silver.connect(read_only=True) as conn:
         pan = P.build(conn)
         fund = fundamentals.build(conn)
-    need = list(F.REGISTRY.needs)
-    df = fundamentals.attach(pan.monthly, fund, need)
+    # Materializing the Silver revision ledger is the expensive part of a build.
+    # Cache every PIT feature produced from that same immutable ledger so a newly
+    # pre-registered factor does not force another full RDS transfer merely
+    # because it asks for a previously unused accounting column.
+    available_features = sorted(set(fund.columns) - {"asset_id", "available_date"})
+    df = fundamentals.attach(pan.monthly, fund, available_features)
     df = df.sort_values(["Code", "ym"]).reset_index(drop=True)
     pan.monthly = df
     for tag, term in (("opt", 0.0), ("mid", -0.50), ("pess", -1.00)):
@@ -108,16 +112,57 @@ def _approved_signals(conn, df: pd.DataFrame) -> dict[str, pd.Series]:
     return output
 
 
-def _evaluate(args):
+def _scope_discovery_panel(
+    pan: P.Panel,
+    *,
+    data_cutoff: str,
+    oos_start: pd.Period | str,
+) -> P.Panel:
+    """Expose only the campaign snapshot to candidate code and discovery gates."""
+    cutoff = pd.Timestamp(data_cutoff).normalize()
+    start = pd.Period(oos_start, freq="M")
+    if start <= cutoff.to_period("M"):
+        raise ValueError("campaign OOS는 data cutoff 다음 달 이후여야 합니다")
+    frame = pan.monthly
+    scoped = frame[
+        pd.to_datetime(frame["trade_date"]).dt.normalize().le(cutoff)
+        & frame["ym"].lt(start)
+    ].copy()
+    if scoped.empty or pd.Timestamp(scoped["trade_date"].max()).normalize() != cutoff:
+        raise ValueError(
+            "현재 캐시로 campaign cutoff를 정확히 재현할 수 없습니다: "
+            f"cutoff={cutoff.date()}. campaign 생성 당시 Silver snapshot을 복구하세요."
+        )
+    meta = dict(pan.meta)
+    meta.update({"campaign_data_cutoff": str(cutoff.date()), "campaign_oos_start": str(start)})
+    return P.Panel(monthly=scoped, dead=pan.dead, meta=meta)
+
+
+def _evaluate(
+    args,
+    *,
+    phase: str = "discovery",
+    oos_start: pd.Period | str | None = None,
+    data_cutoff: str | None = None,
+    factor_names: list[str] | None = None,
+    record_ledger: bool = True,
+):
     load_registry()
     pan = _load()
+    if phase == "discovery" and (data_cutoff is not None or oos_start is not None):
+        if data_cutoff is None or oos_start is None:
+            raise ValueError("campaign discovery에는 data_cutoff와 oos_start가 모두 필요합니다")
+        pan = _scope_discovery_panel(
+            pan, data_cutoff=data_cutoff, oos_start=oos_start,
+        )
     df = pan.monthly
-    targets = [F.REGISTRY[args.factor]] if args.factor else list(F.REGISTRY)
+    if factor_names is not None:
+        targets = [F.REGISTRY[name] for name in factor_names]
+    else:
+        targets = [F.REGISTRY[args.factor]] if args.factor else list(F.REGISTRY)
     df = _ensure_factor_columns(pan, targets)
     ledger = trials.TrialLedger(TRIAL_DB)
-    oos_start = ledger.fixed_oos_start(
-        list(df["ym"].unique()), requested=os.environ.get("OOS_START")
-    )
+    frozen_oos = pd.Period(oos_start, freq="M") if oos_start is not None else None
     with silver.connect(read_only=True) as conn:
         approved = _approved_signals(conn, df)
         gold_trials = silver.load_gold_trial_history(conn)
@@ -138,23 +183,27 @@ def _evaluate(args):
         existing = {name: values for name, values in approved.items() if name != f.name}
         results.append(gate.evaluate(
             f, pan, df, existing=existing, trial_count=summary.count,
-            prior_sharpes=summary.sharpes, oos_start=oos_start,
+            prior_sharpes=summary.sharpes, oos_start=frozen_oos, phase=phase,
         ))
     gate.apply_multiple_testing(results, summary.pvalues)
     cutoff = str(df["trade_date"].max().date())
-    calibration_path = CACHE / "null_dist.parquet"
-    calibration = pd.read_parquet(calibration_path) if calibration_path.exists() else None
-    gate.apply_null_calibration(results, calibration, data_cutoff=cutoff)
-    for factor, result in zip(targets, results, strict=True):
-        ledger.record(factor, result, data_cutoff=cutoff, ruleset_version=gate.RULESET_VERSION)
+    if phase == "full":
+        calibration_path = CACHE / "null_dist.parquet"
+        calibration = pd.read_parquet(calibration_path) if calibration_path.exists() else None
+        gate.apply_null_calibration(
+            results, calibration, data_cutoff=cutoff, oos_start=frozen_oos,
+        )
+    if record_ledger:
+        for factor, result in zip(targets, results, strict=True):
+            ledger.record(factor, result, data_cutoff=cutoff, ruleset_version=gate.RULESET_VERSION)
     return pan, df, targets, results
 
 
 def cmd_gate(args):
-    _, _, _, results = _evaluate(args)
+    _, _, _, results = _evaluate(args, phase="discovery")
 
     print("\n" + "=" * 104)
-    print(f"{'팩터':24} {'판정':12} {'IC':>7} {'투자가능IC':>10} {'OOS IC':>8} {'회전율':>8}  실패 검사")
+    print(f"{'팩터':24} {'판정':12} {'IC':>7} {'투자가능IC':>10} {'OOS':>8} {'회전율':>8}  실패 검사")
     print("-" * 104)
     order = {gate.Verdict.PROMOTE: 0, gate.Verdict.PROVISIONAL: 1, gate.Verdict.REJECT: 2}
     for r in sorted(results, key=lambda x: (order[x.verdict], -(x.metrics.get("ic_investable") or -99))):
@@ -164,7 +213,7 @@ def cmd_gate(args):
         print(f"{r.factor:24} {icon}{r.verdict.value:10} "
               f"{m.get('ic_full', float('nan')):>7.3f} "
               f"{m.get('ic_investable', float('nan')):>10.3f} "
-              f"{m.get('oos_ic', float('nan')):>8.3f} "
+              f"{'SEALED':>8} "
               f"{m.get('turnover', float('nan')):>7.0f}%  {fails}")
 
     n_p = sum(1 for r in results if r.verdict == gate.Verdict.PROMOTE)
@@ -184,8 +233,11 @@ def cmd_null(args):
         (str(row.definition_hash), None, None)
         for row in gold_trials.itertuples(index=False)
     ], ruleset_version=gate.RULESET_VERSION)
-    oos_start = ledger.fixed_oos_start(
-        list(pan.monthly["ym"].unique()), requested=os.environ.get("OOS_START")
+    requested_oos = args.oos_start or os.environ.get("OOS_START")
+    oos_start = (
+        pd.Period(requested_oos, freq="M")
+        if requested_oos else
+        ledger.fixed_oos_start(list(pan.monthly["ym"].unique()))
     )
     out = null.measure(
         pan, n=args.n, trial_count=summary.count,
@@ -197,7 +249,11 @@ def cmd_null(args):
 
 def cmd_publish(args):
     """게이트 판정을 TeamAlpha-data 의 gold.factor 에 적재."""
-    pan, df, targets, results = _evaluate(args)
+    if args.apply:
+        raise SystemExit(
+            "epoch-1.0에서는 campaign reveal과 사람 검토 전 publish --apply를 허용하지 않습니다"
+        )
+    pan, df, targets, results = _evaluate(args, phase="discovery")
     cutoff = str(df["trade_date"].max().date())
     rows = []
     for f, r in zip(targets, results, strict=True):
@@ -243,6 +299,7 @@ def main():
     sub.add_parser("build")
     g = sub.add_parser("gate"); g.add_argument("--factor")
     n = sub.add_parser("null"); n.add_argument("--n", type=int, default=30)
+    n.add_argument("--oos-start", help="campaign manifest와 같은 YYYY-MM")
     p = sub.add_parser("publish")
     p.add_argument("--factor"); p.add_argument("--apply", action="store_true")
     p.add_argument("--approved-by", help="PROMOTE를 최종 확인한 사람")

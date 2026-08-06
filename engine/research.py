@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from engine import epochs, fundamentals
 from engine.factors import Factor, Registry
 from engine.gate import RESEARCH_START, Result, RULESET_VERSION
 from engine.panel import Panel
@@ -151,8 +152,7 @@ def write_context(
     base_inputs = {
         "return_close", "market_cap", "adv20", "trading_value", "shares", "market",
     }
-    factor_inputs = {need for factor in registry for need in factor.needs}
-    available = sorted((base_inputs | factor_inputs) & set(df.columns))
+    available = sorted((base_inputs | set(fundamentals.PIT_FEATURES)) & set(df.columns))
     lines = [
         "# Factor research context",
         "",
@@ -166,7 +166,27 @@ def write_context(
         f"- Rows/months/assets: `{len(df):,}` / `{df['ym'].nunique()}` / `{df['asset_id'].nunique():,}`",
         f"- Return field: `{panel.meta.get('return_field')}`",
         f"- Gate ruleset: `{RULESET_VERSION}`",
+        f"- Research protocol: `{epochs.PROTOCOL_VERSION}`",
         f"- Recorded autonomous cycles: `{len(history)}`",
+        "",
+        "## Sealed-OOS campaigns",
+        "",
+    ]
+    campaigns = epochs.context_rows(root)
+    if campaigns:
+        lines += [
+            "| campaign | status | data cutoff | OOS | OOS start | epochs | survivors | latest reflection |",
+            "|---|---|---|---|---|---:|---:|---|",
+        ]
+        for row in campaigns:
+            lines.append(
+                f"| `{row['campaign_id']}` | {row['status']} | `{row['data_cutoff']}` | "
+                f"{row['oos_status']} | `{row['oos_start']}` | {row['epochs']} | {row['survivors']} | "
+                f"`{row['latest_reflection'] or '-'}` |"
+            )
+    else:
+        lines.append("아직 campaign 없음. 새 연구는 campaign과 epoch을 먼저 사전등록한다.")
+    lines += [
         "",
         "## Available strategy inputs",
         "",
@@ -182,21 +202,21 @@ def write_context(
         "",
         "## Registered factors",
         "",
-        "| factor | category | family | definition hash | hypothesis |",
+        "| factor | category | family | definition hash | inputs |",
         "|---|---|---|---|---|",
     ]
     for factor in registry:
         lines.append(
             f"| `{factor.name}` | {factor.category} | `{factor.family or factor.name}` | "
-            f"`{factor.definition_hash}` | {_safe(factor.hypothesis)} |"
+            f"`{factor.definition_hash}` | {_safe(', '.join(factor.needs) or '-')} |"
         )
     lines += ["", "## Prior autonomous cycles", ""]
     if not history:
         lines.append("아직 기록 없음.")
     else:
         lines += [
-            "| cycle | factor | verdict | key result | failed checks | strongest relation |",
-            "|---|---|---|---|---|---|",
+            "| cycle | factor | family | ruleset | verdict | failed checks | strongest relation | report |",
+            "|---|---|---|---|---|---|---|---|",
         ]
         for row in history[-30:]:
             failed = ", ".join(row.get("failed_checks", [])) or "-"
@@ -205,33 +225,14 @@ def write_context(
                 f"{relation.get('factor')} ({relation.get('median_spearman', 0):.2f})"
                 if relation else "-"
             )
-            metrics = row.get("metrics") or {}
-            if metrics.get("ic_investable") is not None:
-                key_result = f"IC={metrics.get('ic_investable'):.3f}"
-                if metrics.get("oos_ic") is not None:
-                    key_result += f", OOS IC={metrics.get('oos_ic'):.3f}"
-            elif metrics.get("net") is not None and metrics.get("net_ir") is not None:
-                key_result = f"net={metrics.get('net'):.2f}%, IR={metrics.get('net_ir'):.2f}"
-            else:
-                key_result = "IC 계산 전 조기종료"
+            report = row.get("report") or "-"
+            report_text = f"`{_safe(report)}`" if report != "-" else "-"
             lines.append(
-                f"| `{row['cycle_id']}` | `{row['factor']}` | {row['verdict']} | "
-                f"{_safe(key_result)} | {_safe(failed)} | {_safe(relation_text)} |"
+                f"| `{row['cycle_id']}` | `{row['factor']}` | `{row.get('family') or row['factor']}` | "
+                f"`{row.get('ruleset_version') or '-'}` | {row['verdict']} | {_safe(failed)} | "
+                f"{_safe(relation_text)} | {report_text} |"
             )
-    lines += [
-        "",
-        "## Next-loop constraints",
-        "",
-        "- 기존 definition hash를 재시험하지 않는다.",
-        "- 결과를 보기 전에 가설·메커니즘·반증 기준과 전략 파일을 먼저 고정한다.",
-        "- 실패한 정의를 덮어쓰지 않는다. 수정 아이디어는 새 이름 또는 새 버전 파일로 등록한다.",
-        "- 게이트, 패널, 비용모형, OOS 시작점과 기존 결과를 후보에 유리하게 수정하지 않는다.",
-        "- 한 루프에서는 후보 하나만 새로 만든다.",
-        "- 후보 하나는 단일 경제 신호만 사용한다. 여러 팩터의 순위·점수를 가중합하지 않는다.",
-        "- 수익률·IR은 진단값이며 승격 판정은 무결성·IC 최소요건·IC 강건성으로 한다.",
-        "- `publish --apply`를 실행하지 않는다.",
-        "",
-    ]
+    lines.append("")
     path = context_dir / "latest.md"
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
@@ -246,6 +247,9 @@ def record_cycle(
     relationships: list[dict],
     *,
     research_dir: str | Path = "research",
+    campaign_id: str | None = None,
+    epoch_id: str | None = None,
+    phase: str = "full",
 ) -> tuple[Path, Path]:
     """Persist an immutable result bundle, append history, and refresh context."""
     root = Path(research_dir)
@@ -260,6 +264,9 @@ def record_cycle(
     serialized = serialize_result(result)
     payload = {
         "cycle_id": cycle_id,
+        "campaign_id": campaign_id,
+        "epoch_id": epoch_id,
+        "phase": phase,
         "ruleset_version": RULESET_VERSION,
         "research_start": str(RESEARCH_START),
         "data_cutoff": str(panel.monthly["trade_date"].max().date()),
@@ -288,6 +295,9 @@ def record_cycle(
     lines = [
         f"# {cycle_id}", "",
         f"- Verdict: **{serialized['verdict']}**",
+        f"- Research phase: **{phase.upper()}**",
+        f"- Campaign / epoch: `{campaign_id or '-'}` / `{epoch_id or '-'}`",
+        f"- OOS: **{'SEALED' if phase == 'discovery' else 'REVEALED'}**",
         f"- Definition hash: `{factor.definition_hash}`",
         f"- Data cutoff / ruleset: `{payload['data_cutoff']}` / `{RULESET_VERSION}`",
         f"- Common evaluation start: `{RESEARCH_START}`",
@@ -300,8 +310,12 @@ def record_cycle(
         "## Pre-registered falsification", "",
         research_spec["falsification"], "",
         "## Validation performed", "",
-        "동일 Silver 월말 PIT 패널과 고정 유니버스에서 T0~T5 게이트를 순차 적용했다. "
-        "앞 단계 hard fail 이후의 검사는 실행하지 않았다.", "",
+        (
+            "동일 Silver 월말 PIT 패널과 고정 유니버스에서 discovery 검사를 실행했다. "
+            "최종 OOS IC와 귀무 보정은 campaign reveal 전까지 계산·기록하지 않았다."
+            if phase == "discovery" else
+            "동결된 campaign 후보를 봉인 OOS에서 한 번 확인했다."
+        ), "",
         "| tier | check | pass | value | threshold |",
         "|---|---|---:|---:|---|",
     ]
@@ -341,6 +355,9 @@ def record_cycle(
 
     history_row = {
         "cycle_id": cycle_id,
+        "campaign_id": campaign_id,
+        "epoch_id": epoch_id,
+        "phase": phase,
         "factor": factor.name,
         "family": factor.family or factor.name,
         "definition_hash": factor.definition_hash,

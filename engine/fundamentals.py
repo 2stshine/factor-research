@@ -24,6 +24,12 @@ STOCK = frozenset({
     "total_equity", "capital_stock", "retained_earnings",
 })
 ALL_METRICS = FLOW | STOCK
+PIT_FEATURES = (
+    STOCK
+    | FLOW
+    | frozenset(f"{metric}_ttm" for metric in FLOW)
+    | frozenset({"net_income_yoy_change", "sue_score"})
+)
 
 
 def _priority(row: Mapping) -> tuple:

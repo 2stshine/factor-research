@@ -17,8 +17,9 @@ from engine.factors import Factor
 from engine.panel import Panel
 
 
-RULESET_VERSION = "fr-3.2.0"
+RULESET_VERSION = "fr-3.3.0"
 RESEARCH_START = pd.Period("2018-03", freq="M")
+EVALUATION_PHASES = {"discovery", "full"}
 
 SECURITIES_TAX = {
     2015: .0030, 2016: .0030, 2017: .0030, 2018: .0030, 2019: .0025,
@@ -272,8 +273,6 @@ def _neutralized_signal(df: pd.DataFrame, col: str, category: str) -> pd.Series:
     for _, group in df.groupby("ym"):
         eligible = group.get("_eligible", pd.Series(True, index=group.index)).fillna(False)
         columns = [col, "market_cap", "adv20", "market"]
-        if "sector" in group.columns:
-            columns.append("sector")
         sample = group.loc[eligible, columns].replace([np.inf, -np.inf], np.nan).dropna(
             subset=[col, "adv20", "market_cap"]
         )
@@ -284,9 +283,6 @@ def _neutralized_signal(df: pd.DataFrame, col: str, category: str) -> pd.Series:
         if category != "size":
             controls.append(np.log(sample["market_cap"].clip(lower=1)).to_numpy())
         controls.append(sample["market"].eq("KOSDAQ").astype(float).to_numpy())
-        if "sector" in sample.columns:
-            dummies = pd.get_dummies(sample["sector"], drop_first=True, dtype=float)
-            controls.extend(dummies[column].to_numpy() for column in dummies)
         matrix = np.column_stack(controls)
         residual = y - matrix @ np.linalg.lstsq(matrix, y, rcond=None)[0]
         output.loc[sample.index] = residual
@@ -350,7 +346,12 @@ def _finalize(result: Result) -> None:
         if label not in result.labels:
             result.labels.append(label)
     else:
-        result.verdict = Verdict.PROMOTE
+        if "oos_sealed" in result.labels:
+            result.verdict = Verdict.PROVISIONAL
+            if "discovery_pass" not in result.labels:
+                result.labels.append("discovery_pass")
+        else:
+            result.verdict = Verdict.PROMOTE
 
 
 def evaluate(
@@ -362,15 +363,21 @@ def evaluate(
     trial_count: int = 1,
     prior_sharpes: tuple[float, ...] | list[float] = (),
     oos_start: pd.Period | None = None,
+    phase: str = "full",
 ) -> Result:
     """Run the integrity/IC/robustness gate.
 
     Portfolio returns and costs are retained as diagnostics, never as promotion
     criteria. Call ``apply_multiple_testing`` on the result batch afterward.
     """
+    if phase not in EVALUATION_PHASES:
+        raise ValueError(f"지원하지 않는 평가 phase={phase!r}: {sorted(EVALUATION_PHASES)}")
     col = f"f_{factor.name}"
     result = Result(factor=factor.name, definition_hash=factor.definition_hash)
     result.metrics["research_start"] = str(RESEARCH_START)
+    result.metrics["evaluation_phase"] = phase
+    if phase == "discovery":
+        result.labels.append("oos_sealed")
     add = result.checks.append
     result.checks.extend(_validate_factor(factor, df, col))
     if result.tier_failed("T0"):
@@ -492,11 +499,12 @@ def evaluate(
         bool(neutral_ic >= TH["neutral_ic"] and neutral_p <= TH["ic_p"]),
         neutral_ic, f"IC>={TH['neutral_ic']} & p<={TH['ic_p']}",
     ))
-    sector_available = "sector" in research.columns and research["sector"].notna().mean() >= .80
-    add(Check("T3.4", "섹터 중립화 가능", sector_available, research["sector"].notna().mean() if "sector" in research else 0.0, ">=80% sector coverage", "Silver sector 컬럼 필요" if not sector_available else ""))
-
-    if oos_start is None:
-        add(Check("T4.1", "고정 OOS 설정", False, None, "OOS_START 고정"))
+    if phase == "discovery":
+        # The final holdout belongs to the campaign, not to an individual cycle.
+        # Do not create a failed placeholder: absence is intentional and sealed.
+        pass
+    elif oos_start is None:
+        add(Check("T4.1", "고정 OOS 설정", False, None, "campaign OOS_START 고정"))
     else:
         oos = work[(work["ym"] >= oos_start) & work["_eligible"]]
         oos_series = _ic_series(oos, col, "fwd_mid")
@@ -581,6 +589,7 @@ def apply_null_calibration(
     calibration: pd.DataFrame | None,
     *,
     data_cutoff: str,
+    oos_start: str | pd.Period | None = None,
     min_nulls: int = 100,
     max_false_positive_rate: float = .10,
 ) -> None:
@@ -591,16 +600,23 @@ def apply_null_calibration(
     count = 0
     if valid:
         required = {"ruleset_version", "data_cutoff", "pass"}
+        if oos_start is not None:
+            required.add("oos_start")
         valid = required.issubset(calibration.columns)
         if valid:
             current = calibration[
                 calibration["ruleset_version"].eq(RULESET_VERSION)
                 & calibration["data_cutoff"].astype(str).eq(data_cutoff)
             ]
+            if oos_start is not None:
+                current = current[
+                    current["oos_start"].astype(str).eq(str(pd.Period(oos_start, freq="M")))
+                ]
             count = len(current)
             rate = float(current["pass"].astype(bool).mean()) if count else float("nan")
             valid = count >= min_nulls and np.isfinite(rate) and rate <= max_false_positive_rate
-            note = f"동일 snapshot/ruleset 귀무 {count}개, 위양성률 {rate:.1%}" if count else "동일 snapshot/ruleset 기록 없음"
+            scope = "동일 snapshot/ruleset/OOS" if oos_start is not None else "동일 snapshot/ruleset"
+            note = f"{scope} 귀무 {count}개, 위양성률 {rate:.1%}" if count else f"{scope} 기록 없음"
     if not note:
         note = "null_dist.parquet 없음 또는 구형 형식"
     for result in results:

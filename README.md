@@ -13,31 +13,41 @@ Bronze는 Silver 품질 대사 외에는 리서치 입력으로 사용하지 않
 uv sync
 uv run python scripts/run.py build          # 인증 Silver → PIT 패널 캐시
 uv run python scripts/run.py null --n 25    # 귀무 4종×25개 = 최소 100개 보정
-uv run python scripts/run.py gate           # 등록 팩터 전체 판정
-uv run python scripts/run.py publish --apply --approved-by "검토자"  # 승인 후 Gold 적재
+uv run python scripts/run.py gate           # discovery 판정; 최종 OOS는 SEALED
 ```
 
-환경변수: `SILVER_DB_URL`(필수), `CACHE_DIR`(기본 `.cache`), `OOS_START`(선택, 최초 실행 후 고정).
+환경변수: `SILVER_DB_URL`(필수), `CACHE_DIR`(기본 `.cache`).
 RDS가 SSM 터널 뒤에 있으면 `build/gate/publish` 전에 터널을 연다.
 
 모든 팩터의 공통 평가 시작일은 `2018-03`으로 고정한다. 개발 표본은 고정 OOS 직전
 1개월을 embargo하며, 평가 시작일과 OOS 시작일을 결과에 맞춰 변경하지 않는다.
 
-## 자율 연구 루프
+## 자율 연구 campaign/epoch
 
-Codex의 `$factor-research-loop` 스킬은 현재 Silver 패널과 누적 연구 이력을 읽고 후보 하나를
-사전등록한 뒤 검증한다. 후보 파일은 `factors/candidates/*.py`에 두며 `FACTOR`와
-`RESEARCH_SPEC`을 반드시 제공한다.
+새 연구는 후보별로 OOS를 반복해서 보지 않는다. campaign이 최종 OOS를 봉인하고, epoch이
+결과를 보기 전에 여러 후보의 이름과 definition hash를 동결한다.
 
 ```bash
 uv run python scripts/research.py context
-uv run python scripts/research.py evaluate --factor operating_roa
+uv run python scripts/research.py campaign-start --campaign campaign-001
+uv run python scripts/research.py epoch-start \
+  --campaign campaign-001 --epoch epoch-001 --factors factor_a factor_b
+uv run python scripts/research.py evaluate \
+  --campaign campaign-001 --epoch epoch-001 --factor factor_a
+uv run python scripts/research.py epoch-close \
+  --campaign campaign-001 --epoch epoch-001
+uv run python scripts/research.py campaign-freeze \
+  --campaign campaign-001 --factors factor_a
+# 최소 24 OOS IC개월이 쌓인 뒤 한 번만 실행
+uv run python scripts/research.py campaign-reveal --campaign campaign-001
 ```
 
 평가할 때마다 `research/runs/cycle-NNNN-<factor>/`에 JSON과 Markdown 보고서가 생성되고,
 `research/history.jsonl`과 `research/context/latest.md`가 갱신된다. 다음 루프는 반드시 이
-컨텍스트를 먼저 읽는다. 이 명령은 Gold에 쓰지 않으며, 결과를 본 뒤 기존 후보 파일을
-덮어쓰는 대신 변경된 정의를 새 시행으로 등록해야 한다.
+컨텍스트를 먼저 읽는다. discovery에는 OOS 수치가 생성되지 않고 최대 `PROVISIONAL`까지만
+가능하다. `research/campaigns/`에는 epoch 성찰과 봉인 상태가 저장된다. reveal은 Gold에 쓰지
+않으며, 결과를 본 뒤 기존 후보 파일을 수정하거나 같은 OOS로 다시 확인할 수 없다. discovery
+입력도 manifest의 data cutoff 이하로 고정하며 현재 캐시가 그 cutoff를 재현하지 못하면 중단한다.
 
 ## 왜 통계가 마지막인가
 
@@ -65,11 +75,12 @@ uv run python scripts/research.py evaluate --factor operating_roa
 | **T1** | **표본틀 무결성** | 0회 (SQL) | 결정론 — 공격 11/18 격추 |
 | T2 | 전체·투자 가능 IC 최소요건과 투자 가능 IC 유의성 | 진단 1회 | 통계 |
 | T3 | 기간별·레짐·중립화 IC 강건성 | IC 재계산 | 통계 |
-| T4 | 고정 OOS IC·IC BY FDR·귀무 보정 | 최다 | 통계 + 시행 원장 |
+| T4 | discovery BY FDR + campaign 최종 OOS·귀무 보정 | 최다 | 통계 + 시행 원장 |
 | T5 | 기존 Gold 신호와 직교성 | — | 신호 |
 
-판정은 T0·T1·T2·T4·T5 중 하나라도 실패하면 `REJECT`, T3 soft fail이 하나면
+최종 confirmation 판정은 T0·T1·T2·T4·T5 중 하나라도 실패하면 `REJECT`, T3 soft fail이 하나면
 `PROVISIONAL`, soft fail이 없으면 `PROMOTE`다. T3 soft fail이 둘 이상이어도 `REJECT`다.
+discovery survivor는 OOS가 봉인되어 있으므로 soft fail이 없어도 최대 `PROVISIONAL`이다.
 `PROMOTE`는 연구 판정일 뿐이며, 사람 승인 없이 Gold에 자동 발행되지 않는다.
 
 ## 유니버스 계약
@@ -92,7 +103,7 @@ uv run python scripts/research.py evaluate --factor operating_roa
 강제 부여하고 세 시나리오 전부에서 부호가 유지되어야 한다. 안 하면 롱레그의 최악 실현값만
 표본에서 증발한다.
 
-## 현재 판정 기준: `fr-3.2.0`
+## 현재 판정 기준: `fr-3.3.0`
 
 절대 순알파, net IR, Deflated Sharpe, 비용 스트레스 수익률은 승격 기준이 아니다.
 표본 기간과 포트폴리오 구성에 민감한 절대 수익률 컷 대신 다음을 본다.
@@ -155,6 +166,20 @@ IC는 매월 팩터 순위와 미래수익률 순위의 Spearman 상관이다. R
 - Silver의 모든 revision을 `available_date` 순으로 재생한다. `fundamental_current`를 과거에
   붙이면 최신 정정공시가 새므로 사용하지 않는다
 
+## 섹터 한계와 기업행위 데이터
+
+Silver에 과거 시점별 업종분류 이력이 없고 현재 업종을 과거에 복사하면 미래정보가 새므로,
+`fr-3.3.0`부터 T3.4 섹터 검사를 판정 기준에서 제거했다. T3.2는 모든 후보에 동일하게
+시장·규모·유동성만 통제한다. 따라서 현재 판정은 섹터 중립성을 보장하지 않으며, 특정 업종 쏠림은
+보고서 해석과 후속 운용 검토에서 별도 한계로 취급한다. 과거 PIT 업종 이력이 확보되기 전에는
+섹터 검사를 다시 활성화하지 않는다.
+
+**기업행위**는 액면분할·병합, 유상·무상증자, 합병·분할, 배당처럼 가격이나 주식수를 기계적으로
+바꾸는 사건이다. Silver에는 이미 `public.corporate_action` 테이블이 존재하지만 factor-research
+월말 패널은 아직 이를 붙이지 않는다. 따라서 `net_equity_issuance_12m`처럼 시가총액과 총수익
+변화를 이용한 proxy는 실제 증자뿐 아니라 합병·분할·큰 배당 효과가 섞일 수 있다. 기업행위
+보강은 이 이벤트를 PIT 기준으로 패널에 연결해 신호의 경제적 원인을 구분하는 별도 작업이다.
+
 ## 한국시장에서 확인된 사실
 
 | 사실 | 함의 |
@@ -189,12 +214,13 @@ REGISTRY.add(Factor(
 ## 판정 안전장치와 남은 한계
 
 - 수익률은 Silver `total_return_close`만 사용하며 결측·비양수 값이 있으면 build를 중단한다
-- WICS 등 `sector` 커버리지가 80% 미만이면 T3.4 soft fail로 **PROMOTE를 허용하지 않는다**
+- 과거 PIT 업종 이력이 없어 섹터 중립성은 현재 ruleset의 검증 범위가 아니다
 - 비용 모델의 시장충격은 아직 AUM·참여율 함수가 아닌 보수적 추정치다
-- 고정 OOS와 모든 고유 정의의 시행횟수는 `.cache/trials.sqlite3`에 보존한다. 팀 공용 운영에서는
-  이 원장을 RDS 테이블로 승격해야 여러 연구자의 시행을 합산할 수 있다
+- 모든 고유 정의의 시행횟수는 `.cache/trials.sqlite3`에, 봉인 OOS 상태는
+  `research/campaigns/`에 보존한다. 팀 공용 운영에서는 이 원장을 RDS 테이블로 승격해야 여러
+  연구자의 시행을 합산할 수 있다
 - 동일 Silver cutoff·ruleset으로 만든 귀무 팩터가 100개 미만이거나 전체 게이트 위양성률이
   10%를 넘으면 T4.4가 실패한다. `build` 뒤 `null --n 25` 이상을 먼저 실행한다
-- 현재 ruleset이 `fr-3.2.0`으로 변경됐으므로 이 버전의 귀무 보정을 새로 만들기 전에는
+- 현재 ruleset이 `fr-3.3.0`으로 변경됐으므로 이 버전의 귀무 보정을 새로 만들기 전에는
   안전장치상 `PROMOTE`가 나오지 않는다
-- `publish --apply`로 APPROVED를 적재하려면 `--approved-by`가 필수다
+- epoch-1.0에서는 campaign reveal과 별도 사람 검토 전 `publish --apply`를 차단한다
