@@ -10,8 +10,13 @@ from pathlib import Path
 
 import pandas as pd
 
+from engine.boundaries import CampaignWindow, QUALIFICATION_POLICY, validate_manifest
 from engine.factors import Factor
+from engine.implementation import PARITY_SCHEMA_VERSION
+from engine.panel import INACTIVE_DAYS
+from engine.publish import VALUE_CONTRACT_ID
 from engine.gate import (
+    RESEARCH_START,
     Result,
     RULESET_VERSION,
     TH,
@@ -20,8 +25,9 @@ from engine.gate import (
 )
 
 
-PROTOCOL_VERSION = "epoch-1.2"
+PROTOCOL_VERSION = "epoch-1.4"
 _ID = re.compile(r"^[a-z][a-z0-9-]*$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _now() -> str:
@@ -86,7 +92,7 @@ def load_epoch(root: str | Path, campaign_id: str, epoch_id: str) -> dict:
 
 
 def _assert_current_state(campaign: dict, epoch: dict | None = None) -> None:
-    """Refuse to reinterpret frozen research with a newer protocol/ruleset."""
+    """Refuse to reinterpret finalized research with a newer protocol/ruleset."""
     if campaign.get("protocol_version") != PROTOCOL_VERSION:
         raise ValueError(
             "campaign protocol이 현재 엔진과 다릅니다: "
@@ -114,32 +120,48 @@ def start_campaign(
     root: str | Path,
     campaign_id: str,
     *,
-    data_cutoff: str,
-    oos_start: str | None = None,
+    discovery_data_cutoff: str,
+    snapshot_cutoff: str,
+    snapshot_digest: str,
+    discovery_snapshot_digest: str,
     min_oos_months: int = TH["min_oos_months"],
 ) -> Path:
-    """Create a campaign whose final OOS starts after the known snapshot."""
+    """Create one trailing historical holdout without exposing it to discovery."""
     campaign_id = _validate_id(campaign_id, "campaign id")
     path = _campaign_path(root, campaign_id)
     if path.exists():
         raise ValueError(f"이미 존재하는 campaign입니다: {campaign_id}")
-    cutoff = pd.Timestamp(data_cutoff).to_period("M")
-    start = pd.Period(oos_start, freq="M") if oos_start else cutoff + 1
-    if start <= cutoff:
-        raise ValueError(f"봉인 OOS 시작 {start}는 데이터 cutoff {cutoff}보다 뒤여야 합니다")
     if min_oos_months != TH["min_oos_months"]:
         raise ValueError(
             f"min_oos_months는 현재 ruleset 고정값 {TH['min_oos_months']}이어야 합니다"
         )
-    end = start + min_oos_months
+    for label, digest in (
+        ("snapshot_digest", snapshot_digest),
+        ("discovery_snapshot_digest", discovery_snapshot_digest),
+    ):
+        if not _SHA256.fullmatch(str(digest)):
+            raise ValueError(f"{label}는 64자리 소문자 SHA-256이어야 합니다")
+    window = CampaignWindow.from_completed_snapshot(
+        discovery_data_cutoff=discovery_data_cutoff,
+        snapshot_cutoff=snapshot_cutoff,
+        oos_months=min_oos_months,
+    )
     conflicts = []
     for candidate in (Path(root) / "campaigns").glob("*/manifest.json"):
         existing = _read(candidate)
-        if existing.get("status") not in {"OPEN", "FROZEN"}:
+        if existing.get("status") in {"CLOSED_NO_QUALIFIED"}:
             continue
-        existing_start = pd.Period(existing["oos"]["start"], freq="M")
-        existing_end = pd.Period(existing["oos"]["earliest_data_month"], freq="M")
-        if start < existing_end and existing_start < end:
+        if existing.get("oos", {}).get("status") == "NOT_USED":
+            continue
+        if existing.get("oos", {}).get("mode") != "trailing_historical_holdout":
+            continue
+        existing_window = validate_manifest(
+            existing, expected_oos_months=int(existing["oos"]["min_months"]),
+        )
+        if (
+            window.consumed_start < existing_window.consumed_stop
+            and existing_window.consumed_start < window.consumed_stop
+        ):
             conflicts.append(existing.get("campaign_id", candidate.parent.name))
     if conflicts:
         raise ValueError(
@@ -152,25 +174,35 @@ def start_campaign(
         "status": "OPEN",
         "created_at": _now(),
         "ruleset_version": RULESET_VERSION,
-        "data_cutoff": str(pd.Timestamp(data_cutoff).date()),
-        "oos": {
-            "status": "SEALED",
-            "start": str(start),
-            "signal_end": str(end - 1),
-            "min_months": int(min_oos_months),
-            # The last signal month also needs its following realized return.
-            "required_data_month": str(end),
-            # The following month proves that required_data_month is closed,
-            # rather than a partial current-month snapshot.
-            "earliest_reveal_month": str(end + 1),
-            "earliest_data_month": str(end + 1),
-            "revealed_at": None,
+        "snapshot": {
+            **window.snapshot_manifest(),
+            "source": "RDS public Silver",
+            "input_digest": snapshot_digest,
+            "discovery_input_digest": discovery_snapshot_digest,
         },
+        "discovery": window.discovery_manifest(),
+        "oos": window.oos_manifest(),
         "epochs": [],
-        "survivors": [],
+        "qualification_policy": QUALIFICATION_POLICY,
+        "qualified_factors": [],
     }
     _write(path, payload)
     return path
+
+
+def migrate_open_campaign(
+    root: str | Path,
+    campaign_id: str,
+    *,
+    as_of_month: str | pd.Period,
+    reason: str,
+) -> Path:
+    """Never relabel already-observed evidence as a clean historical OOS."""
+    del root, campaign_id, as_of_month, reason
+    raise ValueError(
+        "epoch-1.4 historical holdout은 기존 campaign으로 migration할 수 없습니다. "
+        "기존 증거는 legacy/retrospective로 보존하고 새 campaign을 시작하세요."
+    )
 
 
 def start_epoch(
@@ -183,6 +215,7 @@ def start_epoch(
     epoch_id = _validate_id(epoch_id, "epoch id")
     campaign = load_campaign(root, campaign_id)
     _assert_current_state(campaign)
+    validate_manifest(campaign, expected_oos_months=TH["min_oos_months"])
     if campaign["status"] != "OPEN":
         raise ValueError(f"OPEN campaign에서만 epoch을 시작할 수 있습니다: {campaign['status']}")
     if not factors:
@@ -217,13 +250,14 @@ def start_epoch(
         "status": "OPEN",
         "created_at": _now(),
         "ruleset_version": campaign["ruleset_version"],
-        "data_cutoff": campaign["data_cutoff"],
+        "discovery_data_cutoff": campaign["discovery"]["data_cutoff"],
         "oos_status": "SEALED",
         "candidates": [
             {
                 "name": factor.name,
                 "family": factor.family or factor.name,
                 "definition_hash": factor.definition_hash,
+                "predicted_sign": factor.predicted_sign,
                 "status": "REGISTERED",
                 "cycle_id": None,
                 "verdict": None,
@@ -257,6 +291,7 @@ def assert_candidate_ready(
     campaign = load_campaign(root, campaign_id)
     epoch = load_epoch(root, campaign_id, epoch_id)
     _assert_current_state(campaign, epoch)
+    validate_manifest(campaign, expected_oos_months=TH["min_oos_months"])
     if campaign["status"] != "OPEN" or epoch["status"] != "OPEN":
         raise ValueError("OPEN campaign의 OPEN epoch에서만 discovery 평가할 수 있습니다")
     candidate = next((row for row in epoch["candidates"] if row["name"] == factor.name), None)
@@ -309,6 +344,7 @@ def mark_evaluated(
         "strongest_relationship": strongest_relationship,
         "ic_p_investable": result.metrics.get("ic_p_investable"),
         "discovery_evidence_digest": discovery_evidence_digest(result),
+        "evidence_ruleset_version": RULESET_VERSION,
         "fdr_status": "PENDING",
         "fdr_qvalue": None,
     })
@@ -329,7 +365,7 @@ def _failure_bucket(candidate: dict) -> str:
         return "GOLD_REDUNDANCY"
     if candidate.get("fdr_status") == "PENDING":
         return "DISCOVERY_FDR_PENDING"
-    return "DISCOVERY_SURVIVOR"
+    return "DISCOVERY_QUALIFIED"
 
 
 def close_epoch(
@@ -337,7 +373,7 @@ def close_epoch(
     campaign_id: str,
     epoch_id: str,
 ) -> tuple[Path, Path]:
-    """Close an epoch; discovery FDR stays pending until campaign freeze."""
+    """Close an epoch; discovery FDR stays pending until campaign finalize."""
     campaign = load_campaign(root, campaign_id)
     epoch = load_epoch(root, campaign_id, epoch_id)
     _assert_current_state(campaign, epoch)
@@ -372,7 +408,7 @@ def close_epoch(
         "epoch_id": epoch_id,
         "created_at": _now(),
         "oos_status": "SEALED",
-        "discovery_fdr_status": "PENDING_UNTIL_CAMPAIGN_FREEZE",
+        "discovery_fdr_status": "PENDING_UNTIL_CAMPAIGN_FINALIZE",
         "lessons": lessons,
         "duplicates": duplicates,
         "permitted_next_actions": permitted,
@@ -387,7 +423,7 @@ def close_epoch(
     lines = [
         f"# {campaign_id} / {epoch_id} 성찰", "",
         "- OOS 상태: **SEALED**", "",
-        "- Discovery 다중검정: **PENDING** (campaign freeze에서 전체 후보 일괄 판정)", "",
+        "- Discovery 다중검정: **PENDING** (campaign finalize에서 전체 후보 일괄 판정)", "",
         "## 구조적 교훈", "",
         "| factor | family | outcome | novelty | evidence |",
         "|---|---|---|---|---|",
@@ -415,19 +451,14 @@ def close_epoch(
     return markdown_path, json_path
 
 
-def freeze_campaign(
-    root: str | Path,
-    campaign_id: str,
-    survivor_names: list[str],
-) -> Path:
+def finalize_campaign(root: str | Path, campaign_id: str) -> Path:
+    """Finalize discovery and automatically qualify every criterion pass."""
     campaign = load_campaign(root, campaign_id)
     _assert_current_state(campaign)
     if campaign["status"] != "OPEN":
-        raise ValueError(f"OPEN campaign만 동결할 수 있습니다: {campaign['status']}")
+        raise ValueError(f"OPEN campaign만 finalize할 수 있습니다: {campaign['status']}")
     if not campaign["epochs"] or any(row["status"] != "CLOSED" for row in campaign["epochs"]):
-        raise ValueError("모든 epoch을 닫은 뒤 campaign을 동결해야 합니다")
-    if len(survivor_names) != len(set(survivor_names)):
-        raise ValueError("survivor 이름은 중복될 수 없습니다")
+        raise ValueError("모든 epoch을 닫은 뒤 campaign을 finalize해야 합니다")
     epochs_by_id = {
         reference["epoch_id"]: load_epoch(root, campaign_id, reference["epoch_id"])
         for reference in campaign["epochs"]
@@ -439,9 +470,6 @@ def freeze_campaign(
         for epoch in epochs_by_id.values()
         for row in epoch["candidates"]
     }
-    unknown = sorted(set(survivor_names) - set(candidates))
-    if unknown:
-        raise ValueError(f"campaign에 없는 survivor입니다: {unknown}")
     # The campaign is the immutable discovery family.  Epoch-close decisions
     # stay pending so later epochs cannot retroactively change an earlier final
     # verdict.  Every registered definition enters exactly once; candidates
@@ -458,7 +486,8 @@ def freeze_campaign(
     qvalues = by_qvalues(by_inputs)
     family_digest = _family_digest(list(by_inputs))
     fdr_rows = []
-    for candidate in candidates.values():
+    for name in sorted(candidates):
+        candidate = candidates[name]
         raw_pvalue = candidate.get("ic_p_investable")
         testable = raw_pvalue is not None and math.isfinite(float(raw_pvalue))
         qvalue = qvalues[candidate["definition_hash"]]
@@ -483,10 +512,15 @@ def freeze_campaign(
             "status": candidate["fdr_status"],
             "verdict": candidate["verdict"],
             "discovery_evidence_digest": candidate["discovery_evidence_digest"],
+            "evidence_ruleset_version": candidate.get(
+                "evidence_ruleset_version", RULESET_VERSION,
+            ),
         })
-    rejected = [name for name in survivor_names if candidates[name]["verdict"] == "REJECT"]
-    if rejected:
-        raise ValueError(f"discovery REJECT 후보는 survivor가 될 수 없습니다: {rejected}")
+    qualified_names = sorted(
+        name for name, candidate in candidates.items()
+        if candidate["verdict"] != "REJECT"
+        and candidate["fdr_status"] == "PASS"
+    )
     multiple_testing_path = _campaign_dir(root, campaign_id) / "multiple-testing.json"
     for epoch_id, epoch in epochs_by_id.items():
         epoch["discovery_fdr_status"] = "FINAL"
@@ -499,34 +533,37 @@ def freeze_campaign(
         "method": "Benjamini-Yekutieli",
         "threshold": TH["fdr_q"],
         "family": "all preregistered definitions in this campaign",
+        "qualification_policy": QUALIFICATION_POLICY,
         "family_digest": family_digest,
         "total_definitions": len(by_inputs),
         "results": fdr_rows,
     }
     _write(multiple_testing_path, multiple_testing)
-    campaign["survivors"] = [
+    campaign["qualified_factors"] = [
         {
             "name": name,
             "family": candidates[name]["family"],
             "definition_hash": candidates[name]["definition_hash"],
+            "predicted_sign": candidates[name]["predicted_sign"],
             "discovery_report": candidates[name]["report"],
             "discovery_multiple_testing": str(multiple_testing_path),
         }
-        for name in survivor_names
+        for name in qualified_names
     ]
-    if survivor_names:
-        campaign["status"] = "FROZEN"
-        campaign["frozen_at"] = _now()
+    if qualified_names:
+        campaign["status"] = "AWAITING_IMPLEMENTATION"
+        campaign["finalized_at"] = _now()
     else:
-        campaign["status"] = "CLOSED_NO_SURVIVOR"
+        campaign["status"] = "CLOSED_NO_QUALIFIED"
         campaign["closed_at"] = _now()
         campaign["oos"]["status"] = "NOT_USED"
     campaign["discovery_multiple_testing"] = str(multiple_testing_path)
     campaign["discovery_multiple_testing_digest"] = _payload_digest(multiple_testing)
     campaign["discovery_family_size"] = len(by_inputs)
     campaign["discovery_family_digest"] = family_digest
+    campaign["qualification_policy"] = QUALIFICATION_POLICY
     campaign["oos_family_digest"] = _family_digest([
-        candidates[name]["definition_hash"] for name in survivor_names
+        candidates[name]["definition_hash"] for name in qualified_names
     ])
     path = _campaign_path(root, campaign_id)
     _write(path, campaign)
@@ -534,7 +571,7 @@ def freeze_campaign(
 
 
 def load_discovery_multiple_testing(root: str | Path, campaign_id: str) -> dict:
-    """Load and authenticate the frozen campaign-wide discovery family."""
+    """Load and authenticate the finalized campaign-wide discovery family."""
     campaign = load_campaign(root, campaign_id)
     _assert_current_state(campaign)
     artifact_path = campaign.get("discovery_multiple_testing")
@@ -543,6 +580,12 @@ def load_discovery_multiple_testing(root: str | Path, campaign_id: str) -> dict:
     artifact = _read(Path(artifact_path))
     rows = artifact.get("results") or []
     hashes = [row.get("definition_hash") for row in rows]
+    expected_qualified = sorted(
+        (row.get("factor"), row.get("definition_hash"))
+        for row in rows
+        if row.get("status") == "PASS" and row.get("verdict") != "REJECT"
+    )
+    observed_qualified = _qualified_identity(campaign)
     expected_hashes = [
         candidate["definition_hash"]
         for reference in campaign["epochs"]
@@ -556,11 +599,16 @@ def load_discovery_multiple_testing(root: str | Path, campaign_id: str) -> dict:
         and artifact.get("campaign_id") == campaign_id
         and artifact.get("method") == "Benjamini-Yekutieli"
         and artifact.get("threshold") == TH["fdr_q"]
+        and artifact.get("qualification_policy") == QUALIFICATION_POLICY
+        and campaign.get("qualification_policy") == QUALIFICATION_POLICY
         and artifact.get("total_definitions") == len(expected_hashes)
         and len(hashes) == len(set(hashes))
         and set(hashes) == set(expected_hashes)
         and _family_digest(hashes) == campaign.get("discovery_family_digest")
         and artifact.get("family_digest") == campaign.get("discovery_family_digest")
+        and observed_qualified == expected_qualified
+        and _family_digest([definition_hash for _, definition_hash in expected_qualified])
+        == campaign.get("oos_family_digest")
         and _payload_digest(artifact)
         == campaign.get("discovery_multiple_testing_digest")
     )
@@ -569,18 +617,235 @@ def load_discovery_multiple_testing(root: str | Path, campaign_id: str) -> dict:
     return artifact
 
 
-def assert_reveal_ready(root: str | Path, campaign_id: str, panel_month: pd.Period) -> dict:
+def _qualified_identity(campaign: dict) -> list[tuple[str, str]]:
+    return sorted(
+        (row["name"], row["definition_hash"])
+        for row in campaign.get("qualified_factors", [])
+    )
+
+
+def _verify_evidence_digest(row: dict) -> bool:
+    stored = row.get("evidence_digest")
+    body = dict(row)
+    body.pop("evidence_digest", None)
+    return bool(_SHA256.fullmatch(str(stored))) and _payload_digest(body) == stored
+
+
+def _validate_implementation_rows(campaign: dict, rows: list[dict]) -> None:
+    expected = _qualified_identity(campaign)
+    observed = sorted(
+        (row.get("factor"), row.get("definition_hash")) for row in rows
+    )
+    if len(observed) != len(set(observed)) or observed != expected:
+        raise ValueError(
+            "구현 검증은 자동 통과 후보 전체와 정확히 일치해야 합니다: "
+            f"expected={expected}, observed={observed}"
+        )
+    expected_by_name = {
+        row["name"]: row for row in campaign["qualified_factors"]
+    }
+    for row in rows:
+        qualified = expected_by_name[row["factor"]]
+        discovery = row.get("discovery") or {}
+        counts = row.get("counts") or {}
+        required_checks = {
+            "nonempty", "scope_exact", "month_coverage_exact", "keys_exact",
+            "values_finite", "raw_values_close", "direction_adjusted_ranks_exact",
+        }
+        expected_months = len(pd.period_range(
+            RESEARCH_START, pd.Period(campaign["discovery"]["signal_end"], freq="M"),
+            freq="M",
+        ))
+        binding_valid = (
+            row.get("schema_version") == PARITY_SCHEMA_VERSION
+            and row.get("research_definition_hash") == row.get("definition_hash")
+            and row.get("predicted_sign") == qualified.get("predicted_sign")
+            and row.get("value_contract") == VALUE_CONTRACT_ID
+            and str(row.get("implementation_uri", "")).strip() != ""
+            and _SHA256.fullmatch(str(row.get("implementation_sha256"))) is not None
+            and _SHA256.fullmatch(str(row.get("manifest_entry_digest"))) is not None
+            and discovery.get("signal_start") == str(RESEARCH_START)
+            and discovery.get("signal_end") == campaign["discovery"]["signal_end"]
+            and discovery.get("snapshot_digest")
+            == campaign["snapshot"]["discovery_input_digest"]
+            and row.get("status") == "PASS"
+            and row.get("passed") is True
+            and counts.get("python_rows", 0) > 0
+            and counts.get("python_rows") == counts.get("sql_rows")
+            and counts.get("compared_rows") == counts.get("python_rows")
+            and counts.get("expected_signal_months") == expected_months
+            and counts.get("python_signal_months") == expected_months
+            and counts.get("sql_signal_months") == expected_months
+            and set((row.get("checks") or {})) == required_checks
+            and all(bool(value) for value in (row.get("checks") or {}).values())
+            and not (row.get("failure_reasons") or [])
+            and _verify_evidence_digest(row)
+        )
+        if not binding_valid:
+            raise ValueError(f"Gold 구현 parity 증거가 유효하지 않습니다: {row['factor']}")
+
+
+def record_implementation_verification(
+    root: str | Path,
+    campaign_id: str,
+    rows: list[dict],
+) -> Path:
+    """Persist all qualified implementations atomically, then unlock OOS."""
     campaign = load_campaign(root, campaign_id)
     _assert_current_state(campaign)
-    if int(campaign.get("oos", {}).get("min_months", 0)) < TH["min_oos_months"]:
-        raise ValueError("campaign OOS 기간이 현재 ruleset 최소기간보다 짧습니다")
-    if campaign["status"] != "FROZEN":
-        raise ValueError(f"FROZEN campaign만 OOS를 공개할 수 있습니다: {campaign['status']}")
-    earliest = pd.Period(campaign["oos"]["earliest_data_month"], freq="M")
-    if panel_month < earliest:
+    if campaign.get("status") != "AWAITING_IMPLEMENTATION":
         raise ValueError(
-            f"봉인 OOS가 아직 {campaign['oos']['min_months']}개월 쌓이지 않았습니다: "
-            f"현재 {panel_month}, 최소 {earliest}"
+            "AWAITING_IMPLEMENTATION campaign만 구현 검증을 기록할 수 있습니다: "
+            f"{campaign.get('status')}"
+        )
+    load_discovery_multiple_testing(root, campaign_id)
+    _validate_implementation_rows(campaign, rows)
+    ordered = sorted(rows, key=lambda row: row["factor"])
+    payload = {
+        "protocol_version": PROTOCOL_VERSION,
+        "ruleset_version": RULESET_VERSION,
+        "campaign_id": campaign_id,
+        "created_at": _now(),
+        "scope": "discovery_only",
+        "qualified_family_digest": campaign["oos_family_digest"],
+        "implementations": ordered,
+    }
+    path = _campaign_dir(root, campaign_id) / "implementation-verification.json"
+    _write(path, payload)
+    campaign["implementation_verification"] = str(path)
+    campaign["implementation_verification_digest"] = _payload_digest(payload)
+    campaign["status"] = "READY_FOR_CONFIRMATION"
+    campaign["implementation_verified_at"] = payload["created_at"]
+    _write(_campaign_path(root, campaign_id), campaign)
+    return path
+
+
+def record_implementation_attempt(
+    root: str | Path,
+    campaign_id: str,
+    rows: list[dict],
+) -> Path:
+    """Append one engineering parity attempt without changing campaign state."""
+    campaign = load_campaign(root, campaign_id)
+    _assert_current_state(campaign)
+    if campaign.get("status") != "AWAITING_IMPLEMENTATION":
+        raise ValueError("구현 시도는 AWAITING_IMPLEMENTATION에서만 기록할 수 있습니다")
+    expected = _qualified_identity(campaign)
+    observed = sorted(
+        (row.get("factor"), row.get("definition_hash")) for row in rows
+    )
+    if len(observed) != len(set(observed)) or observed != expected:
+        raise ValueError("구현 시도도 자동 통과 후보 전체를 포함해야 합니다")
+    for row in rows:
+        discovery = row.get("discovery") or {}
+        if (
+            row.get("schema_version") != PARITY_SCHEMA_VERSION
+            or not _verify_evidence_digest(row)
+            or discovery.get("signal_start") != str(RESEARCH_START)
+            or discovery.get("signal_end") != campaign["discovery"]["signal_end"]
+            or discovery.get("snapshot_digest")
+            != campaign["snapshot"]["discovery_input_digest"]
+        ):
+            raise ValueError(f"구현 시도 증거가 유효하지 않습니다: {row.get('factor')}")
+    directory = _campaign_dir(root, campaign_id) / "implementation-attempts"
+    sequence = len(list(directory.glob("attempt-*.json"))) + 1 if directory.exists() else 1
+    path = directory / f"attempt-{sequence:03d}.json"
+    payload = {
+        "protocol_version": PROTOCOL_VERSION,
+        "ruleset_version": RULESET_VERSION,
+        "campaign_id": campaign_id,
+        "created_at": _now(),
+        "implementations": sorted(rows, key=lambda row: row["factor"]),
+    }
+    _write(path, payload)
+    return path
+
+
+def load_implementation_verification(
+    root: str | Path,
+    campaign_id: str,
+    *,
+    current_bindings: list[dict] | None = None,
+) -> dict:
+    """Authenticate parity evidence and optionally the current manifest/SQL files."""
+    campaign = load_campaign(root, campaign_id)
+    _assert_current_state(campaign)
+    artifact_path = campaign.get("implementation_verification")
+    if not artifact_path:
+        raise ValueError("campaign Gold 구현 검증 artifact가 없습니다")
+    artifact = _read(Path(artifact_path))
+    rows = artifact.get("implementations") or []
+    _validate_implementation_rows(campaign, rows)
+    valid = (
+        artifact.get("protocol_version") == PROTOCOL_VERSION
+        and artifact.get("ruleset_version") == RULESET_VERSION
+        and artifact.get("campaign_id") == campaign_id
+        and artifact.get("scope") == "discovery_only"
+        and artifact.get("qualified_family_digest") == campaign.get("oos_family_digest")
+        and _payload_digest(artifact)
+        == campaign.get("implementation_verification_digest")
+    )
+    if not valid:
+        raise ValueError("campaign Gold 구현 검증 artifact 무결성 검증에 실패했습니다")
+    if current_bindings is not None:
+        keys = (
+            "factor", "definition_hash", "predicted_sign", "value_contract",
+            "implementation_uri", "implementation_sha256", "manifest_entry_digest",
+        )
+        expected = sorted(
+            [{key: row.get(key) for key in keys} for row in rows],
+            key=lambda row: row["factor"],
+        )
+        observed = sorted(
+            [{key: row.get(key) for key in keys} for row in current_bindings],
+            key=lambda row: str(row.get("factor")),
+        )
+        if observed != expected:
+            raise ValueError("검증 뒤 Gold manifest 또는 SQL 구현이 변경됐습니다")
+    return artifact
+
+
+def assert_reveal_ready(
+    root: str | Path,
+    campaign_id: str,
+    panel_as_of: str | pd.Timestamp,
+    *,
+    snapshot_digest: str,
+    current_bindings: list[dict],
+) -> dict:
+    campaign = load_campaign(root, campaign_id)
+    _assert_current_state(campaign)
+    validate_manifest(campaign, expected_oos_months=TH["min_oos_months"])
+    if campaign.get("qualification_policy") != QUALIFICATION_POLICY:
+        raise ValueError("campaign 자동 통과 정책이 현재 protocol과 다릅니다")
+    if snapshot_digest != campaign.get("snapshot", {}).get("input_digest"):
+        raise ValueError("campaign 생성 당시 Silver snapshot digest를 재현하지 못했습니다")
+    load_implementation_verification(
+        root, campaign_id, current_bindings=current_bindings,
+    )
+    if campaign["status"] != "READY_FOR_CONFIRMATION":
+        raise ValueError(
+            "READY_FOR_CONFIRMATION campaign만 OOS를 공개할 수 있습니다: "
+            f"{campaign['status']}"
+        )
+    observed_as_of = pd.Timestamp(panel_as_of).normalize()
+    if pd.isna(observed_as_of):
+        raise ValueError("현재 Silver 관측일이 올바르지 않습니다")
+    earliest = pd.Period(campaign["oos"]["earliest_data_month"], freq="M")
+    if observed_as_of.to_period("M") < earliest:
+        raise ValueError(
+            f"봉인 OOS가 아직 정확한 {campaign['oos']['min_months']}개월 쌓이지 않았습니다: "
+            f"현재 {observed_as_of.date()}, 최소 월 {earliest}"
+        )
+    signal_end = pd.Period(campaign["oos"]["signal_end"], freq="M")
+    inactive_ready_after = (
+        signal_end.to_timestamp(how="end").normalize()
+        + pd.Timedelta(days=INACTIVE_DAYS)
+    )
+    if observed_as_of <= inactive_ready_after:
+        raise ValueError(
+            "OOS 경계 비활성 종목을 판정하기에는 Silver 관측일이 너무 이릅니다: "
+            f"현재 {observed_as_of.date()}, {inactive_ready_after.date()} 이후 필요"
         )
     return campaign
 
@@ -589,15 +854,20 @@ def record_reveal(
     root: str | Path,
     campaign_id: str,
     confirmations: list[dict],
+    *,
+    panel_as_of: str | pd.Timestamp,
+    snapshot_digest: str,
+    current_bindings: list[dict],
 ) -> tuple[Path, Path]:
-    campaign = load_campaign(root, campaign_id)
-    _assert_current_state(campaign)
-    if campaign["status"] != "FROZEN":
-        raise ValueError("FROZEN campaign만 reveal 결과를 기록할 수 있습니다")
+    campaign = assert_reveal_ready(
+        root, campaign_id, panel_as_of,
+        snapshot_digest=snapshot_digest,
+        current_bindings=current_bindings,
+    )
     load_discovery_multiple_testing(root, campaign_id)
     expected = [
         (row["name"], row["definition_hash"])
-        for row in campaign["survivors"]
+        for row in campaign["qualified_factors"]
     ]
     observed = [
         (row.get("factor"), row.get("definition_hash"))
@@ -605,7 +875,7 @@ def record_reveal(
     ]
     if len(observed) != len(set(observed)) or set(observed) != set(expected):
         raise ValueError(
-            "confirmation은 동결 survivor와 이름·definition hash가 정확히 일치해야 합니다: "
+            "confirmation은 자동 통과 후보와 이름·definition hash가 정확히 일치해야 합니다: "
             f"expected={expected}, observed={observed}"
         )
     by_name = {row["factor"]: row for row in confirmations}
@@ -626,6 +896,7 @@ def record_reveal(
         "protocol_version": PROTOCOL_VERSION,
         "campaign_id": campaign_id,
         "revealed_at": _now(),
+        "silver_as_of": str(pd.Timestamp(panel_as_of).normalize().date()),
         "oos_start": campaign["oos"]["start"],
         "oos_end": campaign["oos"]["signal_end"],
         "confirmations": confirmations,
@@ -653,6 +924,7 @@ def record_reveal(
     campaign["status"] = "REVEALED"
     campaign["oos"]["status"] = "REVEALED"
     campaign["oos"]["revealed_at"] = payload["revealed_at"]
+    campaign["oos"]["silver_as_of"] = payload["silver_as_of"]
     campaign["confirmation"] = str(report_path)
     _write(_campaign_path(root, campaign_id), campaign)
     return report_path, json_path
@@ -674,11 +946,18 @@ def context_rows(root: str | Path) -> list[dict]:
         output.append({
             "campaign_id": row["campaign_id"],
             "status": row["status"],
-            "data_cutoff": row["data_cutoff"],
+            "data_cutoff": (
+                row.get("discovery", {}).get("data_cutoff")
+                or row.get("data_cutoff")
+            ),
+            "snapshot_cutoff": row.get("snapshot", {}).get("data_cutoff"),
             "oos_status": row["oos"]["status"],
-            "oos_start": row["oos"]["start"],
+            "oos_start": (
+                "-" if row["oos"]["status"] == "NOT_USED"
+                else row["oos"]["start"]
+            ),
             "epochs": len(row["epochs"]),
-            "survivors": len(row["survivors"]),
+            "qualified": len(row.get("qualified_factors", [])),
             "latest_reflection": latest_reflection,
         })
     return output

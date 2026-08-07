@@ -1,7 +1,7 @@
 # [ARCHIVED] fr-2.x Bronze 캘리브레이션 기록
 
 > **현재 판정에 사용 금지.** 이 문서는 구형 Bronze·수익률/IR 기반 ruleset의 역사 기록이며
-> `fr-3.5.0`과 호환되지 않는다. 현재 기준의 유일한 구현 소스는 `engine/gate.py`, 설명과 문헌은
+> `fr-3.7.0`과 호환되지 않는다. 현재 기준의 유일한 구현 소스는 `engine/gate.py`, 설명과 문헌은
 > `docs/factor-promotion-criteria.md`다. 아래 ADV 5억원, IC 유지율, t값, 순알파, net IR 기준으로
 > 새 결과를 판정하거나 현재 결과를 재분류하지 않는다.
 

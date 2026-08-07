@@ -113,8 +113,13 @@ def assert_new_candidate(
     research_spec: dict,
     *,
     research_dir: str | Path = "research",
+    attempted_definition_hashes: set[str] | frozenset[str] = frozenset(),
 ) -> None:
     """Refuse accidental retests or in-place edits of an evaluated strategy."""
+    if factor.definition_hash in attempted_definition_hashes:
+        raise ValueError(
+            f"시행 원장에 이미 평가한 definition hash입니다: {factor.definition_hash}"
+        )
     history = _read_history(Path(research_dir) / "history.jsonl")
     strategy_file = research_spec.get("strategy_file")
     for row in history:
@@ -142,6 +147,7 @@ def write_context(
     registry: Registry,
     *,
     research_dir: str | Path = "research",
+    context_cutoff: str | None = None,
 ) -> Path:
     """Write the compact state that the next agent loop must read first."""
     root = Path(research_dir)
@@ -150,8 +156,16 @@ def write_context(
     history = _read_history(root / "history.jsonl")
     finalized_cycles: dict[str, dict] = {}
     campaigns = epochs.context_rows(root)
+    active_campaigns = []
     for campaign_row in campaigns:
         campaign = epochs.load_campaign(root, campaign_row["campaign_id"])
+        if (
+            campaign.get("protocol_version") == epochs.PROTOCOL_VERSION
+            and campaign.get("status") in {
+                "OPEN", "AWAITING_IMPLEMENTATION", "READY_FOR_CONFIRMATION",
+            }
+        ):
+            active_campaigns.append(campaign)
         for reference in campaign["epochs"]:
             epoch = epochs.load_epoch(root, campaign["campaign_id"], reference["epoch_id"])
             if epoch["status"] != "CLOSED":
@@ -159,7 +173,27 @@ def write_context(
             for candidate in epoch["candidates"]:
                 if candidate.get("cycle_id"):
                     finalized_cycles[candidate["cycle_id"]] = candidate
+    if len(active_campaigns) > 1:
+        raise ValueError("동시에 진행 중인 current-protocol campaign이 둘 이상입니다")
+    context_campaign = active_campaigns[0] if active_campaigns else None
     df = panel.monthly
+    visible_cutoff = pd.Timestamp(context_cutoff).normalize() if context_cutoff else None
+    if context_campaign is not None:
+        visible_cutoff = pd.Timestamp(
+            context_campaign["discovery"]["data_cutoff"]
+        ).normalize()
+    if visible_cutoff is not None:
+        df = df[
+            pd.to_datetime(df["trade_date"]).dt.normalize().le(visible_cutoff)
+        ].copy()
+    if context_campaign is not None:
+        discovery_signal_end = pd.Period(
+            context_campaign["discovery"]["signal_end"], freq="M",
+        )
+    elif visible_cutoff is not None:
+        discovery_signal_end = visible_cutoff.to_period("M") - 1
+    else:
+        discovery_signal_end = df["ym"].max()
     base_inputs = {
         "return_close", "market_cap", "adv20", "trading_value", "shares", "market",
     }
@@ -172,26 +206,34 @@ def write_context(
         "## Frozen research state",
         "",
         f"- Silver source: `{panel.meta.get('source')}`",
-        f"- Silver data period: `{df['ym'].min()}` ~ `{df['ym'].max()}`",
-        f"- Common evaluation period: `{RESEARCH_START}` ~ `{df['ym'].max()}`",
+        f"- Visible Silver data period: `{df['ym'].min()}` ~ `{df['ym'].max()}`",
+        f"- Discovery signal evaluation period: `{RESEARCH_START}` ~ `{discovery_signal_end}`",
+        f"- Discovery return-support cutoff: `{visible_cutoff.date() if visible_cutoff is not None else '-'}`",
         f"- Rows/months/assets: `{len(df):,}` / `{df['ym'].nunique()}` / `{df['asset_id'].nunique():,}`",
         f"- Return field: `{panel.meta.get('return_field')}`",
         f"- Gate ruleset: `{RULESET_VERSION}`",
         f"- Research protocol: `{epochs.PROTOCOL_VERSION}`",
         f"- Recorded autonomous cycles: `{len(history)}`",
+        (
+            f"- Active sealed campaign: `{context_campaign['campaign_id']}`; "
+            "OOS rows and post-cutoff outcomes are hidden from strategy context"
+            if context_campaign is not None else
+            "- Active sealed campaign: `-`"
+        ),
+        f"- Strategy context cutoff: `{visible_cutoff.date() if visible_cutoff is not None else '-'}`",
         "",
         "## Sealed-OOS campaigns",
         "",
     ]
     if campaigns:
         lines += [
-            "| campaign | status | data cutoff | OOS | OOS start | epochs | survivors | latest reflection |",
+            "| campaign | status | discovery cutoff | OOS | OOS start | epochs | qualified | latest reflection |",
             "|---|---|---|---|---|---:|---:|---|",
         ]
         for row in campaigns:
             lines.append(
                 f"| `{row['campaign_id']}` | {row['status']} | `{row['data_cutoff']}` | "
-                f"{row['oos_status']} | `{row['oos_start']}` | {row['epochs']} | {row['survivors']} | "
+                f"{row['oos_status']} | `{row['oos_start']}` | {row['epochs']} | {row['qualified']} | "
                 f"`{row['latest_reflection'] or '-'}` |"
             )
     else:
@@ -229,6 +271,27 @@ def write_context(
             "|---|---|---|---|---|---|---|---|",
         ]
         for row in history[-30:]:
+            active_campaign_id = (
+                context_campaign["campaign_id"] if context_campaign else None
+            )
+            belongs_to_active_campaign = bool(
+                active_campaign_id is not None
+                and row.get("campaign_id") == active_campaign_id
+            )
+            exposed_after_cutoff = bool(
+                visible_cutoff is not None
+                and not belongs_to_active_campaign
+                and row.get("data_cutoff")
+                and pd.Timestamp(row["data_cutoff"]).normalize() > visible_cutoff
+            )
+            if exposed_after_cutoff:
+                lines.append(
+                    f"| `{row['cycle_id']}` | `{row['factor']}` | "
+                    f"`{row.get('family') or row['factor']}` | "
+                    f"`{row.get('ruleset_version') or '-'}` | WITHHELD_POST_CUTOFF | "
+                    "봉인 경계 뒤 결과이므로 숨김 | - | - |"
+                )
+                continue
             finalized = finalized_cycles.get(row["cycle_id"], {})
             failed = ", ".join(
                 finalized.get("failed_checks", row.get("failed_checks", []))

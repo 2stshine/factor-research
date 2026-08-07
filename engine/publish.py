@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 
 from engine.factors import Factor
 from engine.gate import RULESET_VERSION, TH, Result, Verdict
@@ -24,6 +25,25 @@ from engine.panel import INVESTABLE_ADV
 from engine import silver
 
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+VALUE_CONTRACT_ID = "raw_value_direction_adjusted_rank_v1"
+
+
+@dataclass(frozen=True)
+class ImplementationRef:
+    """Concrete production implementation bound to a research definition."""
+
+    uri: str
+    sha256: str
+    research_definition_hash: str
+
+    def __post_init__(self):
+        if not self.uri.strip():
+            raise ValueError("implementation uri는 비어 있을 수 없습니다")
+        if not SHA256_RE.fullmatch(self.sha256):
+            raise ValueError("implementation sha256은 64자리 소문자 hex여야 합니다")
+        if not self.research_definition_hash.strip():
+            raise ValueError("research_definition_hash는 비어 있을 수 없습니다")
 
 # 우리 판정 → 팀 status.
 # PROVISIONAL 은 팀 어휘에 없다. CANDIDATE 로 두고 근거를 evaluation 에 남긴다
@@ -49,12 +69,17 @@ def _py(v):
     return str(v)
 
 
-def build_row(factor: Factor, result: Result, *, n_trials: int | None = None,
+def build_row(factor: Factor, result: Result, *, implementation: ImplementationRef,
+              n_trials: int | None = None,
               null_family_error_rate: float | None = None, data_cutoff: str | None = None,
               approved_by: str | None = None) -> dict:
     """gold.factor 한 행. 판정 근거를 재검토 가능한 형태로 전부 담는다."""
     if not KEY_RE.match(factor.name):
         raise ValueError(f"factor_key 규칙 위반(^[a-z][a-z0-9_]*$): {factor.name}")
+    if result.definition_hash != factor.definition_hash:
+        raise ValueError("result.definition_hash가 현재 factor 정의와 일치하지 않습니다")
+    if implementation.research_definition_hash != factor.definition_hash:
+        raise ValueError("구현이 참조하는 research_definition_hash가 factor 정의와 다릅니다")
 
     status = STATUS[result.verdict]
     evaluation = {
@@ -94,12 +119,25 @@ def build_row(factor: Factor, result: Result, *, n_trials: int | None = None,
             "investable_adv_krw": INVESTABLE_ADV,
         },
         "pit": {"fundamental": "available_date", "market": "price_daily.market(날짜별)"},
+        "research_definition_hash": implementation.research_definition_hash,
+        "value_contract": {
+            "id": VALUE_CONTRACT_ID,
+            "value": "raw",
+            "predicted_sign": factor.predicted_sign,
+            "score": "value*predicted_sign",
+            "rank": "score_descending",
+            "raw_value_order": (
+                "descending" if factor.predicted_sign == 1 else "ascending"
+            ),
+            "as_of_date": "asset_last_valid_trading_day_in_signal_month",
+            "rank_partition": "signal_month_full_implementation_universe",
+        },
     }
     return {
         "factor_key": factor.name,
         "description": (factor.hypothesis.strip().split(".")[0] + ".")[:200],
-        "implementation_uri": f"factor-research://factors/builtin.py#{factor.name}",
-        "implementation_hash": factor.definition_hash,
+        "implementation_uri": implementation.uri,
+        "implementation_hash": implementation.sha256,
         "config": config,
         "evaluation": evaluation,
         "status": status,

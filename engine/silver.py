@@ -120,13 +120,19 @@ ORDER BY factor_key, asset_id, as_of_date
 
 
 GOLD_TRIAL_HISTORY_SQL = """
-SELECT implementation_hash AS definition_hash,
+SELECT coalesce(
+           nullif(btrim(config->>'research_definition_hash'), ''),
+           implementation_hash
+       ) AS definition_hash,
        CASE WHEN (evaluation->'metrics'->>'net_ir') ~ '^-?[0-9]+([.][0-9]+)?$'
             THEN (evaluation->'metrics'->>'net_ir')::double precision END AS net_ir,
        CASE WHEN (evaluation->'metrics'->>'hac_pvalue') ~ '^[0-9]+([.][0-9]+)?([eE]-?[0-9]+)?$'
             THEN (evaluation->'metrics'->>'hac_pvalue')::double precision END AS hac_pvalue
 FROM gold.factor
-WHERE implementation_hash IS NOT NULL
+WHERE coalesce(
+          nullif(btrim(config->>'research_definition_hash'), ''),
+          implementation_hash
+      ) IS NOT NULL
 ORDER BY factor_id
 """
 

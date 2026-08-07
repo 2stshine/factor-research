@@ -12,7 +12,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from engine import epochs, research
+from engine import epochs, panel as P, research
+from engine.boundaries import CampaignWindow
 from engine import factors as F
 from factors.candidate_loader import RESEARCH_SPECS
 from scripts import run
@@ -21,7 +22,14 @@ from scripts import run
 def cmd_context(_args) -> None:
     run.load_registry()
     panel = run._load()
-    path = research.write_context(panel, F.REGISTRY)
+    try:
+        next_window = _campaign_snapshot_boundary(panel)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    path = research.write_context(
+        panel, F.REGISTRY,
+        context_cutoff=next_window.discovery_data_cutoff,
+    )
     print(f"연구 컨텍스트 갱신: {path}")
 
 
@@ -29,8 +37,8 @@ def _campaign_snapshot_boundary(
     panel,
     *,
     as_of_date: date | str | None = None,
-) -> tuple[str, str]:
-    """Return the last completed cutoff and first wholly unseen OOS month."""
+) -> CampaignWindow:
+    """Derive the fixed trailing 36-month holdout from completed Silver data."""
     months = sorted(panel.monthly["ym"].dropna().unique())
     if not months:
         raise ValueError("Silver 월 데이터가 없습니다")
@@ -50,36 +58,86 @@ def _campaign_snapshot_boundary(
         completed_month = completed[-1]
     else:
         completed_month = latest_month
-    cutoff_value = panel.monthly.loc[
+    completed_history = {
+        pd.Period(month, freq="M")
+        for month in months
+        if pd.Period(month, freq="M") <= completed_month
+    }
+    expected_history = set(pd.period_range(min(completed_history), completed_month, freq="M"))
+    missing_months = sorted(expected_history - completed_history)
+    if missing_months:
+        raise ValueError(
+            "Silver 월 이력이 연속적이지 않습니다: "
+            f"누락 {', '.join(map(str, missing_months[:6]))}"
+        )
+    snapshot_cutoff = panel.monthly.loc[
         panel.monthly["ym"].eq(completed_month), "trade_date"
     ].max()
-    if pd.isna(cutoff_value):
+    if pd.isna(snapshot_cutoff):
         raise ValueError(f"완료 월 {completed_month}의 cutoff를 찾을 수 없습니다")
-    # A sealed confirmation must be prospective.  A lagged cache must never
-    # turn already-realized historical months into a newly declared "OOS".
-    # Everything through the current calendar month is therefore embargoed.
-    first_unseen_month = current_month + 1
-    return str(pd.Timestamp(cutoff_value).date()), str(first_unseen_month)
+    calendar_month_end = completed_month.to_timestamp(how="end").normalize()
+    if pd.Timestamp(snapshot_cutoff).normalize() < calendar_month_end - pd.Timedelta(days=7):
+        raise ValueError(
+            f"Silver 최신 월 {completed_month}은 월말까지 적재됐다고 볼 수 없습니다: "
+            f"마지막 관측 {pd.Timestamp(snapshot_cutoff).date()}"
+        )
+    oos_signal_end = completed_month - 1
+    oos_start = oos_signal_end - (epochs.TH["min_oos_months"] - 1)
+    discovery_return_end = oos_start - 1
+    discovery_cutoff = panel.monthly.loc[
+        panel.monthly["ym"].eq(discovery_return_end), "trade_date"
+    ].max()
+    if pd.isna(discovery_cutoff):
+        raise ValueError(
+            "36개월 OOS와 최소 discovery를 분리할 Silver 이력이 부족합니다: "
+            f"필요 discovery return 월 {discovery_return_end}"
+        )
+    window = CampaignWindow.from_completed_snapshot(
+        discovery_data_cutoff=str(pd.Timestamp(discovery_cutoff).date()),
+        snapshot_cutoff=str(pd.Timestamp(snapshot_cutoff).date()),
+        oos_months=epochs.TH["min_oos_months"],
+    )
+    discovery_months = len(pd.period_range(
+        epochs.RESEARCH_START, window.discovery_signal_end, freq="M",
+    ))
+    if discovery_months < epochs.TH["min_months"]:
+        raise ValueError(
+            "36개월 OOS를 봉인한 뒤 최소 discovery 기간이 부족합니다: "
+            f"현재 {discovery_months}, 최소 {epochs.TH['min_months']} signal개월"
+        )
+    return window
 
 
 def cmd_campaign_start(args) -> None:
     run.load_registry()
     panel = run._load()
     try:
-        cutoff, first_unseen_month = _campaign_snapshot_boundary(panel)
+        window = _campaign_snapshot_boundary(panel)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    oos_start = args.oos_start or first_unseen_month
-    if pd.Period(oos_start, freq="M") < pd.Period(first_unseen_month, freq="M"):
-        raise SystemExit(
-            "OOS 시작은 campaign 생성 때 완전히 보지 않은 월이어야 합니다: "
-            f"최소 {first_unseen_month}"
-        )
-    path = epochs.start_campaign(
-        "research", args.campaign, data_cutoff=cutoff, oos_start=oos_start,
+    snapshot_panel = run._scope_snapshot_panel(
+        panel, snapshot_cutoff=window.snapshot_cutoff,
     )
+    discovery_panel = run._scope_discovery_panel(
+        panel,
+        data_cutoff=window.discovery_data_cutoff,
+        oos_start=window.oos_signal_start,
+    )
+    path = epochs.start_campaign(
+        "research", args.campaign,
+        discovery_data_cutoff=window.discovery_data_cutoff,
+        snapshot_cutoff=window.snapshot_cutoff,
+        snapshot_digest=P.snapshot_digest(snapshot_panel),
+        discovery_snapshot_digest=P.snapshot_digest(discovery_panel),
+    )
+    context = research.write_context(panel, F.REGISTRY)
     print(f"campaign 생성: {path}")
-    print("최종 OOS: SEALED")
+    print(
+        f"Discovery signal 종료 {window.discovery_signal_end}; "
+        f"OOS signal {window.oos_signal_start}~{window.oos_signal_end} (SEALED)"
+    )
+    print(f"마지막 OOS 수익률 월: {window.oos_return_end}")
+    print(f"campaign 전용 컨텍스트: {context}")
 
 
 def cmd_epoch_start(args) -> None:
@@ -88,11 +146,16 @@ def cmd_epoch_start(args) -> None:
     if missing:
         raise SystemExit(f"등록되지 않은 팩터: {missing}")
     factors = [F.REGISTRY[name] for name in args.factors]
+    attempted = run.trials.TrialLedger(run.TRIAL_DB).definition_hashes()
     for factor in factors:
         if factor.name not in RESEARCH_SPECS:
             raise SystemExit(f"자율 연구 후보가 아닙니다: {factor.name}")
         try:
-            research.assert_new_candidate(factor, RESEARCH_SPECS[factor.name])
+            research.assert_new_candidate(
+                factor,
+                RESEARCH_SPECS[factor.name],
+                attempted_definition_hashes=attempted,
+            )
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
     try:
@@ -114,7 +177,13 @@ def cmd_evaluate(args) -> None:
             "factors/candidates/*.py에 FACTOR와 RESEARCH_SPEC을 등록하세요."
         )
     try:
-        research.assert_new_candidate(F.REGISTRY[args.factor], RESEARCH_SPECS[args.factor])
+        research.assert_new_candidate(
+            F.REGISTRY[args.factor],
+            RESEARCH_SPECS[args.factor],
+            attempted_definition_hashes=(
+                run.trials.TrialLedger(run.TRIAL_DB).definition_hashes()
+            ),
+        )
         epochs.assert_candidate_ready(
             "research", args.campaign, args.epoch, F.REGISTRY[args.factor]
         )
@@ -126,9 +195,12 @@ def cmd_evaluate(args) -> None:
         panel, df, targets, results = run._evaluate(
             namespace,
             phase="discovery",
-            data_cutoff=campaign["data_cutoff"],
+            data_cutoff=campaign["discovery"]["data_cutoff"],
             oos_start=campaign["oos"]["start"],
             defer_multiple_testing=True,
+            discovery_snapshot_digest=(
+                campaign["snapshot"]["discovery_input_digest"]
+            ),
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
@@ -159,42 +231,85 @@ def cmd_epoch_close(args) -> None:
         raise SystemExit(str(exc)) from exc
     print(f"epoch 종료: {report}")
     print(f"구조화 성찰: {result}")
-    print("Discovery FDR: PENDING (campaign freeze에서 전체 후보 일괄 판정)")
+    print("Discovery FDR: PENDING (campaign finalize에서 전체 후보 일괄 판정)")
     print("최종 OOS: SEALED")
 
 
-def cmd_campaign_freeze(args) -> None:
+def cmd_campaign_finalize(args) -> None:
     run.load_registry()
     panel = run._load()
     try:
-        path = epochs.freeze_campaign("research", args.campaign, args.factors)
+        path = epochs.finalize_campaign("research", args.campaign)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     campaign = epochs.load_campaign("research", args.campaign)
     context = research.write_context(panel, F.REGISTRY)
-    if campaign["status"] == "CLOSED_NO_SURVIVOR":
-        print(f"campaign 종료(통과 survivor 없음): {path}")
+    if campaign["status"] == "CLOSED_NO_QUALIFIED":
+        print(f"campaign 종료(기준 통과 후보 없음): {path}")
     else:
-        print(f"campaign 동결: {path}")
-        print(f"survivor {len(campaign['survivors'])}개 정의 해시 고정")
+        print(f"campaign discovery 확정: {path}")
+        print(f"기준 통과 후보 {len(campaign['qualified_factors'])}개 자동 구현 대상")
     print(f"Discovery BY 확정: {campaign['discovery_multiple_testing']}")
     print(f"다음 루프 컨텍스트 갱신: {context}")
-    if campaign["status"] == "FROZEN":
-        print(
-            f"OOS {campaign['oos']['start']}부터 최소 {campaign['oos']['min_months']}개월; "
-            f"가장 이른 공개 가능 데이터 월 {campaign['oos']['earliest_data_month']}"
+    if campaign["status"] == "AWAITING_IMPLEMENTATION":
+        print("다음 단계: qualified 전체의 Gold SQL 작성 및 discovery-only parity 검증")
+        print("OOS는 구현 검증이 끝날 때까지 SEALED")
+
+
+def cmd_campaign_verify_implementations(args) -> None:
+    run.load_registry()
+    campaign = epochs.load_campaign("research", args.campaign)
+    if campaign.get("status") != "AWAITING_IMPLEMENTATION":
+        raise SystemExit(
+            "AWAITING_IMPLEMENTATION campaign만 구현 검증할 수 있습니다: "
+            f"{campaign.get('status')}"
         )
+    factors = []
+    for row in campaign["qualified_factors"]:
+        factor = F.REGISTRY[row["name"]] if row["name"] in F.REGISTRY else None
+        if factor is None or factor.definition_hash != row["definition_hash"]:
+            raise SystemExit(f"동결 후보 소스/hash를 재현할 수 없습니다: {row['name']}")
+        factors.append(factor)
+    try:
+        evidence = run.verify_implementations(campaign, factors)
+    except (ValueError, OSError) as exc:
+        raise SystemExit(str(exc)) from exc
+    try:
+        attempt = epochs.record_implementation_attempt(
+            "research", args.campaign, evidence,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    failed = [row for row in evidence if not row["passed"]]
+    if failed:
+        summary = "; ".join(
+            f"{row['factor']}={','.join(row['failure_reasons'])}" for row in failed
+        )
+        raise SystemExit(
+            f"Gold 구현 parity 실패; campaign은 AWAITING_IMPLEMENTATION 유지: {summary}. "
+            f"시도 증거: {attempt}"
+        )
+    try:
+        path = epochs.record_implementation_verification(
+            "research", args.campaign, evidence,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    panel = run._load()
+    context = research.write_context(panel, F.REGISTRY)
+    print(f"Gold 구현 검증 확정: {path}")
+    print(f"Python/SQL key·raw value·direction rank parity: {len(evidence)}개 PASS")
+    print("campaign 상태: READY_FOR_CONFIRMATION")
+    print("Gold write: 없음")
+    print(f"다음 루프 컨텍스트: {context}")
 
 
 def cmd_campaign_reveal(args) -> None:
     run.load_registry()
     panel = run._load()
-    panel_month = panel.monthly["ym"].max()
-    try:
-        campaign = epochs.assert_reveal_ready("research", args.campaign, panel_month)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
-    names = [row["name"] for row in campaign["survivors"]]
+    panel_as_of = panel.monthly["trade_date"].max()
+    campaign = epochs.load_campaign("research", args.campaign)
+    names = [row["name"] for row in campaign["qualified_factors"]]
     discovery_artifact = epochs.load_discovery_multiple_testing(
         "research", args.campaign,
     )
@@ -202,27 +317,45 @@ def cmd_campaign_reveal(args) -> None:
         row["definition_hash"]: row
         for row in discovery_artifact["results"]
     }
-    for row in campaign["survivors"]:
+    for row in campaign["qualified_factors"]:
         if row["name"] not in F.REGISTRY:
             raise SystemExit(f"동결 후보 소스가 없습니다: {row['name']}")
         if F.REGISTRY[row["name"]].definition_hash != row["definition_hash"]:
             raise SystemExit(f"동결 후 정의가 바뀌었습니다: {row['name']}")
+    factors = [F.REGISTRY[name] for name in names]
+    try:
+        bindings = run._implementation_bindings(factors)
+        snapshot = run._scope_snapshot_panel(
+            panel, snapshot_cutoff=campaign["snapshot"]["data_cutoff"],
+        )
+        snapshot_digest = P.snapshot_digest(snapshot)
+        campaign = epochs.assert_reveal_ready(
+            "research", args.campaign, panel_as_of,
+            snapshot_digest=snapshot_digest,
+            current_bindings=bindings,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     namespace = argparse.Namespace(factor=None)
     _, _, factors, results = run._evaluate(
         namespace,
         phase="full",
         oos_start=campaign["oos"]["start"],
         oos_end=campaign["oos"]["signal_end"],
-        data_cutoff=campaign["data_cutoff"],
+        data_cutoff=campaign["discovery"]["data_cutoff"],
         factor_names=names,
         calibration_scope={
             "discovery_family_size": campaign["discovery_family_size"],
-            "oos_family_size": len(campaign["survivors"]),
+            "oos_family_size": len(campaign["qualified_factors"]),
             "discovery_family_digest": campaign["discovery_family_digest"],
             "oos_family_digest": campaign["oos_family_digest"],
-            "research_data_cutoff": campaign["data_cutoff"],
+            "research_data_cutoff": campaign["discovery"]["data_cutoff"],
+            "qualification_policy": campaign["qualification_policy"],
         },
         frozen_discovery=frozen_discovery,
+        discovery_snapshot_digest=(
+            campaign["snapshot"]["discovery_input_digest"]
+        ),
     )
     confirmations = []
     for factor, result in zip(factors, results, strict=True):
@@ -234,7 +367,12 @@ def cmd_campaign_reveal(args) -> None:
             "evaluation": serialized,
         })
     try:
-        report, result = epochs.record_reveal("research", args.campaign, confirmations)
+        report, result = epochs.record_reveal(
+            "research", args.campaign, confirmations,
+            panel_as_of=panel_as_of,
+            snapshot_digest=snapshot_digest,
+            current_bindings=bindings,
+        )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     context = research.write_context(panel, F.REGISTRY)
@@ -251,7 +389,6 @@ def main() -> None:
     commands.add_parser("context", help="다음 루프가 읽을 현재 연구 상태 생성")
     campaign_start = commands.add_parser("campaign-start", help="봉인 OOS campaign 시작")
     campaign_start.add_argument("--campaign", required=True)
-    campaign_start.add_argument("--oos-start")
     epoch_start = commands.add_parser("epoch-start", help="후보 배치 사전등록")
     epoch_start.add_argument("--campaign", required=True)
     epoch_start.add_argument("--epoch", required=True)
@@ -263,12 +400,16 @@ def main() -> None:
     epoch_close = commands.add_parser("epoch-close", help="epoch 종료 및 구조화 성찰")
     epoch_close.add_argument("--campaign", required=True)
     epoch_close.add_argument("--epoch", required=True)
-    campaign_freeze = commands.add_parser("campaign-freeze", help="survivor 정의 동결")
-    campaign_freeze.add_argument("--campaign", required=True)
-    campaign_freeze.add_argument(
-        "--factors", nargs="*", default=[],
-        help="OOS survivor. 모두 탈락이면 생략해 campaign을 종료",
+    campaign_finalize = commands.add_parser(
+        "campaign-finalize",
+        help="campaign 전체 BY 후 모든 기준 통과 후보를 자동 확정",
     )
+    campaign_finalize.add_argument("--campaign", required=True)
+    campaign_verify = commands.add_parser(
+        "campaign-verify-implementations",
+        help="qualified 전체 Gold SQL을 discovery 구간에서 Python과 대조",
+    )
+    campaign_verify.add_argument("--campaign", required=True)
     campaign_reveal = commands.add_parser("campaign-reveal", help="충분히 쌓인 봉인 OOS를 한 번 공개")
     campaign_reveal.add_argument("--campaign", required=True)
     args = parser.parse_args()
@@ -278,7 +419,8 @@ def main() -> None:
         "epoch-start": cmd_epoch_start,
         "evaluate": cmd_evaluate,
         "epoch-close": cmd_epoch_close,
-        "campaign-freeze": cmd_campaign_freeze,
+        "campaign-finalize": cmd_campaign_finalize,
+        "campaign-verify-implementations": cmd_campaign_verify_implementations,
         "campaign-reveal": cmd_campaign_reveal,
     }[args.command](args)
 

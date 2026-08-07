@@ -73,16 +73,31 @@ Agent가 한 사이클 안에서 여러 변형을 시험하고 가장 좋은 것
 - McLean·Pontiff는 예측변수 수익률이 원 논문 표본 밖과 발표 이후에 감소함을 보여주므로,
   고정 OOS를 개발 표본과 분리해야 한다.
 
-IC의 정의·효과크기·시간 안정성·다중검정 임계값에 관한 구체적인 판단과 출처는
-[좋은 주식 팩터의 판정 기준](../../../../docs/factor-promotion-criteria.md)에 분리해 둔다.
+연구 Python과 생산 Gold SQL은 같은 정의의 서로 다른 구현이다. 연구 결과가 좋아도 SQL의 join,
+시점 조건, 결측 처리나 `predicted_sign`이 다르면 실제 Gold 신호는 다른 팩터가 된다. 따라서
+discovery를 통과한 모든 후보의 definition hash와 SQL SHA256을 먼저 결박하고, 봉인 OOS를 열기
+전에 discovery 구간에서 key·raw value·rank parity를 검증한다. 이 검증은 구현 오류를 찾기 위한
+것이며 Gold write나 발행 승인이 아니다.
+
+IC의 정의·효과크기·시간 안정성·다중검정 임계값에 관한 구체적인 판단과 출처는 활성
+`factor-research/docs/factor-promotion-criteria.md`에 분리해 둔다.
 
 ### 최종 OOS는 campaign 단위로 봉인한다
 
 고정된 구간도 반복해서 결과를 보고 다음 가설을 고르면 연구자의 선택을 통해 개발 데이터가 된다.
 따라서 여러 후보를 epoch 시작 전에 동결하고, discovery 성찰에는 구조적 실패와 중복만 전달한다.
-최종 OOS는 여러 epoch의 survivor를 동결한 뒤 한 번 공개하고 그 campaign을 종료한다. Bailey 외의
+모든 epoch을 닫으면 `비REJECT ∩ discovery BY PASS` 후보 전부를 자동 확인 대상으로 확정한다.
+사람이 좋아 보이는 후보만 고르는 자유도를 없애야 시행 원장에 드러나지 않는 선택 편향을 막을 수
+있다. 최종 OOS는 이 전체 family에 정확히 한 번 공개하고 campaign을 종료한다. Bailey 외의
 백테스트 과적합과 McLean·Pontiff의 표본 밖 성능 감소는 단순한 시간 분할뿐 아니라 holdout을
 반복적인 모델 선택에서 보호해야 한다는 운영 근거가 된다.
+
+역사 데이터도 후보 정의·선택 전에 접근을 차단하면 시간 순서가 지켜진 holdout이 될 수 있다.
+최신 완료 수익률월에서 36 signal개월을 역산해 봉인하면 수년을 새로 기다리지 않고 시간 강건성을
+확인할 수 있지만, 이미 그 구간의 결과를 본 후보에 소급 적용해서 독립성이 생기지는 않는다.
+그런 결과는 `retrospective-only`로만 남긴다. 한 번 공개한 구간도 이후 가설 선택에 영향을 주므로
+다른 campaign의 OOS로 재사용하지 않는다. 36개월과 IC 임계값의 정량 근거는 활성
+`factor-research/docs/factor-promotion-criteria.md`에만 둔다.
 
 ### 거래 가능성은 보되 가설 검정과 혼동하지 않는다
 

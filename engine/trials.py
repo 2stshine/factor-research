@@ -52,6 +52,12 @@ class TrialLedger:
     def _connect(self):
         return sqlite3.connect(self.path, timeout=30)
 
+    def definition_hashes(self) -> frozenset[str]:
+        """Return every definition ever evaluated through the local engine."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT definition_hash FROM trial").fetchall()
+        return frozenset(str(row[0]) for row in rows)
+
     def summary(
         self,
         current_hashes: list[str] | tuple[str, ...] = (),
@@ -98,10 +104,11 @@ class TrialLedger:
         months: list[pd.Period],
         *,
         requested: str | None = None,
-        default_months: int = 60,
+        default_months: int = 36,
         min_in_sample: int = 60,
-        min_oos_months: int = 60,
+        min_oos_months: int = 36,
     ) -> pd.Period:
+        """Legacy pre-epoch splitter; epoch-1.4 campaign code must not use it."""
         ordered = sorted(set(months))
         if len(ordered) < min_in_sample + min_oos_months:
             raise ValueError(

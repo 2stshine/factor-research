@@ -19,7 +19,7 @@ from engine.factors import Factor
 from engine.panel import Panel
 
 
-RULESET_VERSION = "fr-3.5.0"
+RULESET_VERSION = "fr-3.7.0"
 RESEARCH_START = pd.Period("2018-03", freq="M")
 EVALUATION_PHASES = {"discovery", "full"}
 
@@ -33,7 +33,7 @@ IMPACT = 0.0010
 
 TH = {
     "min_months": 60,
-    "min_oos_months": 60,
+    "min_oos_months": 36,
     "coverage": 0.50,
     "monthly_coverage_p10": 0.30,
     "min_ic": 0.03,
@@ -92,7 +92,11 @@ class Result:
         return any(c.passed is False and c.tier.startswith(prefix) for c in self.checks)
 
 
-def discovery_evidence_digest(result: Result) -> str:
+def discovery_evidence_digest(
+    result: Result,
+    *,
+    ruleset_version: str | None = None,
+) -> str:
     """Hash immutable T0-T3 development evidence, excluding OOS and live Gold."""
     def value(raw):
         if isinstance(raw, (np.bool_, np.integer, np.floating)):
@@ -108,7 +112,7 @@ def discovery_evidence_digest(result: Result) -> str:
         and not key.startswith("oos_")
     }
     payload = {
-        "ruleset_version": RULESET_VERSION,
+        "ruleset_version": ruleset_version or RULESET_VERSION,
         "definition_hash": result.definition_hash,
         "checks": [
             {
@@ -421,6 +425,16 @@ def evaluate(
     """
     if phase not in EVALUATION_PHASES:
         raise ValueError(f"지원하지 않는 평가 phase={phase!r}: {sorted(EVALUATION_PHASES)}")
+    if oos_start is not None and data_cutoff is not None:
+        from engine.boundaries import CampaignWindow
+
+        window = CampaignWindow.create(
+            discovery_data_cutoff=str(pd.Timestamp(data_cutoff).date()),
+            oos_start=oos_start,
+            oos_months=TH["min_oos_months"],
+        )
+        if phase == "full" and oos_end is not None:
+            window.validate_oos_end(oos_end)
     col = f"f_{factor.name}"
     result = Result(factor=factor.name, definition_hash=factor.definition_hash)
     result.metrics["research_start"] = str(RESEARCH_START)
@@ -583,13 +597,13 @@ def evaluate(
             "oos_ic_p": oos_p,
         })
         oos_pass = bool(
-            len(oos_series) >= TH["min_oos_months"]
+            len(oos_series) == TH["min_oos_months"]
             and oos_ic >= TH["oos_ic"]
         )
         add(Check(
             "T4.1", "고정 OOS IC", oos_pass, oos_ic,
-            f"months>={TH['min_oos_months']} & IC>={TH['oos_ic']}",
-            "HAC p는 동시 공개 survivor의 BY 입력값",
+            f"months=={TH['min_oos_months']} & IC>={TH['oos_ic']}",
+            "HAC p는 동시 확인되는 자동 통과 후보의 BY 입력값",
         ))
 
     result.metrics.update({"n_trials": trial_count})
@@ -626,6 +640,7 @@ def evaluate_oos(
     *,
     oos_start: pd.Period,
     oos_end: pd.Period,
+    data_cutoff: str,
 ) -> Result:
     """Evaluate only the sealed OOS endpoint on its own fixed snapshot.
 
@@ -633,6 +648,14 @@ def evaluate_oos(
     caller.  Keeping this path separate prevents confirmation-boundary dead/
     forward labels from rewriting historical T1-T3 evidence.
     """
+    from engine.boundaries import CampaignWindow
+
+    window = CampaignWindow.create(
+        discovery_data_cutoff=data_cutoff,
+        oos_start=oos_start,
+        oos_months=TH["min_oos_months"],
+    )
+    window.validate_oos_end(oos_end)
     col = f"f_{factor.name}"
     result = Result(factor=factor.name, definition_hash=factor.definition_hash)
     # The frozen window is audit metadata even when confirmation cannot be
@@ -674,13 +697,13 @@ def evaluate_oos(
         "oos_ic_p": oos_p,
     })
     passed = bool(
-        len(oos_series) >= TH["min_oos_months"]
+        len(oos_series) == TH["min_oos_months"]
         and oos_ic >= TH["oos_ic"]
     )
     result.checks.append(Check(
         "T4.1", "고정 OOS IC", passed, oos_ic,
-        f"months>={TH['min_oos_months']} & IC>={TH['oos_ic']}",
-        "HAC p는 동시 공개 survivor의 BY 입력값",
+        f"months=={TH['min_oos_months']} & IC>={TH['oos_ic']}",
+        "HAC p는 동시 확인되는 자동 통과 후보의 BY 입력값",
     ))
     result.series["oos_ic"] = oos_series
     return result
@@ -755,13 +778,13 @@ def apply_multiple_testing(
 
 
 def apply_oos_multiple_testing(results: list[Result]) -> None:
-    """Control BY-FDR across every pre-registered survivor revealed together."""
-    # A survivor that stops before T4 still counts as an attempted confirmation.
+    """Control BY-FDR across every automatically qualified factor."""
+    # A qualified factor that stops before T4 still counts as an attempted confirmation.
     # Assigning p=1 preserves the registered family size without manufacturing
     # OOS evidence for a result that never reached the OOS test.
     hashes = [result.definition_hash for result in results]
     if len(hashes) != len(set(hashes)):
-        raise ValueError("OOS survivor definition hash는 고유해야 합니다")
+        raise ValueError("OOS 자동 통과 후보 definition hash는 고유해야 합니다")
     pvalues = {
         result.definition_hash: (
             float(result.metrics["oos_ic_p"])
@@ -786,7 +809,7 @@ def apply_oos_multiple_testing(results: list[Result]) -> None:
             "T4.2", "OOS 다중검정 FDR",
             bool(testable and qvalue <= TH["fdr_q"]), qvalue,
             f"BY q<={TH['fdr_q']}",
-            f"동시 공개 survivor {m}개; "
+            f"동시 확인 자동 통과 후보 {m}개; "
             + ("유효 HAC p" if testable else "HAC p 누락으로 p=1 대입"),
         ))
         _finalize(result)
@@ -806,6 +829,7 @@ def apply_null_calibration(
     confirmation_snapshot_digest: str | None = None,
     research_data_cutoff: str | None = None,
     oos_end: str | pd.Period | None = None,
+    qualification_policy: str | None = None,
     min_nulls: int = 100,
     min_nulls_per_kind: int = 25,
     max_false_positive_rate: float = .10,
@@ -819,7 +843,7 @@ def apply_null_calibration(
     if valid:
         required = {
             "ruleset_version", "data_cutoff", "pass", "calibration_unit", "fdr_q",
-            "kind", "generator_suite",
+            "kind", "generator_suite", "qualification_policy",
         }
         if oos_start is not None:
             required.update({
@@ -834,7 +858,7 @@ def apply_null_calibration(
                 & calibration["data_cutoff"].astype(str).eq(data_cutoff)
                 & calibration["calibration_unit"].eq("null_campaign_family")
                 & calibration["fdr_q"].eq(TH["fdr_q"])
-                & calibration["generator_suite"].eq("null-v1")
+                & calibration["generator_suite"].eq("null-v2")
             ]
             if oos_start is not None:
                 if (
@@ -846,6 +870,7 @@ def apply_null_calibration(
                     or confirmation_snapshot_digest is None
                     or research_data_cutoff is None
                     or oos_end is None
+                    or qualification_policy is None
                 ):
                     current = current.iloc[0:0]
                 else:
@@ -861,6 +886,9 @@ def apply_null_calibration(
                         )
                         & current["research_data_cutoff"].astype(str).eq(research_data_cutoff)
                         & current["oos_end"].astype(str).eq(str(pd.Period(oos_end, freq="M")))
+                        & current["qualification_policy"].astype(str).eq(
+                            qualification_policy
+                        )
                     ]
             count = len(current)
             rate = float(current["pass"].astype(bool).mean()) if count else float("nan")
@@ -900,6 +928,7 @@ def apply_null_calibration(
         result.metrics["null_oos_family_digest"] = oos_family_digest
         result.metrics["null_gold_family_digest"] = gold_family_digest
         result.metrics["null_confirmation_snapshot_digest"] = confirmation_snapshot_digest
+        result.metrics["null_qualification_policy"] = qualification_policy
         if any(check.tier.startswith("T4") for check in result.checks):
             calibrated = Check(
                 "T4.4", "게이트 귀무 보정", bool(valid), rate if np.isfinite(rate) else None,

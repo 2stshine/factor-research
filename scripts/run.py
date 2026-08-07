@@ -3,13 +3,14 @@
 
   python scripts/run.py build                 # 패널 캐시 생성 (한 번)
   python scripts/run.py null --campaign ID    # 같은 크기의 귀무 campaign 오류율 측정
-  python scripts/run.py gate                  # 등록 팩터 전체 게이트 통과
-  python scripts/run.py gate --factor qual_roe
+  python scripts/research.py campaign-start --campaign ID
+  python scripts/research.py evaluate --campaign ID --epoch EPOCH --factor FACTOR
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import pickle
 import sys
@@ -20,10 +21,67 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from engine import factors as F
-from engine import epochs, fundamentals, gate, null, panel as P, publish, silver, trials
+from engine import epochs, fundamentals, gate, implementation, null, panel as P, publish, silver, trials
+from engine.boundaries import CampaignWindow
 
 CACHE = Path(os.environ.get("CACHE_DIR", ".cache"))
 TRIAL_DB = CACHE / "trials.sqlite3"
+
+
+def _implementation_contract(
+    factor: F.Factor,
+) -> tuple[publish.ImplementationRef, dict, Path, dict]:
+    """Authenticate one allowlisted TeamAlpha query and its research binding."""
+    configured = os.environ.get("TEAMALPHA_DATA_DIR")
+    data_repo = (
+        Path(configured).expanduser()
+        if configured
+        else Path(__file__).resolve().parents[2] / "TeamAlpha-data"
+    )
+    manifest_path = data_repo / "pipeline/gold/factors/manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"TeamAlpha Gold 구현 manifest가 없습니다: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    spec = manifest.get(factor.name)
+    if spec is None:
+        raise ValueError(f"TeamAlpha Gold 구현이 없는 팩터입니다: {factor.name}")
+    if int(spec.get("predicted_sign", 0)) != factor.predicted_sign:
+        raise ValueError(f"Gold manifest predicted_sign 불일치: {factor.name}")
+    if spec.get("research_definition_hash") != factor.definition_hash:
+        raise ValueError(f"Gold manifest research_definition_hash 불일치: {factor.name}")
+    if spec.get("value_contract") != publish.VALUE_CONTRACT_ID:
+        raise ValueError(f"Gold value/rank 계약 불일치: {factor.name}")
+    relative = Path(spec["sql"])
+    sql_path = (data_repo / relative).resolve()
+    if data_repo.resolve() not in sql_path.parents or not sql_path.is_file():
+        raise ValueError(f"허용된 Gold SQL 파일을 찾을 수 없습니다: {relative}")
+    sql_text = sql_path.read_text(encoding="utf-8")
+    implementation.validate_query_only_sql(sql_text)
+    reference = publish.ImplementationRef(
+        uri=f"repo://TeamAlpha-data/{relative.as_posix()}",
+        sha256=hashlib.sha256(sql_path.read_bytes()).hexdigest(),
+        research_definition_hash=factor.definition_hash,
+    )
+    binding = {
+        "factor": factor.name,
+        "definition_hash": factor.definition_hash,
+        "predicted_sign": factor.predicted_sign,
+        "value_contract": publish.VALUE_CONTRACT_ID,
+        "implementation_uri": reference.uri,
+        "implementation_sha256": reference.sha256,
+        "manifest_entry_digest": implementation.manifest_entry_digest(spec),
+    }
+    return reference, spec, sql_path, binding
+
+
+def _implementation_ref(factor: F.Factor) -> publish.ImplementationRef:
+    """Bind a research factor to one allowlisted TeamAlpha Gold SQL file."""
+    reference, _spec, _sql_path, _binding = _implementation_contract(factor)
+    return reference
+
+
+def _implementation_bindings(factors: list[F.Factor]) -> list[dict]:
+    return [_implementation_contract(factor)[3] for factor in factors]
 
 
 def load_registry():
@@ -127,15 +185,43 @@ def _rebuild_scoped_panel(
     **meta_updates,
 ) -> P.Panel:
     """Recompute dead membership and forward labels at the scoped boundary."""
+    scoped = scoped.drop(
+        columns=[column for column in scoped if str(column).startswith("f_")],
+        errors="ignore",
+    ).copy()
     last_day = pd.Timestamp(scoped["trade_date"].max())
     last_seen = scoped.groupby("asset_id")["trade_date"].max()
     dead = last_seen[last_seen < last_day - pd.Timedelta(days=P.INACTIVE_DAYS)]
-    meta = dict(pan.meta)
+    # Later closure observations are expected to be appended before reveal.
+    # Bind scoped evidence to stable source contracts, not mutable full-cache
+    # metadata such as last_day/n_dead that lies beyond the frozen cutoff.
+    meta = {
+        key: pan.meta.get(key)
+        for key in ("source", "return_field")
+        if key in pan.meta
+    }
     meta.update(meta_updates)
     output = P.Panel(monthly=scoped, dead=dead, meta=meta)
     for tag, terminal in (("opt", 0.0), ("mid", -0.50), ("pess", -1.00)):
         output.monthly[f"fwd_{tag}"] = P.forward_returns(output, terminal=terminal)
     return output
+
+
+def _scope_snapshot_panel(pan: P.Panel, *, snapshot_cutoff: str) -> P.Panel:
+    """Rebuild the exact completed Silver input frozen at campaign creation."""
+    cutoff = pd.Timestamp(snapshot_cutoff).normalize()
+    frame = pan.monthly
+    scoped = frame[
+        pd.to_datetime(frame["trade_date"]).dt.normalize().le(cutoff)
+    ].copy()
+    if scoped.empty or pd.Timestamp(scoped["trade_date"].max()).normalize() != cutoff:
+        raise ValueError(
+            "현재 캐시로 campaign snapshot을 정확히 재현할 수 없습니다: "
+            f"cutoff={cutoff.date()}"
+        )
+    return _rebuild_scoped_panel(
+        pan, scoped, campaign_snapshot_cutoff=str(cutoff.date()),
+    )
 
 
 def _scope_discovery_panel(
@@ -147,8 +233,11 @@ def _scope_discovery_panel(
     """Expose only the campaign snapshot to candidate code and discovery gates."""
     cutoff = pd.Timestamp(data_cutoff).normalize()
     start = pd.Period(oos_start, freq="M")
-    if start <= cutoff.to_period("M"):
-        raise ValueError("campaign OOS는 data cutoff 다음 달 이후여야 합니다")
+    CampaignWindow.create(
+        discovery_data_cutoff=str(cutoff.date()),
+        oos_start=start,
+        oos_months=gate.TH["min_oos_months"],
+    )
     frame = pan.monthly
     scoped = frame[
         pd.to_datetime(frame["trade_date"]).dt.normalize().le(cutoff)
@@ -166,7 +255,13 @@ def _scope_discovery_panel(
     )
 
 
-def _scope_confirmation_panel(pan: P.Panel, *, oos_end: pd.Period | str) -> P.Panel:
+def _scope_confirmation_panel(
+    pan: P.Panel,
+    *,
+    data_cutoff: str,
+    oos_start: pd.Period | str,
+    oos_end: pd.Period | str,
+) -> P.Panel:
     """Build the fixed OOS snapshot without leaking later observations.
 
     Signal/return rows stop at ``required_month``.  The immediately following
@@ -174,9 +269,15 @@ def _scope_confirmation_panel(pan: P.Panel, *, oos_end: pd.Period | str) -> P.Pa
     whether a name that vanished at the OOS boundary is inactive.  Otherwise a
     disappearing stock's terminal return can be selectively lost.
     """
-    signal_end = pd.Period(oos_end, freq="M")
-    required_month = signal_end + 1
-    closure_month = required_month + 1
+    window = CampaignWindow.create(
+        discovery_data_cutoff=data_cutoff,
+        oos_start=oos_start,
+        oos_months=gate.TH["min_oos_months"],
+    )
+    window.validate_oos_end(oos_end)
+    signal_end = window.oos_signal_end
+    required_month = window.oos_return_end
+    closure_month = window.closure_month
     if pan.monthly["ym"].max() < closure_month:
         raise ValueError(
             f"OOS 수익률 월 {required_month}의 월말 확정에는 "
@@ -200,9 +301,17 @@ def _scope_confirmation_panel(pan: P.Panel, *, oos_end: pd.Period | str) -> P.Pa
         raise ValueError(
             f"고정 OOS 마지막 수익률 월 {required_month}이 snapshot에 없습니다"
         )
+    scoped = scoped.drop(
+        columns=[column for column in scoped if str(column).startswith("f_")],
+        errors="ignore",
+    ).copy()
     last_seen = observed.groupby("asset_id")["trade_date"].max()
     dead = last_seen[last_seen < closure_as_of - pd.Timedelta(days=P.INACTIVE_DAYS)]
-    meta = dict(pan.meta)
+    meta = {
+        key: pan.meta.get(key)
+        for key in ("source", "return_field")
+        if key in pan.meta
+    }
     meta.update({
         "confirmation_signal_end": str(signal_end),
         "confirmation_required_month": str(required_month),
@@ -213,6 +322,124 @@ def _scope_confirmation_panel(pan: P.Panel, *, oos_end: pd.Period | str) -> P.Pa
     for tag, terminal in (("opt", 0.0), ("mid", -0.50), ("pess", -1.00)):
         output.monthly[f"fwd_{tag}"] = P.forward_returns(output, terminal=terminal)
     return output
+
+
+def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict]:
+    """Run read-only, discovery-only Python/Gold SQL parity for all qualifiers."""
+    window = CampaignWindow.from_completed_snapshot(
+        discovery_data_cutoff=campaign["discovery"]["data_cutoff"],
+        snapshot_cutoff=campaign["snapshot"]["data_cutoff"],
+        oos_months=gate.TH["min_oos_months"],
+    )
+    base_panel = _load()
+    discovery_panel = _scope_discovery_panel(
+        base_panel,
+        data_cutoff=window.discovery_data_cutoff,
+        oos_start=window.oos_signal_start,
+    )
+    snapshot_digest = P.snapshot_digest(discovery_panel)
+    expected_digest = campaign["snapshot"]["discovery_input_digest"]
+    if snapshot_digest != expected_digest:
+        raise ValueError("campaign 생성 당시 discovery Silver snapshot을 재현하지 못했습니다")
+
+    start = gate.RESEARCH_START
+    end = window.discovery_signal_end
+    frame = discovery_panel.monthly
+    in_scope = (
+        discovery_panel.universe
+        & frame["ym"].ge(start)
+        & frame["ym"].le(end)
+    )
+    evidence_by_name: dict[str, dict] = {}
+    prepared: list[tuple[F.Factor, dict, Path, dict, pd.DataFrame]] = []
+    for factor in factors:
+        binding: dict | None = None
+        try:
+            _reference, spec, sql_path, binding = _implementation_contract(factor)
+        except Exception as exc:
+            evidence_by_name[factor.name] = implementation.failure_evidence(
+                factor,
+                discovery_signal_start=start,
+                discovery_signal_end=end,
+                discovery_snapshot_digest=snapshot_digest,
+                stage="contract",
+                error=exc,
+                binding=binding,
+            )
+            continue
+        try:
+            raw = factor.compute(frame.copy())
+            if not isinstance(raw, pd.Series) or not raw.index.equals(frame.index):
+                raise ValueError(f"Python factor가 입력 index의 Series를 반환하지 않습니다: {factor.name}")
+            raw = pd.to_numeric(raw, errors="coerce")
+            finite = pd.Series(
+                pd.notna(raw) & (raw.abs() != float("inf")), index=raw.index,
+            )
+            valid = in_scope & finite
+            python_frame = frame.loc[valid, ["asset_id", "trade_date"]].rename(
+                columns={"trade_date": "as_of_date"},
+            )
+            python_frame["value"] = raw.loc[valid].astype(float).to_numpy()
+        except Exception as exc:
+            evidence_by_name[factor.name] = implementation.failure_evidence(
+                factor,
+                discovery_signal_start=start,
+                discovery_signal_end=end,
+                discovery_snapshot_digest=snapshot_digest,
+                stage="python_compute",
+                error=exc,
+                binding=binding,
+            )
+            continue
+        prepared.append((factor, spec, sql_path, binding, python_frame))
+
+    if prepared:
+        try:
+            with silver.connect(read_only=True) as conn:
+                for factor, spec, sql_path, binding, python_frame in prepared:
+                    try:
+                        with conn.cursor() as cursor:
+                            cursor.execute(sql_path.read_text(encoding="utf-8"), {
+                                "start_month": f"{start}-01",
+                                "end_month": f"{end}-01",
+                            })
+                            rows = cursor.fetchall()
+                            columns = [column.name for column in cursor.description]
+                        sql_frame = pd.DataFrame(rows, columns=columns)
+                        evidence_by_name[factor.name] = implementation.compare_parity(
+                            factor,
+                            python_frame,
+                            sql_frame,
+                            implementation_uri=binding["implementation_uri"],
+                            implementation_sha256=binding["implementation_sha256"],
+                            manifest_spec=spec,
+                            discovery_signal_start=start,
+                            discovery_signal_end=end,
+                            discovery_snapshot_digest=snapshot_digest,
+                        )
+                    except Exception as exc:
+                        evidence_by_name[factor.name] = implementation.failure_evidence(
+                            factor,
+                            discovery_signal_start=start,
+                            discovery_signal_end=end,
+                            discovery_snapshot_digest=snapshot_digest,
+                            stage="sql_execute_or_parity",
+                            error=exc,
+                            binding=binding,
+                        )
+        except Exception as exc:
+            for factor, _spec, _sql_path, binding, _python_frame in prepared:
+                if factor.name not in evidence_by_name:
+                    evidence_by_name[factor.name] = implementation.failure_evidence(
+                        factor,
+                        discovery_signal_start=start,
+                        discovery_signal_end=end,
+                        discovery_snapshot_digest=snapshot_digest,
+                        stage="database_connect",
+                        error=exc,
+                        binding=binding,
+                    )
+    return [evidence_by_name[factor.name] for factor in factors]
 
 
 def _merge_discovery_and_oos(
@@ -238,7 +465,7 @@ def _merge_discovery_and_oos(
         failures = ", ".join(check.name for check in confirmation.failed) or "OOS 계산 불가"
         oos_check = gate.Check(
             "T4.1", "고정 OOS IC", False, None,
-            f"months>={gate.TH['min_oos_months']} & IC>={gate.TH['oos_ic']}",
+            f"months=={gate.TH['min_oos_months']} & IC>={gate.TH['oos_ic']}",
             failures,
         )
     discovery.checks.append(oos_check)
@@ -259,7 +486,18 @@ def _evaluate(
     defer_multiple_testing: bool = False,
     calibration_scope: dict | None = None,
     frozen_discovery: dict[str, dict] | None = None,
+    discovery_snapshot_digest: str | None = None,
 ):
+    if phase == "discovery" and (
+        data_cutoff is None
+        or oos_start is None
+        or discovery_snapshot_digest is None
+    ):
+        raise ValueError(
+            "epoch-1.4 discovery는 campaign의 동결 cutoff·OOS 시작월·discovery "
+            "snapshot digest가 필수입니다. scripts/research.py campaign workflow를 "
+            "사용하세요."
+        )
     load_registry()
     base_pan = _load()
     frozen_oos = pd.Period(oos_start, freq="M") if oos_start is not None else None
@@ -271,14 +509,32 @@ def _evaluate(
         pan = _scope_discovery_panel(
             base_pan, data_cutoff=data_cutoff, oos_start=oos_start,
         )
+        if P.snapshot_digest(pan) != discovery_snapshot_digest:
+            raise ValueError(
+                "campaign 생성 당시 discovery Silver snapshot을 재현하지 못했습니다"
+            )
     elif phase == "full" and oos_end is not None:
-        pan = _scope_confirmation_panel(base_pan, oos_end=oos_end)
+        if data_cutoff is None or frozen_oos is None:
+            raise ValueError("봉인 confirmation에는 discovery cutoff와 OOS start가 필요합니다")
+        pan = _scope_confirmation_panel(
+            base_pan,
+            data_cutoff=data_cutoff,
+            oos_start=frozen_oos,
+            oos_end=oos_end,
+        )
         if frozen_discovery is not None:
             if data_cutoff is None or frozen_oos is None:
                 raise ValueError("봉인 confirmation에는 discovery cutoff와 OOS start가 필요합니다")
             development_pan = _scope_discovery_panel(
                 base_pan, data_cutoff=data_cutoff, oos_start=frozen_oos,
             )
+            if (
+                discovery_snapshot_digest is None
+                or P.snapshot_digest(development_pan) != discovery_snapshot_digest
+            ):
+                raise ValueError(
+                    "campaign 생성 당시 discovery Silver snapshot을 재현하지 못했습니다"
+                )
     else:
         pan = base_pan
     df = pan.monthly
@@ -316,6 +572,7 @@ def _evaluate(
             confirmation_snapshot_digest=confirmation_snapshot_digest,
             research_data_cutoff=scope.get("research_data_cutoff"),
             oos_end=frozen_oos_end,
+            qualification_policy=scope.get("qualification_policy"),
         )
     df = _ensure_factor_columns(pan, targets)
     development_df = (
@@ -352,7 +609,9 @@ def _evaluate(
         for result in results:
             frozen = frozen_discovery.get(result.definition_hash)
             if frozen is None:
-                raise ValueError(f"동결 discovery family에 없는 survivor입니다: {result.factor}")
+                raise ValueError(
+                    f"확정 discovery family에 없는 자동 통과 후보입니다: {result.factor}"
+                )
             current_p = result.metrics.get("ic_p_investable")
             frozen_p = frozen.get("pvalue")
             if (
@@ -364,7 +623,10 @@ def _evaluate(
                     f"동결 discovery p값을 재현하지 못했습니다: {result.factor}. "
                     "campaign 생성 당시 Silver snapshot을 복구하세요."
                 )
-            current_digest = gate.discovery_evidence_digest(result)
+            current_digest = gate.discovery_evidence_digest(
+                result,
+                ruleset_version=frozen.get("evidence_ruleset_version"),
+            )
             if current_digest != frozen.get("discovery_evidence_digest"):
                 raise ValueError(
                     f"동결 discovery 증거를 재현하지 못했습니다: {result.factor}. "
@@ -389,6 +651,7 @@ def _evaluate(
         for f, discovery_result in zip(targets, authenticated_discovery, strict=True):
             confirmation_result = gate.evaluate_oos(
                 f, pan, df, oos_start=frozen_oos, oos_end=frozen_oos_end,
+                data_cutoff=data_cutoff,
             )
             results.append(_merge_discovery_and_oos(
                 discovery_result, confirmation_result,
@@ -419,6 +682,7 @@ def _evaluate(
             confirmation_snapshot_digest=confirmation_snapshot_digest,
             research_data_cutoff=(calibration_scope or {}).get("research_data_cutoff"),
             oos_end=frozen_oos_end,
+            qualification_policy=(calibration_scope or {}).get("qualification_policy"),
         )
     if record_ledger:
         for factor, result in zip(targets, results, strict=True):
@@ -427,27 +691,11 @@ def _evaluate(
 
 
 def cmd_gate(args):
-    _, _, _, results = _evaluate(args, phase="discovery")
-
-    print("\n" + "=" * 104)
-    print(f"{'팩터':24} {'판정':12} {'IC':>7} {'투자가능IC':>10} {'OOS':>8} {'회전율':>8}  실패 검사")
-    print("-" * 104)
-    order = {gate.Verdict.PROMOTE: 0, gate.Verdict.PROVISIONAL: 1, gate.Verdict.REJECT: 2}
-    for r in sorted(results, key=lambda x: (order[x.verdict], -(x.metrics.get("ic_investable") or -99))):
-        m = r.metrics
-        icon = {"PROMOTE": "✅", "PROVISIONAL": "⚠️ ", "REJECT": "❌"}[r.verdict.value]
-        fails = ", ".join(c.name for c in r.failed)[:44]
-        print(f"{r.factor:24} {icon}{r.verdict.value:10} "
-              f"{m.get('ic_full', float('nan')):>7.3f} "
-              f"{m.get('ic_investable', float('nan')):>10.3f} "
-              f"{'SEALED':>8} "
-              f"{m.get('turnover', float('nan')):>7.0f}%  {fails}")
-
-    n_p = sum(1 for r in results if r.verdict == gate.Verdict.PROMOTE)
-    n_v = sum(1 for r in results if r.verdict == gate.Verdict.PROVISIONAL)
-    print(f"\n  PROMOTE {n_p} / PROVISIONAL {n_v} / REJECT {len(results)-n_p-n_v}  (후보 {len(results)})")
-    with open(CACHE / "gate_results.pkl", "wb") as fh:
-        pickle.dump(results, fh)
+    del args
+    raise SystemExit(
+        "전체 패널 gate는 역사적 OOS를 노출하므로 epoch-1.4에서 비활성화했습니다. "
+        "scripts/research.py의 campaign-start → epoch-start → evaluate를 사용하세요."
+    )
 
 
 def cmd_null(args):
@@ -459,9 +707,24 @@ def cmd_null(args):
         raise SystemExit("현재 protocol로 만든 campaign만 귀무 보정할 수 있습니다")
     if campaign.get("ruleset_version") != gate.RULESET_VERSION:
         raise SystemExit("현재 ruleset으로 만든 campaign만 귀무 보정할 수 있습니다")
-    if campaign.get("status") != "FROZEN":
-        raise SystemExit("survivor가 동결된 FROZEN campaign만 귀무 보정할 수 있습니다")
-    pan = _scope_confirmation_panel(pan, oos_end=campaign["oos"]["signal_end"])
+    if campaign.get("status") != "READY_FOR_CONFIRMATION":
+        raise SystemExit("자동 기준 통과가 확정된 campaign만 귀무 보정할 수 있습니다")
+    factors = [F.REGISTRY[row["name"]] for row in campaign["qualified_factors"]]
+    bindings = _implementation_bindings(factors)
+    snapshot = _scope_snapshot_panel(
+        pan, snapshot_cutoff=campaign["snapshot"]["data_cutoff"],
+    )
+    epochs.assert_reveal_ready(
+        "research", args.campaign, pan.monthly["trade_date"].max(),
+        snapshot_digest=P.snapshot_digest(snapshot),
+        current_bindings=bindings,
+    )
+    pan = _scope_confirmation_panel(
+        pan,
+        data_cutoff=campaign["discovery"]["data_cutoff"],
+        oos_start=campaign["oos"]["start"],
+        oos_end=campaign["oos"]["signal_end"],
+    )
     ledger = trials.TrialLedger(TRIAL_DB)
     with silver.connect(read_only=True) as conn:
         gold_trials = silver.load_gold_trial_history(conn)
@@ -475,62 +738,26 @@ def cmd_null(args):
         pan, n=args.n, trial_count=summary.count,
         prior_sharpes=summary.sharpes, oos_start=oos_start,
         oos_end=pd.Period(campaign["oos"]["signal_end"], freq="M"),
-        research_data_cutoff=campaign["data_cutoff"],
+        research_data_cutoff=campaign["discovery"]["data_cutoff"],
         discovery_family_size=int(campaign["discovery_family_size"]),
-        oos_family_size=len(campaign["survivors"]),
+        oos_family_size=len(campaign["qualified_factors"]),
         discovery_family_digest=campaign["discovery_family_digest"],
         oos_family_digest=campaign["oos_family_digest"],
         gold_family_digest=_signal_family_digest(approved),
         confirmation_snapshot_digest=P.snapshot_digest(pan),
+        qualification_policy=campaign["qualification_policy"],
         existing=approved,
     )
     out.to_parquet(CACHE / "null_dist.parquet", index=False)
 
 
 def cmd_publish(args):
-    """게이트 판정을 TeamAlpha-data 의 gold.factor 에 적재."""
-    if args.apply:
-        raise SystemExit(
-            "epoch-1.2에서는 campaign reveal과 사람 검토 전 publish --apply를 허용하지 않습니다"
-        )
-    pan, df, targets, results = _evaluate(args, phase="discovery")
-    cutoff = str(df["trade_date"].max().date())
-    rows = []
-    for f, r in zip(targets, results, strict=True):
-        if args.only_approved and r.verdict != gate.Verdict.PROMOTE:
-            continue
-        rows.append(publish.build_row(
-            f, r, n_trials=r.metrics.get("n_trials"),
-            null_family_error_rate=r.metrics.get("null_family_error_rate"),
-            data_cutoff=cutoff,
-            approved_by=args.approved_by,
-        ))
-
-    print(f"\n적재 대상 {len(rows)}건  (모드: {'APPLY' if args.apply else 'DRY-RUN'})")
-    for r in rows:
-        ev = r["evaluation"]
-        print(f"  {r['factor_key']:16} → {r['status']:10} "
-              f"(verdict={ev['verdict']}, 실패={len(ev['failed_checks'])}건)")
-    if not rows:
-        print("  (없음)")
-        return
-
-    if args.apply:
-        if any(row["status"] == "APPROVED" for row in rows) and not args.approved_by:
-            raise SystemExit("APPROVED 적재에는 --approved-by '검토자 이름'이 필요합니다")
-        conn = publish.connect()
-        try:
-            done = publish.publish(conn, rows, apply=True)
-        finally:
-            conn.close()
-    else:
-        done = publish.publish(None, rows, apply=False)   # dry-run 은 DB 불필요
-    print()
-    for d in done:
-        print(f"  {d['factor_key']:16} v{d['version']}  {d['status']}"
-              + (f"  factor_id={d['factor_id']}" if d["factor_id"] else ""))
-    if not args.apply:
-        print("\n  실제로 쓰려면 --apply")
+    """Never recompute or write Gold outside the authenticated campaign flow."""
+    del args
+    raise SystemExit(
+        "epoch-1.4 publish는 비활성화했습니다. campaign reveal 산출물을 사람 검토한 뒤 "
+        "별도 승인 절차에서만 Gold를 적재하세요."
+    )
 
 
 def main():

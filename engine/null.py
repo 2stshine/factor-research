@@ -8,6 +8,7 @@ import pandas as pd
 
 from engine import gate
 from engine import panel as panel_engine
+from engine.boundaries import CampaignWindow, QUALIFICATION_POLICY
 from engine.factors import Factor
 from engine.panel import Panel
 
@@ -99,7 +100,7 @@ def _merge_discovery_and_oos(
         ) or "OOS 계산 불가"
         oos_check = gate.Check(
             "T4.1", "고정 OOS IC", False, None,
-            f"months>={gate.TH['min_oos_months']} & IC>={gate.TH['oos_ic']}",
+            f"months=={gate.TH['min_oos_months']} & IC>={gate.TH['oos_ic']}",
             failures,
         )
     discovery.checks.append(oos_check)
@@ -125,15 +126,15 @@ def measure(
     gold_family_digest: str = "none",
     confirmation_snapshot_digest: str | None = None,
     existing: dict[str, pd.Series] | None = None,
+    qualification_policy: str = QUALIFICATION_POLICY,
     verbose: bool = True,
 ) -> pd.DataFrame:
     """Estimate family-wise false promotion with production-sized null campaigns.
 
     ``n`` is the number of null campaign families per generator, not the number
     of individual signals.  Each family contains the same number of discovery
-    definitions as the bound research campaign.  Up to ``oos_family_size``
-    discovery-eligible definitions are revealed together, which is a stand-in
-    for human survivor selection under the global null.
+    definitions as the bound research campaign. Every discovery non-reject is
+    automatically confirmed, matching the production qualification policy.
     """
     if n < 1:
         raise ValueError("null campaign 반복 수 n은 1 이상이어야 합니다")
@@ -147,8 +148,12 @@ def measure(
         )
     oos_start = pd.Period(oos_start, freq="M")
     oos_end = pd.Period(oos_end, freq="M")
-    if oos_end < oos_start:
-        raise ValueError("OOS end는 OOS start보다 빠를 수 없습니다")
+    window = CampaignWindow.create(
+        discovery_data_cutoff=research_data_cutoff,
+        oos_start=oos_start,
+        oos_months=gate.TH["min_oos_months"],
+    )
+    window.validate_oos_end(oos_end)
     rng = np.random.default_rng(seed)
     df = panel.monthly
     required_month = oos_end + 1
@@ -212,9 +217,8 @@ def measure(
                 factors_by_hash[factor.definition_hash] = factor
                 temporary_columns.append((raw_col, factor_col))
 
-            # Survivor selection must know discovery only.  Attaching T4.1
-            # before this point would let the null campaign choose candidates
-            # after seeing the very OOS outcome it is supposed to calibrate.
+            # Automatic qualification must use discovery only. Attaching T4.1
+            # before this point would leak OOS into the qualification decision.
             gate.apply_multiple_testing(
                 family_results, total_trials=discovery_family_size,
             )
@@ -231,12 +235,13 @@ def measure(
                     else float("inf"),
                     result.definition_hash,
                 ),
-            )[:oos_family_size]
+            )
             for index, discovery_result in enumerate(selected):
                 factor = factors_by_hash[discovery_result.definition_hash]
                 confirmation_result = gate.evaluate_oos(
                     factor, panel, df,
                     oos_start=oos_start, oos_end=oos_end,
+                    data_cutoff=research_data_cutoff,
                 )
                 selected[index] = _merge_discovery_and_oos(
                     discovery_result, confirmation_result,
@@ -262,7 +267,8 @@ def measure(
                 del discovery_df[factor_col]
             rows.append({
                 "calibration_unit": "null_campaign_family",
-                "generator_suite": "null-v1",
+                "generator_suite": "null-v2",
+                "qualification_policy": qualification_policy,
                 "kind": kind,
                 "replicate": replicate,
                 "pass": bool(promoted),

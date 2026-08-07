@@ -3,7 +3,7 @@
 TeamAlpha의 **DQ 인증된 RDS Silver(`public`)만** 읽어 팩터를 만들고 Gold 승격 여부를 판정하는 엔진.
 Bronze는 Silver 품질 대사 외에는 리서치 입력으로 사용하지 않는다.
 
-> 현재 운영 임계값은 이 문서, `engine/gate.py`,
+> 현재 운영 임계값과 근거는 `engine/gate.py`와
 > [좋은 주식 팩터의 판정 기준](docs/factor-promotion-criteria.md)에 공개한다.
 > `private/CALIBRATION.md`는 fr-2.x Bronze 기반의 **보존용 구형 기록**으로 현재 판정에 쓰지 않는다.
 > 후보는 결과나 임계값에 맞춰 튜닝하지 않고 경제적 가설과 PIT 입력을 기준으로 사전등록한다.
@@ -13,14 +13,18 @@ Bronze는 Silver 품질 대사 외에는 리서치 입력으로 사용하지 않
 ```bash
 uv sync
 uv run python scripts/run.py build          # 인증 Silver → PIT 패널 캐시
-uv run python scripts/run.py gate           # discovery 판정; 최종 OOS는 SEALED
+uv run python scripts/research.py campaign-start --campaign campaign-001
 ```
 
 환경변수: `SILVER_DB_URL`(필수), `CACHE_DIR`(기본 `.cache`).
-RDS가 SSM 터널 뒤에 있으면 `build/gate/publish` 전에 터널을 연다.
+RDS가 SSM 터널 뒤에 있으면 Silver build·평가·SQL parity 전에 터널을 연다.
 
-모든 팩터의 공통 평가 시작일은 `2018-03`으로 고정한다. 개발 표본은 고정 OOS 직전
-1개월을 embargo하며, 평가 시작일과 OOS 시작일을 결과에 맞춰 변경하지 않는다.
+`scripts/run.py gate`와 `publish`는 전체 패널이 봉인 OOS를 우회해 노출하지 않도록
+`epoch-1.4`에서 비활성화했다. 평가는 아래 campaign workflow로만 실행한다.
+
+모든 팩터의 공통 평가 시작일은 고정한다. campaign은 최신 완료 수익률월에서 역사적 OOS
+36 signal개월을 역산하고, discovery와 OOS 사이 한 signal개월을 embargo한다. 경계는 결과에
+맞춰 변경하지 않는다.
 
 ## 자율 연구 campaign/epoch
 
@@ -28,34 +32,40 @@ RDS가 SSM 터널 뒤에 있으면 `build/gate/publish` 전에 터널을 연다.
 결과를 보기 전에 여러 후보의 이름과 definition hash를 동결한다.
 
 ```bash
-uv run python scripts/research.py context
 uv run python scripts/research.py campaign-start --campaign campaign-001
+uv run python scripts/research.py context  # campaign cutoff 뒤 결과를 가린 컨텍스트
 uv run python scripts/research.py epoch-start \
   --campaign campaign-001 --epoch epoch-001 --factors factor_a factor_b
 uv run python scripts/research.py evaluate \
   --campaign campaign-001 --epoch epoch-001 --factor factor_a
 uv run python scripts/research.py epoch-close \
   --campaign campaign-001 --epoch epoch-001
-uv run python scripts/research.py campaign-freeze \
-  --campaign campaign-001 --factors factor_a
-# 고정 OOS의 유효 IC 60개가 쌓인 뒤, 같은 campaign 크기로 귀무 보정 후 한 번만 실행
+uv run python scripts/research.py campaign-finalize --campaign campaign-001
+# Agent가 자동 통과 후보 전부의 query-only Gold SQL과 manifest를 작성한 뒤 실행
+uv run python scripts/research.py campaign-verify-implementations \
+  --campaign campaign-001
+# READY_FOR_CONFIRMATION에서 사용자가 요청할 때 한 번만 실행
 uv run python scripts/run.py null --campaign campaign-001 --n 25
 uv run python scripts/research.py campaign-reveal --campaign campaign-001
 ```
 
 평가할 때마다 `research/runs/cycle-NNNN-<factor>/`에 JSON과 Markdown 보고서가 생성되고,
-`research/history.jsonl`과 `research/context/latest.md`가 갱신된다. 다음 루프는 반드시 이
-컨텍스트를 먼저 읽는다. discovery에는 OOS 수치가 생성되지 않고 최대 `PROVISIONAL`까지만
-가능하다. 후보별 FDR은 campaign freeze 전까지 `PENDING`이며, 모든 epoch 후보를 한꺼번에
-BY 보정한다. `research/campaigns/`에는 epoch 성찰과 봉인 상태가 저장된다. reveal은 Gold에 쓰지
-않으며, 결과를 본 뒤 기존 후보 파일을 수정하거나 같은 OOS로 다시 확인할 수 없다. discovery
-입력도 manifest의 data cutoff 이하로 고정하며 현재 캐시가 그 cutoff를 재현하지 못하면 중단한다.
-현재 월 Silver가 부분 적재돼 있으면 직전 완료월까지만 discovery에 쓰고 현재 월은 embargo한다.
-OOS는 cache가 지연됐더라도 이미 실현된 역사 월을 쓰지 않고 campaign 생성 다음 달부터 시작한다.
-모두 탈락하면 `campaign-freeze --campaign <id>`처럼 `--factors`를 생략해 campaign을 종료한다.
-active campaign끼리는 봉인 OOS 기간을 겹쳐 재사용할 수 없다.
-reveal은 귀무 보정과 동결 discovery 재현을 먼저 검사하고, 복구 가능한 사전조건이 실패하면
-survivor OOS를 계산하지 않은 채 중단한다.
+`research/history.jsonl`과 `research/context/latest.md`가 갱신된다. 새 campaign은 OOS 경계를
+먼저 봉인한 뒤, 다음 루프가 cutoff 뒤 결과를 가린 이 컨텍스트를 읽는다. discovery에는 OOS 수치가 생성되지 않고 최대 `PROVISIONAL`까지만
+가능하다. finalize는 모든 epoch 후보를 한꺼번에 BY 보정하고, 비`REJECT`이면서 통과한 후보
+전부를 자동 확인 대상으로 확정한다. 후보가 있으면 `AWAITING_IMPLEMENTATION`, 없으면
+`CLOSED_NO_QUALIFIED`가 된다.
+
+전 후보의 Gold manifest에 SQL URI·`research_definition_hash`를 묶고, 실제 SQL SHA256은 구현
+검증 artifact에 동결한다. 동결 snapshot의 discovery 구간에서 Python/SQL key·raw value·rank parity를 통과해야
+`READY_FOR_CONFIRMATION`이 된다. 이 SQL은 query-only로 검증하며 Gold write·발행은 하지 않는다.
+OOS reveal은 hash·parity·귀무 보정·discovery 재현을 먼저 확인하고 전 후보에 한 번만 수행한다.
+마지막 OOS 수익률월 다음 달이라는 월 표지만으로는 부족하며, 비활성 종목 판정을 위해 마지막
+signal 월말에서 45일이 지난 실제 Silver 관측일까지 확인한다.
+
+이미 해당 OOS 결과를 본 후보는 같은 역사 구간으로 다시 나눠도 `retrospective-only`다. 한 번
+공개한 OOS 구간도 다음 campaign에서 재사용하지 않는다. 정확한 경계 산식과 상태 계약은
+[campaign·epoch 프로토콜](.agents/skills/factor-research-loop/references/epoch-protocol.md)을 따른다.
 
 ## 왜 통계가 마지막인가
 
@@ -83,12 +93,12 @@ survivor OOS를 계산하지 않은 채 중단한다.
 | **T1** | **표본틀 무결성** | 0회 (SQL) | 결정론 — 공격 11/18 격추 |
 | T2 | 전체·투자 가능 IC 최소효과와 투자 가능 Rank ICIR | 진단 1회 | 통계 |
 | T3 | 기간별·레짐·중립화 IC 강건성 | IC 재계산 | 통계 |
-| T4 | campaign discovery BY FDR + survivor OOS BY FDR·귀무 보정 | 최다 | 통계 + 시행 원장 |
+| T4 | campaign discovery BY FDR + 자동 확인 대상 OOS BY FDR·귀무 보정 | 최다 | 통계 + 시행 원장 |
 | T5 | 기존 Gold 신호와 직교성 | — | 신호 |
 
 최종 confirmation 판정은 T0·T1·T2·T4·T5 중 하나라도 실패하면 `REJECT`, T3 soft fail이 하나면
 `PROVISIONAL`, soft fail이 없으면 `PROMOTE`다. T3 soft fail이 둘 이상이어도 `REJECT`다.
-discovery survivor는 OOS가 봉인되어 있으므로 soft fail이 없어도 최대 `PROVISIONAL`이다.
+discovery 자동 확인 대상은 OOS가 봉인되어 있으므로 soft fail이 없어도 최대 `PROVISIONAL`이다.
 `PROMOTE`는 연구 판정일 뿐이며, 사람 승인 없이 Gold에 자동 발행되지 않는다.
 
 ## 유니버스 계약
@@ -111,46 +121,12 @@ discovery survivor는 OOS가 봉인되어 있으므로 soft fail이 없어도 �
 강제 부여하고 세 시나리오 전부에서 부호가 유지되어야 한다. 안 하면 롱레그의 최악 실현값만
 표본에서 증발한다.
 
-## 현재 판정 기준: `fr-3.5.0`
+## 현재 판정 기준: `fr-3.7.0`
 
-절대 순알파, net IR, Deflated Sharpe, 비용 스트레스 수익률은 승격 기준이 아니다.
-표본 기간과 포트폴리오 구성에 민감한 절대 수익률 컷 대신 다음을 본다.
-
-- discovery 전체 IC `>= 0.03`, 투자 가능 유니버스 IC `>= 0.03`
-- 투자 가능 유니버스 Rank ICIR `>= 0.15` (비연율화)
-- 투자 가능 IC의 HAC 단측 p값은 계산·보고하고 campaign BY의 입력으로 사용
-- 4개 비중첩 구간 중 3개 이상 IC 방향 일치, IC 레짐 집중도 `<= 0.60`
-- 시장구분·유동성·비의도 규모 노출 제거 후 투자 가능 IC `>= 0.01`
-  (soft gate, size category는 규모 노출 보존, HAC p는 진단)
-- 고정 60 signal개월에서 유효한 투자 가능 OOS IC 60개 및 평균 IC `>= 0.05`
-- discovery는 campaign 전체, OOS는 동시 공개 survivor 전체에서 각각 BY FDR `<= 0.10`
-- 기존 Gold 팩터와 월별 신호 순위의 중앙값 절대 Spearman 상관 `<= 0.80`
-
-전체 IC의 HAC p값과 `투자 가능 IC / 전체 IC` 유지율은 보고서에 진단값으로 남기되
-승격 판정에는 사용하지 않는다. 두 유니버스의 절대 IC 하한을 각각 적용하므로 유지율을
-추가 hard gate로 두지 않으며, 실제 운용 대상인 투자 가능 IC의 유의성만 판정한다.
-
-IC는 매월 팩터 순위와 미래수익률 순위의 Spearman 상관이다. Rank ICIR은 투자 가능 유니버스의
-`월평균 Rank IC / 월별 Rank IC 표준편차`로 계산하며 연율화하지 않는다. `0.15`는 문헌의
-보편적 임계값이 아니라 내부 안정성 guardrail이다. 평균 IC가 높더라도 월별 흔들림이 지나치게
-크면 0.15를 넘지 못한다. HAC는 연속된 월의 IC가 서로 독립적이지 않고
-시기별 변동성도 다르다는 점을 Newey-West 방식으로 보정한다. 단측 p값은 팩터가 틀릴 확률이
-아니며, 평균 IC가 0 이하라는 귀무가설 아래 현재와 같거나 더 극단적인 검정통계량이 나올
-확률이다. 같은 HAC p값을
-BY 보정한 `q <= 0.10`이 더 강한 조건이므로 원시 p값을 별도 hard
-gate로 중복 적용하지 않는다.
-
-`0.03`은 discovery 후보선이고 `0.05`는 Gold OOS 효과선이다. `0.10` 이상은 매우 강한 신호로
-자동 신뢰하지 않고 누수·PIT·표본 오류를 먼저 재점검한다. 숫자 하나만으로 합격시키지 않고,
-동일 방향이 여러 기간에 반복되는지와 다중검정 후에도 남는지를 함께 본다. `0.05`는 MSCI의
-실무적 good IC를 현재 Rank IC에 보수적으로 차용한 정책값이지 모든 시장에 통용되는 표준은
-아니다. 자세한 정의·검출력·문헌 근거는
-[좋은 주식 팩터의 판정 기준](docs/factor-promotion-criteria.md)에 정리했다. 후보별 discovery
-보고서의 FDR은 campaign이 동결될 때까지 `PENDING`이며, 모든 epoch의 사전등록 후보 p값을
-모은 뒤 한 번에 확정된다.
-
-비용 후 수익률·IR·회전율·미래수익 결측은 보고서에 계속 계산하지만 모두 설명·용량 검토용
-진단값이다. 진단 포트폴리오를 만들 표본이 부족해도 IC 연구 판정을 중단하지 않는다.
+판정은 IC 효과크기·시간 강건성·다중검정·표본 무결성·기존 Gold와의 비중복을 함께 본다.
+절대 포트폴리오 수익률과 비용 지표는 운용 진단이며 팩터 승격선이 아니다. 지표 정의, 모든
+임계값과 근거는 [좋은 주식 팩터의 판정 기준](docs/factor-promotion-criteria.md)을 단일 설명
+문서로 사용한다.
 
 ## 단일 팩터 계약
 
@@ -242,10 +218,9 @@ REGISTRY.add(Factor(
 - 모든 고유 정의의 시행횟수는 `.cache/trials.sqlite3`에, 봉인 OOS 상태는
   `research/campaigns/`에 보존한다. 팀 공용 운영에서는 이 원장을 RDS 테이블로 승격해야 여러
   연구자의 시행을 합산할 수 있다
-- 동일 Silver cutoff·ruleset·campaign family로 만든 귀무 campaign이 종류별 25개·총 100개
-  미만이거나, 네 종류 중 최악의 family 오류율이 10%를 넘으면 T4.4가 실패한다. survivor 동결과
-  OOS 데이터 축적 뒤 `null --campaign <id> --n 25`를 실행한다. 보정은 closure Silver panel
-  content digest와 Gold 신호 digest에도 결박되어 값이 바뀌면 다시 만들어야 한다
-- 현재 ruleset이 `fr-3.5.0`으로 변경됐으므로 이 버전의 귀무 보정을 새로 만들기 전에는
+- 귀무 보정은 같은 Silver snapshot·ruleset·campaign family, Gold 신호 digest에 결박한다. 필요한
+  생성 수와 오류율 기준은 [판정 기준](docs/factor-promotion-criteria.md)을 따른다
+- 현재 ruleset이 `fr-3.7.0`으로 변경됐으므로 이 버전의 귀무 보정을 새로 만들기 전에는
   안전장치상 `PROMOTE`가 나오지 않는다
-- epoch-1.2에서는 campaign reveal과 별도 사람 검토 전 `publish --apply`를 차단한다
+- `epoch-1.4`는 역사적 OOS를 한 번만 공개하며, 구현 parity·campaign reveal·별도 사람 검토 전
+  `publish --apply`를 차단한다
