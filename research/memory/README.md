@@ -22,8 +22,8 @@ python scripts/lessons.py --view before-after
 
 ## 미완 — 리뷰 전에 알아야 할 것
 
-1. **라벨 33건만 있고 시행은 42건이다.** cycle-0034 이후 9건은 라벨이 비어 있어 교차표의 `(미매칭)` 행에 모인다. 생성기는 라벨 파일을 읽으므로 라벨을 채우고 재실행하면 반영된다.
-2. **33건 중 19건이 `confidence: low`** 다. 근거를 특정하지 못한 값이 하나라도 있으면 low 로 뒀다. 검토 전이다.
+1. **42건 전부 라벨했으나 28건이 `confidence: low`** 다. 근거를 특정하지 못한 값이 하나라도 있으면 low 로 뒀다. 검토 전이다.
+2. **문헌 대응이 아예 없는 3건**(`nonoperating_burden_to_assets` · `paid_in_capital_ratio` · `positive_return_share_12m`)은 축을 비웠다. OSAP 331·JKP 153 어디에도 없다.
 3. **`analysis` 필드가 전부 `null`** 이다. 사람이 읽는 근거 슬롯이고 아직 안 채웠다.
 4. **테스트가 `tests/` 에 없다.** 시나리오는 통과를 확인했지만 `tests/` 는 이 작업 범위 밖으로 뒀다. 필요하면 올린다.
 
