@@ -18,11 +18,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from engine import gate
+from engine import gate, silver
 from scripts import run
 
 
-AUDIT_ID = "retrospective-is-oos-20260807-001"
+AUDIT_ID = "retrospective-qualified-oos-20260807-003"
+SOURCE_CAMPAIGN = "campaign-20260807-002"
 DATA_CUTOFF = "2023-05-31"
 OOS_START = pd.Period("2023-06", freq="M")
 OOS_END = pd.Period("2026-05", freq="M")
@@ -32,12 +33,9 @@ EXPECTED_IS_MONTHS = 62
 EXPECTED_OOS_MONTHS = 36
 
 CANDIDATES = {
-    "trading_turnover_20d": "c03efb8638407bd6",
-    "working_capital_accruals_12m": "7d539b85a67522d6",
-    "earnings_change_to_assets": "6c7d7d1bcd6a8f1e",
-    "market_beta_36m": "5d0c823050915663",
-    "paid_in_capital_ratio": "8c82db0117290bcd",
-    "current_liability_concentration": "38c06f992e387d49",
+    "operating_return_on_capital_employed": "aa11ccad9cfd19c6",
+    "return_kurtosis_24m": "be70b24e1222fb72",
+    "turnover_volatility_12m": "07f156b1d7953440",
 }
 
 LABELS = [
@@ -72,7 +70,7 @@ def _check(result: gate.Result, tier: str, name: str):
 
 def _current_campaign_evidence(root: Path) -> dict[str, dict]:
     output: dict[str, dict] = {}
-    campaign = root / "research/campaigns/campaign-20260806-001/epochs"
+    campaign = root / "research/campaigns" / SOURCE_CAMPAIGN / "epochs"
     for manifest_path in sorted(campaign.glob("epoch-*/manifest.json")):
         manifest = json.loads(manifest_path.read_text())
         for candidate in manifest["candidates"]:
@@ -141,18 +139,20 @@ def _write_report(path: Path, payload: dict) -> None:
         f"- Labels: `{', '.join(payload['labels'])}`",
         f"- Silver source: `{payload['silver_source']}`",
         f"- Ruleset: `{payload['ruleset_version']}`",
+        f"- RDS Gold APPROVED: `{payload['approved_gold_factor_count']}`개 "
+        f"({', '.join(payload['approved_gold_factors']) or '없음'})",
         f"- IS signal months: `{payload['split']['is_start']} ~ {payload['split']['is_end']}` "
         f"({payload['split']['is_months']}개월)",
         f"- Boundary embargo: `{payload['split']['embargo_month']}`",
         f"- Retrospective audit signal months: `{payload['split']['oos_start']} ~ "
         f"{payload['split']['oos_end']}` ({payload['split']['oos_months']}개월)",
-        "- 모든 6개 정의를 같은 분할에서 동시에 계산했고 결과에 따른 정의 수정은 없었다.",
+        f"- 자동 기준 통과 후보 {payload['candidate_count']}개를 같은 분할에서 동시에 계산했고 결과에 따른 정의 수정은 없었다.",
         "- 기존 campaign manifest, verdict, history, trial ledger 및 Gold는 변경하지 않았다.",
         "",
         "## 원래 discovery와 과거 IS 재현",
         "",
-        "| factor | original full IC | original | historical IS IC | IS ICIR | IS BY q | replay verdict | auto qualified |",
-        "|---|---:|---|---:|---:|---:|---|---:|",
+        "| factor | original full IC | original | historical IS IC | IS ICIR | IS BY q | T5 | replay verdict | auto qualified |",
+        "|---|---:|---|---:|---:|---:|---:|---|---:|",
     ]
     for row in rows:
         lines.append(
@@ -161,6 +161,7 @@ def _write_report(path: Path, payload: dict) -> None:
             f"{_fmt(row['historical_is']['ic_investable'])} | "
             f"{_fmt(row['historical_is']['rank_icir_investable'])} | "
             f"{_fmt(row['historical_is']['by_qvalue'])} | "
+            f"{_flag(row['historical_is']['t5_pass'])} | "
             f"{row['historical_is']['verdict']} | {_flag(row['historical_is']['auto_qualified'])} |"
         )
 
@@ -168,14 +169,15 @@ def _write_report(path: Path, payload: dict) -> None:
         "",
         "## 후반기 성능 지속성",
         "",
-        f"OOS IC 효과 기준은 현재 ruleset의 `{payload['thresholds']['oos_ic']}`를 그대로 표시한다. "
+        f"OOS IC 기준은 절대값 `{payload['thresholds']['oos_ic']}`와 Discovery 대비 유지율 "
+        f"`{payload['thresholds']['oos_ic_retention']}`를 함께 표시한다. "
         f"관측기간은 `{payload['split']['oos_months']}`개월로 공식 최소 "
-        f"`{payload['thresholds']['min_oos_months']}`개월을 충족한다. 표의 formal T4는 현재 "
+        f"`{payload['thresholds']['min_oos_months']}`개월을 충족한다. 표의 T4 effect+BY는 현재 "
         "수치 기준을 회고적으로 재현한 값일 뿐이며, 이미 노출된 구간이므로 공식 confirmation이나 "
         "Gold 승격 효력은 없다.",
         "",
-        "| factor | later IC | ICIR | IS 대비 IC | neutral IC | positive years | qualified BY q | IC>=0.05 | formal T4 |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        f"| factor | later IC | ICIR | OOS/IS | neutral IC | neutral/investable | positive years | qualified BY q | IC>={payload['thresholds']['oos_ic']} | retention>={payload['thresholds']['oos_ic_retention']} | T4 effect+BY |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ])
     for row in rows:
         later = row["retrospective_later_period"]
@@ -183,9 +185,12 @@ def _write_report(path: Path, payload: dict) -> None:
         lines.append(
             f"| `{row['factor']}` | {_fmt(later['ic_investable'])} | "
             f"{_fmt(later['rank_icir_investable'])} | {_fmt(later['ic_retention'])} | "
-            f"{_fmt(later['neutral_ic'])} | {positive} | "
+            f"{_fmt(later['neutral_ic'])} | {_fmt(later['neutral_ic_retention'])} | "
+            f"{positive} | "
             f"{_fmt(later['auto_qualified_by_qvalue'])} | "
-            f"{_flag(later['effect_threshold_pass'])} | {_flag(later['formal_t4_pass'])} |"
+            f"{_flag(later['absolute_effect_threshold_pass'])} | "
+            f"{_flag(later['retention_threshold_pass'])} | "
+            f"{_flag(later['t4_effect_and_by_pass'])} |"
         )
 
     lines.extend([
@@ -226,7 +231,8 @@ def _write_report(path: Path, payload: dict) -> None:
         "## 해석 제한",
         "",
         "- 이 후반 구간은 후보 생성과 기존 discovery에 이미 포함됐으므로 진짜 미관측 표본이 아니다.",
-        "- audit 결과는 현재 campaign의 qualified, FDR, verdict 또는 Gold 적재 여부를 바꾸지 않는다.",
+        "- 따라서 이번 값은 지금 성능 지속성을 판단하는 회고 검증이며 기존 campaign의 공식 confirmation은 아니다.",
+        "- T4 effect+BY는 OOS 효과·유지율·동시 후보 BY까지만 뜻한다. campaign 귀무 보정과 Gold SQL parity는 별도다.",
         "- 이 숫자를 보고 같은 후보의 부호·룩백·산식·표본을 수정하면 안 된다.",
         "- 다음 clean campaign부터 historical holdout과 자동 qualified 규칙을 결과 전에 고정해야 한다.",
         "",
@@ -249,6 +255,17 @@ def main() -> None:
     output = (root / args.output).resolve()
     if output.exists():
         raise SystemExit(f"기존 감사 산출물을 덮어쓰지 않습니다: {output}")
+
+    source_manifest = json.loads(
+        (root / "research/campaigns" / SOURCE_CAMPAIGN / "manifest.json").read_text()
+    )
+    frozen_qualified = {
+        row["name"]: row["definition_hash"]
+        for row in source_manifest.get("qualified_factors", [])
+    }
+    if frozen_qualified != CANDIDATES:
+        raise SystemExit("source campaign의 자동 통과 후보 family가 감사 계약과 다릅니다")
+    discovery_family_size = int(source_manifest["discovery_family_size"])
 
     run.load_registry()
     targets = [run.F.REGISTRY[name] for name in CANDIDATES]
@@ -273,6 +290,8 @@ def main() -> None:
     )
     discovery_df = run._ensure_factor_columns(discovery, targets)
     confirmation_df = run._ensure_factor_columns(confirmation, targets)
+    with silver.connect(read_only=True) as conn:
+        approved = run._approved_signals(conn, discovery_df)
 
     is_work = _is_frame(discovery, discovery_df)
     oos_work = _oos_frame(confirmation, confirmation_df)
@@ -296,7 +315,7 @@ def main() -> None:
             factor,
             discovery,
             discovery_df,
-            existing={},
+            existing=approved,
             trial_count=len(targets),
             oos_start=OOS_START,
             data_cutoff=DATA_CUTOFF,
@@ -304,7 +323,7 @@ def main() -> None:
         )
         for factor in targets
     ]
-    gate.apply_multiple_testing(is_results, total_trials=len(targets))
+    gate.apply_multiple_testing(is_results, total_trials=discovery_family_size)
     auto_qualified_hashes = {
         result.definition_hash
         for result in is_results
@@ -319,9 +338,11 @@ def main() -> None:
             oos_start=OOS_START,
             oos_end=OOS_END,
             data_cutoff=DATA_CUTOFF,
+            discovery_ic=is_result.metrics.get("ic_investable"),
         )
-        for factor in targets
+        for factor, is_result in zip(targets, is_results, strict=True)
     ]
+    gate.apply_oos_multiple_testing(oos_results)
     all_oos_pvalues = {
         result.definition_hash: result.metrics.get("oos_ic_p", 1.0)
         for result in oos_results
@@ -351,6 +372,15 @@ def main() -> None:
             neutral_source[neutral_source["_eligible"]], "_neutral", "fwd_mid"
         )
         neutral_stats = _period_summary(neutral_series)
+        neutral_retention = (
+            neutral_stats["ic"] / oos_result.metrics.get("oos_ic")
+            if neutral_stats["ic"] is not None
+            and oos_result.metrics.get("oos_ic") is not None
+            and np.isfinite(neutral_stats["ic"])
+            and np.isfinite(oos_result.metrics["oos_ic"])
+            and oos_result.metrics["oos_ic"] > 0
+            else np.nan
+        )
 
         portfolio = gate.backtest(
             oos_work,
@@ -367,17 +397,15 @@ def main() -> None:
         positive_years = sum(
             value is not None and value > 0 for value in yearly_ic.values()
         )
-        is_ic = is_result.metrics.get("ic_investable")
         oos_ic = oos_result.metrics.get("oos_ic")
-        retention = (
-            oos_ic / is_ic
-            if is_ic is not None and np.isfinite(is_ic) and is_ic > 0
-            and oos_ic is not None and np.isfinite(oos_ic)
-            else np.nan
-        )
-        formal_t4 = _check(oos_result, "T4.1", "고정 OOS IC")
+        retention = oos_result.metrics.get("oos_ic_retention")
+        effect_check = _check(oos_result, "T4.1", "고정 OOS IC")
+        fdr_check = _check(oos_result, "T4.2", "OOS 다중검정 FDR")
         definition_hash = factor.definition_hash
         original = current[factor.name]
+        t5_check = _check(is_result, "T5.1", "Gold 신호 직교성")
+        if t5_check is None:
+            t5_check = _check(is_result, "T5.1", "Gold 직교성")
         factor_rows.append({
             "factor": factor.name,
             "definition_hash": definition_hash,
@@ -400,6 +428,9 @@ def main() -> None:
                 "verdict": is_result.verdict.value,
                 "auto_qualified": definition_hash in auto_qualified_hashes,
                 "failed_checks": [check.name for check in is_result.failed],
+                "t5_pass": bool(t5_check and t5_check.passed),
+                "t5_value": _number(t5_check.value) if t5_check else None,
+                "t5_note": t5_check.note if t5_check else "T5 check missing",
                 "series_summary": is_stats,
             },
             "retrospective_later_period": {
@@ -415,11 +446,18 @@ def main() -> None:
                 ),
                 "ic_retention": _number(retention),
                 "neutral_ic": neutral_stats["ic"],
+                "neutral_ic_retention": _number(neutral_retention),
                 "neutral_rank_icir": neutral_stats["rank_icir"],
-                "effect_threshold_pass": bool(
+                "oos_required_ic": _number(oos_result.metrics.get("oos_required_ic")),
+                "absolute_effect_threshold_pass": bool(
                     oos_ic is not None
                     and np.isfinite(oos_ic)
                     and oos_ic >= gate.TH["oos_ic"]
+                ),
+                "retention_threshold_pass": bool(
+                    retention is not None
+                    and np.isfinite(retention)
+                    and retention >= gate.TH["oos_ic_retention"]
                 ),
                 "rank_icir_threshold_pass": bool(
                     oos_stats["rank_icir"] is not None
@@ -428,9 +466,16 @@ def main() -> None:
                 "neutral_threshold_pass": bool(
                     neutral_stats["ic"] is not None
                     and neutral_stats["ic"] >= gate.TH["neutral_ic"]
+                    and np.isfinite(neutral_retention)
+                    and neutral_retention >= gate.TH["neutral_ic_retention"]
                 ),
-                "formal_t4_pass": bool(formal_t4 and formal_t4.passed),
-                "formal_t4_threshold": formal_t4.threshold if formal_t4 else None,
+                "t4_effect_and_by_pass": bool(
+                    effect_check and effect_check.passed
+                    and fdr_check and fdr_check.passed
+                ),
+                "t4_effect_threshold": (
+                    effect_check.threshold if effect_check else None
+                ),
                 "yearly_ic": yearly_ic,
                 "positive_years": positive_years,
                 "year_count": len(yearly_ic),
@@ -463,11 +508,17 @@ def main() -> None:
             "min_ic": gate.TH["min_ic"],
             "min_rank_icir": gate.TH["min_rank_icir"],
             "neutral_ic": gate.TH["neutral_ic"],
+            "neutral_ic_retention": gate.TH["neutral_ic_retention"],
             "oos_ic": gate.TH["oos_ic"],
+            "oos_ic_retention": gate.TH["oos_ic_retention"],
             "min_oos_months": gate.TH["min_oos_months"],
             "fdr_q": gate.TH["fdr_q"],
         },
         "candidate_count": len(targets),
+        "source_campaign": SOURCE_CAMPAIGN,
+        "discovery_family_size": discovery_family_size,
+        "approved_gold_factor_count": len(approved),
+        "approved_gold_factors": sorted(approved),
         "historical_is_auto_qualified": [
             factor.name for factor in targets if factor.definition_hash in auto_qualified_hashes
         ],

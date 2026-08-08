@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import json
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from engine import gate
+from engine import null as null_engine
+from engine.panel import Panel
+
+
+def _confirmation_panel() -> Panel:
+    months = pd.period_range("2025-12", "2029-01", freq="M")
+    frame = pd.DataFrame({
+        "asset_id": np.tile([1, 2, 3], len(months)),
+        "ym": np.repeat(months, 3),
+        "trade_date": np.repeat(
+            months.to_timestamp(how="end").normalize(), 3,
+        ),
+        "in_universe": True,
+        "market_cap": np.tile([100.0, 200.0, 300.0], len(months)),
+        "return_close": np.arange(len(months) * 3, dtype=float) + 100.0,
+        "adv20": 1.0,
+    })
+    return Panel(frame, pd.Series(dtype="datetime64[ns]"))
+
+
+def _stub_gate(monkeypatch, control):
+    def evaluate(factor, _panel, frame, **_kwargs):
+        if control["fail_after"] == control["calls"]:
+            raise RuntimeError("simulated interruption")
+        control["calls"] += 1
+        signal_mean = float(frame[f"f_{factor.name}"].mean())
+        return gate.Result(
+            factor=factor.name,
+            definition_hash=factor.definition_hash,
+            labels=["oos_sealed"],
+            metrics={
+                "ic_p_investable": .001,
+                "ic_investable": signal_mean,
+            },
+            checks=[gate.Check("T4.3", "다중검정 FDR", None)],
+        )
+
+    def evaluate_oos(factor, _panel, _frame, **_kwargs):
+        return gate.Result(
+            factor=factor.name,
+            definition_hash=factor.definition_hash,
+            metrics={"oos_ic_p": .001},
+            checks=[gate.Check("T4.1", "고정 OOS IC", True)],
+        )
+
+    monkeypatch.setattr(gate, "evaluate", evaluate)
+    monkeypatch.setattr(gate, "evaluate_oos", evaluate_oos)
+
+
+def _measure(panel, *, checkpoint_path=None, seed=20260731):
+    return null_engine.measure(
+        panel,
+        n=2,
+        seed=seed,
+        oos_start=pd.Period("2026-01", freq="M"),
+        oos_end=pd.Period("2028-12", freq="M"),
+        research_data_cutoff="2025-12-31",
+        discovery_family_size=2,
+        oos_family_size=2,
+        checkpoint_path=checkpoint_path,
+        verbose=False,
+    )
+
+
+def test_null_measure_resumes_without_recomputing_completed_families(
+    tmp_path, monkeypatch,
+):
+    checkpoint = tmp_path / "null-checkpoint.json"
+    interrupted_panel = _confirmation_panel()
+    control = {"calls": 0, "fail_after": 6}
+    _stub_gate(monkeypatch, control)
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        _measure(interrupted_panel, checkpoint_path=checkpoint)
+
+    partial = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert [
+        (entry["kind"], entry["replicate"])
+        for entry in partial["entries"]
+    ] == [("random", 0), ("random", 1), ("ar1_095", 0)]
+    assert all("row" in entry and "rng_state" in entry for entry in partial["entries"])
+    assert not any(
+        column.startswith(("_raw_null_", "f_null_"))
+        for column in interrupted_panel.monthly
+    )
+
+    control.update(calls=0, fail_after=None)
+    resumed = _measure(interrupted_panel, checkpoint_path=checkpoint)
+    # Five remaining families with two definitions each; the first three were
+    # loaded from checkpoint and were not evaluated again.
+    assert control["calls"] == 10
+    assert len(json.loads(checkpoint.read_text())["entries"]) == 8
+    assert not list(tmp_path.glob(".null-checkpoint.json.*.tmp"))
+
+    control.update(calls=0, fail_after=None)
+    uninterrupted = _measure(_confirmation_panel())
+    pd.testing.assert_frame_equal(resumed, uninterrupted)
+
+
+def test_null_measure_rejects_checkpoint_from_different_scope(tmp_path, monkeypatch):
+    checkpoint = tmp_path / "null-checkpoint.json"
+    control = {"calls": 0, "fail_after": None}
+    _stub_gate(monkeypatch, control)
+    _measure(_confirmation_panel(), checkpoint_path=checkpoint)
+
+    control["calls"] = 0
+    with pytest.raises(ValueError, match="범위 또는 실행 입력"):
+        _measure(
+            _confirmation_panel(), checkpoint_path=checkpoint, seed=20260732,
+        )
+    assert control["calls"] == 0
+
+    payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+    payload["entries"][0]["row"]["research_data_cutoff"] = "2020-01-31"
+    checkpoint.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="무결성"):
+        _measure(_confirmation_panel(), checkpoint_path=checkpoint)

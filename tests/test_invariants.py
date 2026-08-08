@@ -17,7 +17,12 @@ from engine import gate
 from engine import implementation
 from engine import null as null_engine
 from engine import research
-from engine.boundaries import CampaignWindow, QUALIFICATION_POLICY
+from engine.boundaries import (
+    PROSPECTIVE_HOLDOUT_MODE,
+    CampaignWindow,
+    QUALIFICATION_POLICY,
+    validate_manifest,
+)
 from engine.factors import Factor, Registry
 from engine.panel import (
     INVESTABLE_ADV,
@@ -30,6 +35,13 @@ from engine.trials import TrialLedger
 from factors.candidate_loader import load_candidates
 from scripts import research as research_script
 from scripts import run as run_script
+
+
+RETURN_META = {
+    "return_field": "total_return_close",
+    "return_methodology": "krx_gross_dividend_reinvested_v1",
+    "return_contract_status": "CERTIFIED",
+}
 
 
 def _financial_rows() -> pd.DataFrame:
@@ -74,6 +86,16 @@ def test_q4_derivation_applies_only_to_flow():
     assert final["total_assets"] == pytest.approx(514.5)
     assert final["revenue"] == pytest.approx(300.9 - 71.9 - 74.1 - 79.1)
     assert final["revenue_ttm"] == pytest.approx(300.9)
+
+
+def test_pit_materialization_does_not_depend_on_database_row_order():
+    rows = _financial_rows()
+    expected = FU.materialize_pit(rows, verbose=False)
+    shuffled = FU.materialize_pit(
+        rows.sample(frac=1.0, random_state=20260808), verbose=False,
+    )
+
+    pd.testing.assert_frame_equal(shuffled, expected)
 
 
 def test_revision_replay_never_leaks_future_filing():
@@ -185,8 +207,23 @@ def _silver_prices() -> pd.DataFrame:
                 "total_return_close": close, "trading_value": 1e9, "market_cap": 1e11,
                 "shares": 1000, "market": "KOSPI", "adv20": 1e9, "age_days": age,
                 "first_seen": dates[0], "dataset_start": dates[0], "quality_run_id": "q",
+                "amihud_illiquidity_1m": None if age == 1 else 1e-12,
+                "amihud_observations_1m": age - 1,
+                "daily_volatility_252d": None if age < 3 else .01,
+                "daily_return_observations_252d": age - 1,
+                "max_daily_return_1m": None if age == 1 else .10,
+                "max_daily_return_observations_1m": age - 1,
+                "price_high_252d": max(closes[:age]),
+                "price_high_observations_252d": age,
             })
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    frame.attrs["return_contract"] = {
+        **RETURN_META,
+        "methodology_version": RETURN_META["return_methodology"],
+        "status": RETURN_META["return_contract_status"],
+        "quality_run_id": "q",
+    }
+    return frame
 
 
 def _monthly_panel(start: str, end: str) -> Panel:
@@ -207,6 +244,7 @@ def _start_campaign(
     discovery_data_cutoff: str = "2023-06-30",
     snapshot_cutoff: str = "2026-07-31",
     min_oos_months: int = 36,
+    planned_epoch_count: int = 1,
 ):
     return epochs.start_campaign(
         root,
@@ -216,6 +254,7 @@ def _start_campaign(
         snapshot_digest="a" * 64,
         discovery_snapshot_digest="b" * 64,
         min_oos_months=min_oos_months,
+        planned_epoch_count=planned_epoch_count,
     )
 
 
@@ -278,6 +317,18 @@ def test_total_return_is_required():
         from_silver_frame(frame, verbose=False)
 
 
+def test_total_return_methodology_contract_is_required():
+    missing = _silver_prices()
+    missing.attrs.clear()
+    with pytest.raises(RuntimeError, match="방법론 계약"):
+        from_silver_frame(missing, verbose=False)
+
+    stale = _silver_prices()
+    stale.attrs["return_contract"]["methodology_version"] = "price_only_v0"
+    with pytest.raises(RuntimeError, match="인증 기준과 다릅니다"):
+        from_silver_frame(stale, verbose=False)
+
+
 def test_panel_snapshot_digest_binds_values_and_terminal_membership():
     panel = from_silver_frame(_silver_prices(), verbose=False)
     original = snapshot_digest(panel)
@@ -323,7 +374,7 @@ def test_confirmation_scope_discards_months_after_fixed_oos_label():
 
 
 def test_legacy_full_panel_gate_and_publish_cannot_bypass_campaign_scope():
-    with pytest.raises(SystemExit, match="역사적 OOS"):
+    with pytest.raises(SystemExit, match="봉인 OOS"):
         run_script.cmd_gate(SimpleNamespace(factor=None))
     with pytest.raises(SystemExit, match="비활성화"):
         run_script.cmd_publish(SimpleNamespace())
@@ -383,10 +434,10 @@ def test_campaign_snapshot_boundary_handles_partial_and_lagged_silver():
     window = research_script._campaign_snapshot_boundary(
         panel, as_of_date="2026-08-07",
     )
-    assert window.snapshot_cutoff == "2026-07-31"
-    assert window.discovery_data_cutoff == "2023-06-30"
-    assert str(window.oos_signal_start) == "2023-07"
-    assert str(window.oos_signal_end) == "2026-06"
+    assert window.snapshot_cutoff == "2026-06-30"
+    assert window.discovery_data_cutoff == "2023-05-31"
+    assert str(window.oos_signal_start) == "2023-06"
+    assert str(window.oos_signal_end) == "2026-05"
 
     window = research_script._campaign_snapshot_boundary(
         panel, as_of_date="2026-09-15",
@@ -394,6 +445,58 @@ def test_campaign_snapshot_boundary_handles_partial_and_lagged_silver():
     assert window.snapshot_cutoff == "2026-08-31"
     assert window.discovery_data_cutoff == "2023-07-31"
     assert str(window.oos_signal_start) == "2023-08"
+
+
+def test_prospective_campaign_boundary_reserves_only_future_signals():
+    panel = _monthly_panel("2015-01", "2026-08")
+    window = research_script._prospective_campaign_boundary(
+        panel, as_of_date="2026-08-07",
+    )
+
+    assert window.mode == PROSPECTIVE_HOLDOUT_MODE
+    assert window.snapshot_cutoff == "2026-07-31"
+    assert window.discovery_signal_end == pd.Period("2026-06", freq="M")
+    assert window.oos_signal_start == pd.Period("2026-09", freq="M")
+    assert window.oos_signal_end == pd.Period("2029-08", freq="M")
+    assert window.oos_return_end == pd.Period("2029-09", freq="M")
+
+
+def test_prospective_campaign_stays_pristine_and_historical_reuse_is_labeled(
+    tmp_path,
+):
+    exposure_dir = tmp_path / "oos-exposures"
+    exposure_dir.mkdir()
+    (exposure_dir / "old-audit.json").write_text(json.dumps({
+        "exposure_id": "old-audit",
+        "signal_start": "2023-06",
+        "signal_end": "2026-05",
+        "return_end": "2026-06",
+    }), encoding="utf-8")
+    historical_path = _start_campaign(tmp_path, "campaign-historical")
+    historical = json.loads(historical_path.read_text(encoding="utf-8"))
+    assert historical["oos"]["evidence_class"] == "HISTORICAL_REUSED_WINDOW"
+    assert historical["oos"]["prior_exposure_ids"] == ["old-audit"]
+    historical["status"] = "CLOSED_NO_QUALIFIED"
+    historical["oos"]["status"] = "NOT_USED"
+    historical_path.write_text(json.dumps(historical), encoding="utf-8")
+
+    path = epochs.start_campaign(
+        tmp_path,
+        "campaign-prospective",
+        discovery_data_cutoff="2026-07-31",
+        snapshot_cutoff="2026-07-31",
+        snapshot_digest="a" * 64,
+        discovery_snapshot_digest="b" * 64,
+        mode=PROSPECTIVE_HOLDOUT_MODE,
+        oos_start="2026-09",
+    )
+    campaign = json.loads(path.read_text(encoding="utf-8"))
+    window = validate_manifest(campaign, expected_oos_months=36)
+
+    assert window.mode == PROSPECTIVE_HOLDOUT_MODE
+    assert campaign["oos"]["start"] == "2026-09"
+    assert campaign["oos"]["signal_end"] == "2029-08"
+    assert campaign["snapshot"]["completed_month"] == "2026-07"
 
 
 def test_campaign_snapshot_boundary_rejects_truncated_prior_month():
@@ -418,17 +521,17 @@ def test_campaign_snapshot_boundary_rejects_future_silver_month():
         )
 
 
-def test_current_completed_snapshot_ends_oos_return_in_2026_07():
+def test_current_ready_snapshot_ends_oos_return_in_2026_06():
     panel = _monthly_panel("2015-01", "2026-08")
     window = research_script._campaign_snapshot_boundary(
         panel, as_of_date="2026-08-07",
     )
 
-    assert window.discovery_signal_end == pd.Period("2023-05", freq="M")
-    assert window.discovery_return_end == pd.Period("2023-06", freq="M")
-    assert window.oos_signal_start == pd.Period("2023-07", freq="M")
-    assert window.oos_signal_end == pd.Period("2026-06", freq="M")
-    assert window.oos_return_end == pd.Period("2026-07", freq="M")
+    assert window.discovery_signal_end == pd.Period("2023-04", freq="M")
+    assert window.discovery_return_end == pd.Period("2023-05", freq="M")
+    assert window.oos_signal_start == pd.Period("2023-06", freq="M")
+    assert window.oos_signal_end == pd.Period("2026-05", freq="M")
+    assert window.oos_return_end == pd.Period("2026-06", freq="M")
 
 
 def test_scoped_panel_recomputes_terminal_labels_without_future_reappearance():
@@ -508,14 +611,19 @@ def test_composite_rank_signals_are_rejected_but_single_ratio_is_allowed():
 
 
 def test_return_hurdles_are_not_part_of_ruleset_v3():
-    assert gate.RULESET_VERSION == "fr-3.7.0"
+    assert gate.RULESET_VERSION == "fr-3.10.0"
     assert "net_alpha" not in gate.TH
     assert "net_ir" not in gate.TH
     assert "dsr_probability" not in gate.TH
     assert gate.TH["min_ic"] == 0.03
     assert gate.TH["min_investable_ic"] == 0.03
     assert gate.TH["min_rank_icir"] == 0.15
-    assert gate.TH["oos_ic"] == 0.05
+    assert gate.TH["neutral_ic_retention"] == 0.30
+    assert gate.TH["oos_ic"] == 0.02
+    assert gate.TH["oos_ic_retention"] == 0.50
+    assert gate.TH["max_gold_corr"] == 0.70
+    assert gate.TH["min_gold_corr_months"] == 36
+    assert gate.TH["candidate_duplicate_corr"] == 0.80
     assert gate.TH["min_oos_months"] == 36
     assert INVESTABLE_ADV == 0.0
     assert "investable_retention" not in gate.TH
@@ -548,7 +656,7 @@ def test_discovery_rank_ic_floor_is_three_percent(monkeypatch):
     })
     panel = Panel(
         frame, pd.Series(dtype="datetime64[ns]"),
-        meta={"return_field": "total_return_close"},
+        meta=dict(RETURN_META),
     )
     factor = Factor(
         name="candidate", category="other", hypothesis="경계값 검사",
@@ -576,6 +684,169 @@ def test_discovery_rank_ic_floor_is_three_percent(monkeypatch):
     below = gate.evaluate(factor, panel, frame, phase="discovery")
     for name in ("전체 IC 최소요건", "투자가능 IC 최소요건"):
         assert next(item for item in below.checks if item.name == name).passed is False
+
+
+def test_neutralized_ic_requires_thirty_percent_of_investable_ic(monkeypatch):
+    months = pd.period_range("2020-01", periods=60, freq="M")
+    frame = pd.DataFrame({
+        "asset_id": 1,
+        "ym": months,
+        "trade_date": months.to_timestamp(how="end").normalize(),
+        "in_universe": True,
+        "market_cap": 100.0,
+        "return_close": 100.0,
+        "adv20": 1.0,
+        "market": "KOSPI",
+        "f_candidate": 100.0,
+        "fwd_opt": 0.0,
+        "fwd_mid": 0.0,
+        "fwd_pess": 0.0,
+    })
+    panel = Panel(
+        frame, pd.Series(dtype="datetime64[ns]"),
+        meta=dict(RETURN_META),
+    )
+    factor = Factor(
+        name="candidate", category="other", hypothesis="중립화 유지율 경계",
+        predicted_sign=1, compute=lambda data: data["market_cap"],
+    )
+    monkeypatch.setattr(
+        gate, "_ic_series",
+        lambda *_args, **_kwargs: pd.Series(np.tile([.05, .15], 30)),
+    )
+    monkeypatch.setattr(gate, "backtest", lambda *_args, **_kwargs: None)
+
+    def evaluate_with(neutral_ic):
+        measured = iter([.10, .10, neutral_ic])
+        monkeypatch.setattr(
+            gate, "_hac_mean_test",
+            lambda _series: (next(measured), 5.0, .001),
+        )
+        return gate.evaluate(factor, panel, frame, phase="discovery")
+
+    below = evaluate_with(.02999)
+    below_check = next(
+        item for item in below.checks if item.name.endswith("IC·유지율")
+    )
+    assert below.metrics["neutral_ic"] > gate.TH["neutral_ic"]
+    assert below.metrics["neutral_ic_retention"] < .30
+    assert below_check.passed is False
+
+    at_floor = evaluate_with(.03)
+    at_floor_check = next(
+        item for item in at_floor.checks if item.name.endswith("IC·유지율")
+    )
+    assert at_floor.metrics["neutral_ic_retention"] == pytest.approx(.30)
+    assert at_floor_check.passed is True
+
+
+def test_gold_signal_overlap_accepts_point_seven_and_rejects_above(monkeypatch):
+    months = pd.period_range("2020-01", periods=60, freq="M")
+    asset_ids = np.arange(1, 51)
+    frame = pd.DataFrame([
+        {
+            "asset_id": int(asset_id),
+            "ym": month,
+            "trade_date": month.to_timestamp(how="end").normalize(),
+            "in_universe": True,
+            "market_cap": float(asset_id + 100),
+            "return_close": 100.0,
+            "adv20": float(asset_id + 1),
+            "market": "KOSPI",
+            "f_candidate": float(asset_id + 100),
+            "fwd_opt": 0.0,
+            "fwd_mid": 0.0,
+            "fwd_pess": 0.0,
+        }
+        for month in months
+        for asset_id in asset_ids
+    ])
+    panel = Panel(
+        frame, pd.Series(dtype="datetime64[ns]"),
+        meta=dict(RETURN_META),
+    )
+    factor = Factor(
+        name="candidate", category="other", hypothesis="Gold 중복 경계",
+        predicted_sign=1, compute=lambda data: data["market_cap"],
+    )
+    monkeypatch.setattr(
+        gate, "_ic_series",
+        lambda *_args, **_kwargs: pd.Series(
+            np.tile([.05, .15], 30), index=months,
+        ),
+    )
+    monkeypatch.setattr(gate, "_hac_mean_test", lambda _series: (.10, 5.0, .001))
+    monkeypatch.setattr(gate, "backtest", lambda *_args, **_kwargs: None)
+    measured_correlation = [.70]
+    monkeypatch.setattr(
+        gate.stats, "spearmanr",
+        lambda *_args, **_kwargs: SimpleNamespace(statistic=measured_correlation[0]),
+    )
+    existing = {
+        "approved": pd.Series(frame["asset_id"].to_numpy(dtype=float), index=frame.index),
+    }
+
+    at_floor = gate.evaluate(
+        factor, panel, frame, existing=existing, phase="discovery",
+    )
+    check = next(item for item in at_floor.checks if item.name == "Gold 신호 직교성")
+    assert check.passed is True
+    assert at_floor.metrics["max_gold_signal_corr"] == pytest.approx(.70)
+
+    measured_correlation[0] = .7001
+    above = gate.evaluate(
+        factor, panel, frame, existing=existing, phase="discovery",
+    )
+    assert next(
+        item for item in above.checks if item.name == "Gold 신호 직교성"
+    ).passed is False
+
+    unavailable = gate.evaluate(
+        factor, panel, frame,
+        existing={"approved": pd.Series(np.nan, index=frame.index)},
+        phase="discovery",
+    )
+    unavailable_check = next(
+        item for item in unavailable.checks if item.name == "Gold 신호 직교성"
+    )
+    assert unavailable_check.passed is False
+    assert "36개월 미만" in unavailable_check.note
+
+    measured_correlation[0] = .70
+    one_month = pd.Series(np.nan, index=frame.index)
+    one_month.loc[frame["ym"].eq(months[0])] = frame.loc[
+        frame["ym"].eq(months[0]), "asset_id"
+    ].to_numpy(dtype=float)
+    one_month_result = gate.evaluate(
+        factor, panel, frame, existing={"approved": one_month}, phase="discovery",
+    )
+    one_month_check = next(
+        item for item in one_month_result.checks if item.name == "Gold 신호 직교성"
+    )
+    assert one_month_result.metrics["gold_signal_comparison_months"] == {"approved": 1}
+    assert one_month_check.passed is False
+
+
+def test_approved_catalog_without_values_fails_t5_closed(monkeypatch):
+    frame = pd.DataFrame({
+        "asset_id": [1, 2],
+        "ym": pd.PeriodIndex(["2023-01", "2023-01"], freq="M"),
+    })
+    monkeypatch.setattr(
+        run_script.silver, "load_approved_factor_keys",
+        lambda _conn: ["approved_without_values"],
+    )
+    monkeypatch.setattr(
+        run_script.silver, "load_approved_values",
+        lambda _conn: pd.DataFrame(
+            columns=["factor_key", "asset_id", "as_of_date", "value"]
+        ),
+    )
+
+    signals = run_script._approved_signals(object(), frame)
+
+    assert list(signals) == ["approved_without_values"]
+    assert signals["approved_without_values"].isna().all()
 
 
 def test_deferred_fdr_is_pending_not_a_false_failure():
@@ -648,6 +919,7 @@ def test_oos_early_failure_preserves_the_frozen_window():
         oos_start=pd.Period("2030-01", freq="M"),
         oos_end=pd.Period("2032-12", freq="M"),
         data_cutoff="2029-12-31",
+        discovery_ic=.03,
     )
     assert result.metrics["oos_start"] == "2030-01"
     assert result.metrics["oos_end"] == "2032-12"
@@ -655,7 +927,21 @@ def test_oos_early_failure_preserves_the_frozen_window():
     assert result.tier_failed("T0")
 
 
-def test_oos_gold_effect_floor_is_five_percent_rank_ic(monkeypatch):
+@pytest.mark.parametrize("invalid_ic", [None, np.nan, 0.0, -.01])
+def test_confirmation_discovery_ic_preflight_fails_the_whole_batch(invalid_ic):
+    valid = gate.Result(
+        factor="valid", definition_hash="valid", metrics={"ic_investable": .03},
+    )
+    invalid = gate.Result(
+        factor="invalid", definition_hash="invalid",
+        metrics={"ic_investable": invalid_ic},
+    )
+    with pytest.raises(ValueError, match="부분 OOS 공개"):
+        run_script._assert_confirmation_discovery_ics([valid, invalid])
+    run_script._assert_confirmation_discovery_ics([valid])
+
+
+def test_oos_requires_absolute_floor_and_half_of_discovery_ic(monkeypatch):
     months = pd.period_range("2030-01", periods=36, freq="M")
     frame = pd.DataFrame({
         "asset_id": 1,
@@ -669,14 +955,14 @@ def test_oos_gold_effect_floor_is_five_percent_rank_ic(monkeypatch):
     })
     panel = Panel(
         frame, pd.Series(dtype="datetime64[ns]"),
-        meta={"return_field": "total_return_close"},
+        meta=dict(RETURN_META),
     )
     factor = Factor(
         name="candidate", category="other", hypothesis="경계값 검사",
         predicted_sign=1, compute=lambda data: data["market_cap"],
     )
 
-    measured_ic = [.049]
+    measured_ic = [.0199]
     monkeypatch.setattr(
         gate, "_ic_series", lambda *_args, **_kwargs: pd.Series([0.0] * 36),
     )
@@ -687,17 +973,83 @@ def test_oos_gold_effect_floor_is_five_percent_rank_ic(monkeypatch):
     below = gate.evaluate_oos(
         factor, panel, frame,
         oos_start=months[0], oos_end=months[-1], data_cutoff="2029-12-31",
+        discovery_ic=.03,
     )
     assert next(check for check in below.checks if check.name == "고정 OOS IC").passed is False
 
-    measured_ic[0] = .05
+    measured_ic[0] = .02
     at_floor = gate.evaluate_oos(
         factor, panel, frame,
         oos_start=months[0], oos_end=months[-1], data_cutoff="2029-12-31",
+        discovery_ic=.03,
     )
     assert next(
         check for check in at_floor.checks if check.name == "고정 OOS IC"
     ).passed is True
+    assert at_floor.metrics["oos_discovery_ic"] == pytest.approx(.03)
+    assert at_floor.metrics["oos_ic_retention"] == pytest.approx(2 / 3)
+    assert at_floor.metrics["oos_required_ic"] == pytest.approx(.02)
+
+    measured_ic[0] = .0299
+    below_retention = gate.evaluate_oos(
+        factor, panel, frame,
+        oos_start=months[0], oos_end=months[-1], data_cutoff="2029-12-31",
+        discovery_ic=.06,
+    )
+    assert below_retention.metrics["oos_ic"] > gate.TH["oos_ic"]
+    assert below_retention.metrics["oos_ic_retention"] < .50
+    assert next(
+        check for check in below_retention.checks if check.name == "고정 OOS IC"
+    ).passed is False
+
+    measured_ic[0] = .03
+    at_retention_floor = gate.evaluate_oos(
+        factor, panel, frame,
+        oos_start=months[0], oos_end=months[-1], data_cutoff="2029-12-31",
+        discovery_ic=.06,
+    )
+    assert at_retention_floor.metrics["oos_ic_retention"] == pytest.approx(.50)
+    assert at_retention_floor.metrics["oos_required_ic"] == pytest.approx(.03)
+    assert next(
+        check for check in at_retention_floor.checks if check.name == "고정 OOS IC"
+    ).passed is True
+
+
+@pytest.mark.parametrize("discovery_ic", [None, np.nan, 0.0, -.01])
+def test_oos_without_valid_discovery_ic_fails_closed(monkeypatch, discovery_ic):
+    months = pd.period_range("2030-01", periods=36, freq="M")
+    frame = pd.DataFrame({
+        "asset_id": 1,
+        "ym": months,
+        "in_universe": True,
+        "market_cap": 100.0,
+        "return_close": 100.0,
+        "adv20": 1.0,
+        "f_candidate": 100.0,
+        "fwd_mid": 0.0,
+    })
+    panel = Panel(
+        frame, pd.Series(dtype="datetime64[ns]"),
+        meta=dict(RETURN_META),
+    )
+    factor = Factor(
+        name="candidate", category="other", hypothesis="Discovery IC 계약",
+        predicted_sign=1, compute=lambda data: data["market_cap"],
+    )
+    monkeypatch.setattr(
+        gate, "_ic_series", lambda *_args, **_kwargs: pd.Series([0.0] * 36),
+    )
+    monkeypatch.setattr(gate, "_hac_mean_test", lambda _series: (.03, 5.0, .001))
+    result = gate.evaluate_oos(
+        factor, panel, frame,
+        oos_start=months[0], oos_end=months[-1], data_cutoff="2029-12-31",
+        discovery_ic=discovery_ic,
+    )
+    assert next(
+        check for check in result.checks if check.name == "고정 OOS IC"
+    ).passed is False
+    assert np.isnan(result.metrics["oos_ic_retention"])
+    assert np.isnan(result.metrics["oos_required_ic"])
 
 
 def test_null_calibration_outputs_campaign_family_units(monkeypatch):
@@ -720,6 +1072,7 @@ def test_null_calibration_outputs_campaign_family_units(monkeypatch):
 
     def fake_evaluate_oos(factor, _panel, confirmation_df, **_kwargs):
         events.append((factor.name, "oos"))
+        assert _kwargs["discovery_ic"] == .03
         assert confirmation_df["ym"].max() == pd.Period("2029-01", freq="M")
         pd.testing.assert_series_equal(
             discovery_signals[factor.name],
@@ -769,6 +1122,10 @@ def test_null_calibration_outputs_campaign_family_units(monkeypatch):
     assert output["calibration_unit"].eq("null_campaign_family").all()
     assert output["generator_suite"].eq("null-v2").all()
     assert output["qualification_policy"].eq(QUALIFICATION_POLICY).all()
+    assert output["neutral_ic_retention_floor"].eq(.30).all()
+    assert output["oos_ic_retention_floor"].eq(.50).all()
+    assert output["max_gold_signal_corr_threshold"].eq(.70).all()
+    assert output["min_gold_signal_corr_months"].eq(36).all()
     assert output["revealed_count"].eq(2).all()
     assert [event for _, event in events] == [
         "discovery", "discovery", "discovery_by", "oos", "oos", "oos_by",
@@ -794,7 +1151,7 @@ def test_latest_context_exposes_unused_pit_inputs_but_not_research_outputs(tmp_p
     panel = Panel(
         monthly=frame,
         dead=pd.Series(dtype="datetime64[ns]"),
-        meta={"source": "RDS public Silver", "return_field": "total_return_close"},
+        meta={"source": "RDS public Silver", **RETURN_META},
     )
     path = research.write_context(panel, Registry(), research_dir=tmp_path)
     context = path.read_text()
@@ -845,6 +1202,24 @@ def test_common_research_start_is_fixed_after_financial_warmup():
     frame = pd.DataFrame({"ym": months})
     filtered = frame[frame["ym"].ge(gate.RESEARCH_START)]
     assert list(filtered["ym"].astype(str)) == ["2018-03", "2018-04", "2018-05"]
+
+
+def test_stock_snapshot_fiscal_period_tie_matches_gold_priority():
+    common = {
+        "asset_id": 1,
+        "period_end": "2023-12-31",
+        "fs_type": "CFS",
+        "available_date": "2024-03-31",
+        "metric": "total_assets",
+    }
+    rows = pd.DataFrame([
+        {**common, "fiscal_period": "Q3", "value": 333.0, "revision_key": "a"},
+        {**common, "fiscal_period": "FY", "value": 444.0, "revision_key": "b"},
+    ])
+
+    snapshots = FU.materialize_pit(rows, verbose=False)
+
+    assert snapshots.iloc[-1]["total_assets"] == 444.0
 
 
 def test_promotion_requires_current_null_calibration():
@@ -1262,6 +1637,51 @@ def test_campaign_enforces_oos_floor_and_nonoverlapping_active_holdouts(tmp_path
     assert second.exists()
 
 
+def test_campaign_freezes_epoch_count_and_allows_only_one_open_epoch(tmp_path):
+    _start_campaign(tmp_path, planned_epoch_count=2)
+    first = Factor(
+        name="candidate_a", family="family_a", category="other",
+        hypothesis="가설 A", predicted_sign=1, params={"candidate": "a"},
+        compute=lambda frame: frame["market_cap"],
+    )
+    second = Factor(
+        name="candidate_b", family="family_b", category="other",
+        hypothesis="가설 B", predicted_sign=1, params={"candidate": "b"},
+        compute=lambda frame: frame["market_cap"],
+    )
+    third = Factor(
+        name="candidate_c", family="family_c", category="other",
+        hypothesis="가설 C", predicted_sign=1, params={"candidate": "c"},
+        compute=lambda frame: frame["market_cap"],
+    )
+    epochs.start_epoch(tmp_path, "campaign-001", "epoch-001", [first])
+    with pytest.raises(ValueError, match="동시에 둘 이상의 epoch"):
+        epochs.start_epoch(tmp_path, "campaign-001", "epoch-002", [second])
+    result = gate.Result(
+        factor=first.name, definition_hash=first.definition_hash,
+        verdict=gate.Verdict.REJECT,
+    )
+    epochs.mark_evaluated(
+        tmp_path, "campaign-001", "epoch-001", first, result,
+        report="research/runs/a/report.md", strongest_relationship=None,
+    )
+    epochs.close_epoch(tmp_path, "campaign-001", "epoch-001")
+    with pytest.raises(ValueError, match="사전 고정한 epoch 수"):
+        epochs.finalize_campaign(tmp_path, "campaign-001")
+    epochs.start_epoch(tmp_path, "campaign-001", "epoch-002", [second])
+    second_result = gate.Result(
+        factor=second.name, definition_hash=second.definition_hash,
+        verdict=gate.Verdict.REJECT,
+    )
+    epochs.mark_evaluated(
+        tmp_path, "campaign-001", "epoch-002", second, second_result,
+        report="research/runs/b/report.md", strongest_relationship=None,
+    )
+    epochs.close_epoch(tmp_path, "campaign-001", "epoch-002")
+    with pytest.raises(ValueError, match="사전 고정한 epoch 수"):
+        epochs.start_epoch(tmp_path, "campaign-001", "epoch-003", [third])
+
+
 def test_reverse_creation_order_cannot_overlap_signal_and_forward_return(tmp_path):
     _start_campaign(tmp_path, "campaign-later")
     with pytest.raises(ValueError, match="봉인 OOS 기간이 겹칩니다"):
@@ -1363,11 +1783,11 @@ def test_campaign_finalize_auto_qualifies_every_discovery_pass(tmp_path):
             "trading_value": [10.0], "shares": [1.0], "market": ["KOSPI"],
         }),
         dead=pd.Series(dtype="datetime64[ns]"),
-        meta={"source": "RDS public Silver", "return_field": "total_return_close"},
+        meta={"source": "RDS public Silver", **RETURN_META},
     )
     context = research.write_context(panel, Registry(), research_dir=tmp_path).read_text()
     assert "| `candidate_a` | `candidate_a` | `candidate_a` |" in context
-    assert "| `fr-3.7.0` | PROVISIONAL | - |" in context
+    assert "| `fr-3.10.0` | PROVISIONAL | - |" in context
     assert "old-full-sample" in context
     assert "WITHHELD_POST_CUTOFF" in context
     assert "research/runs/old/report.md" not in context
@@ -1377,7 +1797,7 @@ def test_campaign_fdr_is_identical_when_epoch_order_is_reversed(tmp_path):
     pvalues = {"candidate_a": .01, "candidate_b": .02}
 
     def run_campaign(root, order):
-        _start_campaign(root)
+        _start_campaign(root, planned_epoch_count=len(order))
         factors = {}
         for index, name in enumerate(order, 1):
             factor = Factor(

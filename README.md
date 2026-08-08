@@ -13,26 +13,28 @@ Bronze는 Silver 품질 대사 외에는 리서치 입력으로 사용하지 않
 ```bash
 uv sync
 uv run python scripts/run.py build          # 인증 Silver → PIT 패널 캐시
-uv run python scripts/research.py campaign-start --campaign campaign-001
+uv run python scripts/research.py campaign-start --campaign campaign-001 --epochs 3
 ```
 
 환경변수: `SILVER_DB_URL`(필수), `CACHE_DIR`(기본 `.cache`).
 RDS가 SSM 터널 뒤에 있으면 Silver build·평가·SQL parity 전에 터널을 연다.
 
 `scripts/run.py gate`와 `publish`는 전체 패널이 봉인 OOS를 우회해 노출하지 않도록
-`epoch-1.4`에서 비활성화했다. 평가는 아래 campaign workflow로만 실행한다.
+`epoch-1.5`에서 비활성화했다. 평가는 아래 campaign workflow로만 실행한다.
 
-모든 팩터의 공통 평가 시작일은 고정한다. campaign은 최신 완료 수익률월에서 역사적 OOS
-36 signal개월을 역산하고, discovery와 OOS 사이 한 signal개월을 embargo한다. 경계는 결과에
-맞춰 변경하지 않는다.
+모든 팩터의 공통 평가 시작일은 고정한다. campaign은 현재 Silver에서 45일 비활성 판정과
+closure까지 끝난 최신 36 signal개월을 hidden OOS로 먼저 떼고, 그 앞부분만 discovery로
+동결한다. 따라서 기본 실행은 미래 데이터를 기다리지 않고 지금 IS와 OOS를 모두 판단할 수 있다.
+명시적 `prospective_holdout`은 장기 추적이 필요할 때만 사용한다.
 
 ## 자율 연구 campaign/epoch
 
-새 연구는 후보별로 OOS를 반복해서 보지 않는다. campaign이 최종 OOS를 봉인하고, epoch이
+새 연구는 같은 후보의 OOS를 반복해서 보지 않는다. campaign이 현재 데이터의 마지막 36개월을
+처음부터 숨기고, epoch이
 결과를 보기 전에 여러 후보의 이름과 definition hash를 동결한다.
 
 ```bash
-uv run python scripts/research.py campaign-start --campaign campaign-001
+uv run python scripts/research.py campaign-start --campaign campaign-001 --epochs 3
 uv run python scripts/research.py context  # campaign cutoff 뒤 결과를 가린 컨텍스트
 uv run python scripts/research.py epoch-start \
   --campaign campaign-001 --epoch epoch-001 --factors factor_a factor_b
@@ -63,8 +65,9 @@ OOS reveal은 hash·parity·귀무 보정·discovery 재현을 먼저 확인하�
 마지막 OOS 수익률월 다음 달이라는 월 표지만으로는 부족하며, 비활성 종목 판정을 위해 마지막
 signal 월말에서 45일이 지난 실제 Silver 관측일까지 확인한다.
 
-이미 해당 OOS 결과를 본 후보는 같은 역사 구간으로 다시 나눠도 `retrospective-only`다. 한 번
-공개한 OOS 구간도 다음 campaign에서 재사용하지 않는다. 정확한 경계 산식과 상태 계약은
+이미 해당 OOS 결과를 본 후보는 같은 역사 구간으로 다시 나눠도 `retrospective-only`다. 다른
+후보가 같은 달력 구간을 쓰면 `research/oos-exposures/`를 지우지 않고 manifest에
+`HISTORICAL_REUSED_WINDOW`와 기존 exposure id를 남긴다. 정확한 경계 산식과 상태 계약은
 [campaign·epoch 프로토콜](.agents/skills/factor-research-loop/references/epoch-protocol.md)을 따른다.
 
 ## 왜 통계가 마지막인가
@@ -92,9 +95,9 @@ signal 월말에서 45일이 지난 실제 Silver 관측일까지 확인한다.
 | T0 | 등록·결정성·타입안전 | 0회 | 결정론 |
 | **T1** | **표본틀 무결성** | 0회 (SQL) | 결정론 — 공격 11/18 격추 |
 | T2 | 전체·투자 가능 IC 최소효과와 투자 가능 Rank ICIR | 진단 1회 | 통계 |
-| T3 | 기간별·레짐·중립화 IC 강건성 | IC 재계산 | 통계 |
-| T4 | campaign discovery BY FDR + 자동 확인 대상 OOS BY FDR·귀무 보정 | 최다 | 통계 + 시행 원장 |
-| T5 | 기존 Gold 신호와 직교성 | — | 신호 |
+| T3 | 기간별·레짐·중립화 IC와 원본 대비 유지율 강건성 | IC 재계산 | 통계 |
+| T4 | campaign discovery BY + 36개월 OOS 절대 IC·Discovery 대비 유지율 + OOS BY·귀무 보정 | 최다 | 통계 + 시행 원장 |
+| T5 | 기존 Gold별 비교월 `>= 36`, 최대 월별 중앙 절대 Spearman `<= 0.70` | — | 신호 |
 
 최종 confirmation 판정은 T0·T1·T2·T4·T5 중 하나라도 실패하면 `REJECT`, T3 soft fail이 하나면
 `PROVISIONAL`, soft fail이 없으면 `PROMOTE`다. T3 soft fail이 둘 이상이어도 `REJECT`다.
@@ -121,7 +124,7 @@ discovery 자동 확인 대상은 OOS가 봉인되어 있으므로 soft fail이 
 강제 부여하고 세 시나리오 전부에서 부호가 유지되어야 한다. 안 하면 롱레그의 최악 실현값만
 표본에서 증발한다.
 
-## 현재 판정 기준: `fr-3.7.0`
+## 현재 판정 기준: `fr-3.10.0`
 
 판정은 IC 효과크기·시간 강건성·다중검정·표본 무결성·기존 Gold와의 비중복을 함께 본다.
 절대 포트폴리오 수익률과 비용 지표는 운용 진단이며 팩터 승격선이 아니다. 지표 정의, 모든
@@ -175,9 +178,9 @@ Silver에 과거 시점별 업종분류 이력이 없고 현재 업종을 과거
 
 **기업행위**는 액면분할·병합, 유상·무상증자, 합병·분할, 배당처럼 가격이나 주식수를 기계적으로
 바꾸는 사건이다. Silver에는 이미 `public.corporate_action` 테이블이 존재하지만 factor-research
-월말 패널은 아직 이를 붙이지 않는다. 따라서 `net_equity_issuance_12m`처럼 시가총액과 총수익
-변화를 이용한 proxy는 실제 증자뿐 아니라 합병·분할·큰 배당 효과가 섞일 수 있다. 기업행위
-보강은 이 이벤트를 PIT 기준으로 패널에 연결해 신호의 경제적 원인을 구분하는 별도 작업이다.
+월말 패널은 인증된 현금배당 이력을 PIT 기준으로 붙여 `dividend_cash_ttm`을 만든다. 증자·감자,
+합병·분할, 자사주 매입·소각은 아직 월말 신호로 연결되지 않았으므로 가격조정 순발행 정의에도
+이 사건들의 효과가 일부 섞일 수 있다.
 
 ## 한국시장에서 확인된 사실
 
@@ -194,25 +197,31 @@ Silver에 과거 시점별 업종분류 이력이 없고 현재 업종을 과거
 from engine.factors import REGISTRY, Factor
 
 REGISTRY.add(Factor(
-    name="gross_profitability",
+    name="operating_roa",
     category="quality",
     predicted_sign=1,
-    hypothesis="매출총이익/총자산은 순이익보다 회계 조작에 덜 노출돼 이익의 질을 "
-               "더 잘 반영한다(Novy-Marx 2013). 한국은 계열사 내부거래로 영업이익이 "
-               "왜곡될 수 있어 총자산 대비 정규화가 특히 유효할 것.",
-    params={"lookback_quarters": 4},
+    hypothesis="영업이익/총자산이 높은 기업은 자산을 효율적으로 사용하며 시장이 그 "
+               "수익성의 지속성을 과소평가할 수 있다.",
+    params={},
     rebalance_months=3,
-    needs=("revenue_ttm", "total_assets"),
-    compute=lambda d: d["revenue_ttm"] / d["total_assets"],
+    needs=("operating_income_ttm", "total_assets"),
+    compute=lambda d: d["operating_income_ttm"] / d["total_assets"].where(
+        d["total_assets"] > 0
+    ),
 ))
 ```
+
+`gross_profitability`는 `gross_profit/total_assets` 정의이므로 현재 Silver에 없는
+매출총이익을 매출액으로 대체하지 않는다. `revenue_ttm/total_assets`는 이미
+`asset_turnover`이며 gross profitability가 아니다.
 
 `hypothesis` 없이는 `Factor` 생성 자체가 예외를 던진다. 게이트가 소스의 숫자 리터럴을
 스캔해 **선언되지 않은 파라미터**도 잡는다.
 
 ## 판정 안전장치와 남은 한계
 
-- 수익률은 Silver `total_return_close`만 사용하며 결측·비양수 값이 있으면 build를 중단한다
+- 수익률은 Silver의 인증된 KRX gross 배당재투자 `total_return_close`만 사용한다. 계약이
+  `CERTIFIED`가 아니거나 결측·비양수 값이 있으면 build를 중단한다
 - 과거 PIT 업종 이력이 없어 섹터 중립성은 현재 ruleset의 검증 범위가 아니다
 - 비용 모델의 시장충격은 아직 AUM·참여율 함수가 아닌 보수적 추정치다
 - 모든 고유 정의의 시행횟수는 `.cache/trials.sqlite3`에, 봉인 OOS 상태는
@@ -220,7 +229,7 @@ REGISTRY.add(Factor(
   연구자의 시행을 합산할 수 있다
 - 귀무 보정은 같은 Silver snapshot·ruleset·campaign family, Gold 신호 digest에 결박한다. 필요한
   생성 수와 오류율 기준은 [판정 기준](docs/factor-promotion-criteria.md)을 따른다
-- 현재 ruleset이 `fr-3.7.0`으로 변경됐으므로 이 버전의 귀무 보정을 새로 만들기 전에는
+- 현재 ruleset이 `fr-3.10.0`으로 변경됐으므로 이 버전의 귀무 보정을 새로 만들기 전에는
   안전장치상 `PROMOTE`가 나오지 않는다
-- `epoch-1.4`는 역사적 OOS를 한 번만 공개하며, 구현 parity·campaign reveal·별도 사람 검토 전
+- `epoch-1.5`는 campaign 시작 때 분리한 36개월 OOS를 후보 family에 한 번만 공개하며, 구현 parity·campaign reveal·별도 사람 검토 전
   `publish --apply`를 차단한다

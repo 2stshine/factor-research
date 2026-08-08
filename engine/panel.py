@@ -85,11 +85,30 @@ def from_silver_frame(prices: pd.DataFrame, *, verbose: bool = True) -> Panel:
     if prices.empty:
         raise RuntimeError("인증된 KRX Silver price_daily 행이 없습니다")
 
+    return_contract = prices.attrs.get("return_contract")
+    if not isinstance(return_contract, dict):
+        raise RuntimeError(
+            "Silver total_return_close의 배당 포함 방법론 계약이 없습니다"
+        )
+    if (
+        return_contract.get("status") != "CERTIFIED"
+        or return_contract.get("methodology_version")
+        != silver.TOTAL_RETURN_METHOD
+    ):
+        raise RuntimeError(
+            "Silver total_return_close 방법론 계약이 인증 기준과 다릅니다: "
+            f"{return_contract}"
+        )
+
     required = {
         "asset_id", "Code", "Name", "instrument_type", "trade_date",
         "adj_close", "total_return_close", "trading_value", "market_cap",
         "shares", "market", "adv20", "age_days", "first_seen",
-        "dataset_start", "quality_run_id",
+        "dataset_start", "quality_run_id", "amihud_illiquidity_1m",
+        "amihud_observations_1m", "daily_volatility_252d",
+        "daily_return_observations_252d", "max_daily_return_1m",
+        "max_daily_return_observations_1m", "price_high_252d",
+        "price_high_observations_252d",
     }
     missing = required - set(prices.columns)
     if missing:
@@ -104,7 +123,11 @@ def from_silver_frame(prices: pd.DataFrame, *, verbose: bool = True) -> Panel:
     _numeric(
         d,
         ("close", "adj_close", "total_return_close", "trading_value",
-         "market_cap", "shares", "adv20", "age_days"),
+         "market_cap", "shares", "adv20", "age_days",
+         "amihud_illiquidity_1m", "amihud_observations_1m",
+         "daily_volatility_252d", "daily_return_observations_252d",
+         "max_daily_return_1m", "max_daily_return_observations_1m",
+         "price_high_252d", "price_high_observations_252d"),
     )
     bad_total_return = d["total_return_close"].isna() | (d["total_return_close"] <= 0)
     if bad_total_return.any():
@@ -147,6 +170,9 @@ def from_silver_frame(prices: pd.DataFrame, *, verbose: bool = True) -> Panel:
         "n_stocks": d["asset_id"].nunique(),
         "quality_run_ids": sorted(d["quality_run_id"].dropna().astype(str).unique()),
         "return_field": "total_return_close",
+        "return_methodology": return_contract["methodology_version"],
+        "return_contract_status": return_contract["status"],
+        "return_contract_run_id": return_contract.get("quality_run_id"),
     }
     if verbose:
         snap = d[d["ym"] == d["ym"].max()]

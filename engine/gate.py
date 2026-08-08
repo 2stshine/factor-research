@@ -19,7 +19,7 @@ from engine.factors import Factor
 from engine.panel import Panel
 
 
-RULESET_VERSION = "fr-3.7.0"
+RULESET_VERSION = "fr-3.10.0"
 RESEARCH_START = pd.Period("2018-03", freq="M")
 EVALUATION_PHASES = {"discovery", "full"}
 
@@ -42,10 +42,14 @@ TH = {
     "turnover_warn": 250.0,
     "turnover_fail": 400.0,
     "subperiod_agree": 3,
-    "max_corr": 0.80,
+    "max_gold_corr": 0.70,
+    "min_gold_corr_months": 36,
+    "candidate_duplicate_corr": 0.80,
     "regime_conc": 0.60,
     "neutral_ic": 0.01,
-    "oos_ic": 0.05,
+    "neutral_ic_retention": 0.30,
+    "oos_ic": 0.02,
+    "oos_ic_retention": 0.50,
     "fdr_q": 0.10,
     "max_missing_return": 0.01,
 }
@@ -405,6 +409,54 @@ def _finalize(result: Result) -> None:
             result.verdict = Verdict.PROMOTE
 
 
+def oos_effect_threshold_label() -> str:
+    """Human-readable contract shared by formal and fallback OOS paths."""
+    return (
+        f"months=={TH['min_oos_months']} & "
+        f"OOS IC>={TH['oos_ic']} & "
+        f"OOS/Discovery>={TH['oos_ic_retention']}"
+    )
+
+
+def _oos_effect_check(
+    oos_series: pd.Series,
+    oos_ic: float,
+    discovery_ic: float | None,
+) -> tuple[float, float, Check]:
+    """Require both an absolute OOS effect and retained discovery strength."""
+    discovery = (
+        float(discovery_ic)
+        if discovery_ic is not None and np.isfinite(discovery_ic) and discovery_ic > 0
+        else float("nan")
+    )
+    retention = (
+        float(oos_ic / discovery)
+        if np.isfinite(discovery) and np.isfinite(oos_ic)
+        else float("nan")
+    )
+    required_ic = (
+        max(TH["oos_ic"], TH["oos_ic_retention"] * discovery)
+        if np.isfinite(discovery)
+        else float("nan")
+    )
+    passed = bool(
+        len(oos_series) == TH["min_oos_months"]
+        and np.isfinite(oos_ic)
+        and np.isfinite(required_ic)
+        and oos_ic >= required_ic
+    )
+    note = (
+        f"Discovery IC={discovery:.6g}, OOS 유지율={retention:.6g}; "
+        "HAC p는 동시 확인되는 자동 통과 후보의 BY 입력값"
+        if np.isfinite(discovery)
+        else "인증된 Discovery IC가 없거나 비양수여서 유지율을 계산할 수 없음"
+    )
+    return retention, required_ic, Check(
+        "T4.1", "고정 OOS IC", passed, oos_ic,
+        oos_effect_threshold_label(), note,
+    )
+
+
 def evaluate(
     factor: Factor,
     panel: Panel,
@@ -483,7 +535,16 @@ def evaluate(
             scenario_means[tag] = float(series.mean()) if len(series) else float("nan")
     terminal_stable = len(scenario_means) == 3 and all(value > 0 for value in scenario_means.values())
     add(Check("T1.2", "종착수익률 3점 방향", terminal_stable, None, "세 시나리오 IC > 0", str({k: round(v, 4) for k, v in scenario_means.items()})))
-    add(Check("T1.3", "총수익 필드", panel.meta.get("return_field") == "total_return_close", None, "Silver total_return_close"))
+    total_return_certified = bool(
+        panel.meta.get("return_field") == "total_return_close"
+        and panel.meta.get("return_methodology")
+        == "krx_gross_dividend_reinvested_v1"
+        and panel.meta.get("return_contract_status") == "CERTIFIED"
+    )
+    add(Check(
+        "T1.3", "배당 포함 총수익 계약", total_return_certified, None,
+        "Silver total_return_close / krx_gross_dividend_reinvested_v1 / CERTIFIED",
+    ))
     if result.tier_failed("T1"):
         return result
 
@@ -561,15 +622,27 @@ def evaluate(
     research["_neutral"] = _neutralized_signal(research, col, factor.category)
     neutral_series = _ic_series(research[research["_eligible"]], "_neutral", "fwd_mid")
     neutral_ic, neutral_t, neutral_p = _hac_mean_test(neutral_series)
+    neutral_retention = (
+        neutral_ic / ic_inv
+        if np.isfinite(neutral_ic) and np.isfinite(ic_inv) and ic_inv > 0
+        else float("nan")
+    )
     result.metrics.update({
         "neutral_ic": neutral_ic,
         "neutral_ic_t": neutral_t,
         "neutral_ic_p": neutral_p,
+        "neutral_ic_retention": neutral_retention,
     })
     add(Check(
-        "T3.2", "시장구분·유동성·비의도 규모 노출 제거 후 IC",
-        bool(neutral_ic >= TH["neutral_ic"]),
-        neutral_ic, f"IC>={TH['neutral_ic']} (size category는 규모 노출 보존; HAC p는 진단값)",
+        "T3.2", "시장구분·유동성·비의도 규모 노출 제거 후 IC·유지율",
+        bool(
+            neutral_ic >= TH["neutral_ic"]
+            and neutral_retention >= TH["neutral_ic_retention"]
+        ),
+        neutral_ic,
+        f"IC>={TH['neutral_ic']} & neutral/investable>={TH['neutral_ic_retention']} "
+        "(size category는 규모 노출 보존; HAC p는 진단값)",
+        f"neutral/investable={neutral_retention:.6g}",
     ))
     if phase == "discovery":
         # The final holdout belongs to the campaign, not to an individual cycle.
@@ -596,22 +669,23 @@ def evaluate(
             "oos_ic_t": oos_t,
             "oos_ic_p": oos_p,
         })
-        oos_pass = bool(
-            len(oos_series) == TH["min_oos_months"]
-            and oos_ic >= TH["oos_ic"]
+        oos_retention, oos_required_ic, oos_check = _oos_effect_check(
+            oos_series, oos_ic, ic_inv,
         )
-        add(Check(
-            "T4.1", "고정 OOS IC", oos_pass, oos_ic,
-            f"months=={TH['min_oos_months']} & IC>={TH['oos_ic']}",
-            "HAC p는 동시 확인되는 자동 통과 후보의 BY 입력값",
-        ))
+        result.metrics.update({
+            "oos_discovery_ic": ic_inv,
+            "oos_ic_retention": oos_retention,
+            "oos_required_ic": oos_required_ic,
+        })
+        add(oos_check)
 
     result.metrics.update({"n_trials": trial_count})
     add(Check("T4.3", "다중검정 FDR", None, None, f"BY q<={TH['fdr_q']}", "배치 보정 대기"))
 
     if existing:
-        max_signal = 0.0
-        worst_signal = ""
+        signal_correlations: dict[str, float] = {}
+        comparison_months: dict[str, int] = {}
+        insufficient_comparisons: list[str] = []
         for name, values in existing.items():
             gold_col = f"_gold_{name}"
             aligned = values.reindex(df.index)
@@ -623,11 +697,41 @@ def evaluate(
                     rho = stats.spearmanr(sample[col], sample[gold_col]).statistic
                     if pd.notna(rho):
                         monthly_corr.append(abs(float(rho)))
-            signal_corr = float(np.median(monthly_corr)) if monthly_corr else 0.0
-            if signal_corr > max_signal:
-                max_signal, worst_signal = signal_corr, name
-        add(Check("T5.1", "Gold 신호 직교성", max_signal <= TH["max_corr"], max_signal, f"median |rho|<={TH['max_corr']}", worst_signal))
+            comparison_months[name] = len(monthly_corr)
+            if len(monthly_corr) >= TH["min_gold_corr_months"]:
+                signal_correlations[name] = float(np.median(monthly_corr))
+            else:
+                insufficient_comparisons.append(name)
+        if signal_correlations:
+            worst_signal, max_signal = max(
+                signal_correlations.items(), key=lambda item: item[1]
+            )
+        else:
+            worst_signal, max_signal = "", float("nan")
+        result.metrics.update({
+            "max_gold_signal_corr": max_signal,
+            "gold_signal_comparison_months": comparison_months,
+        })
+        comparison_complete = not insufficient_comparisons and np.isfinite(max_signal)
+        note = f"최대 상관 팩터={worst_signal}, 비교월={comparison_months.get(worst_signal, 0)}"
+        if insufficient_comparisons:
+            note += (
+                f"; {TH['min_gold_corr_months']}개월 미만="
+                f"{sorted(insufficient_comparisons)}"
+            )
+        add(Check(
+            "T5.1", "Gold 신호 직교성",
+            bool(comparison_complete and max_signal <= TH["max_gold_corr"]),
+            max_signal,
+            f"각 Gold 비교월>={TH['min_gold_corr_months']} & "
+            f"max_j median_t |rho|<={TH['max_gold_corr']}",
+            note,
+        ))
     else:
+        result.metrics.update({
+            "max_gold_signal_corr": 0.0,
+            "gold_signal_comparison_months": {},
+        })
         add(Check("T5.1", "Gold 직교성", True, 0.0, "기존 APPROVED와 비교", "APPROVED 팩터 없음"))
 
     return result
@@ -641,6 +745,7 @@ def evaluate_oos(
     oos_start: pd.Period,
     oos_end: pd.Period,
     data_cutoff: str,
+    discovery_ic: float | None,
 ) -> Result:
     """Evaluate only the sealed OOS endpoint on its own fixed snapshot.
 
@@ -670,14 +775,23 @@ def evaluate_oos(
         "oos_ic": None,
         "oos_ic_t": None,
         "oos_ic_p": None,
+        "oos_discovery_ic": discovery_ic,
+        "oos_ic_retention": None,
+        "oos_required_ic": None,
     })
     result.checks.extend(_validate_factor(factor, df, col))
     if result.tier_failed("T0"):
         return result
-    if panel.meta.get("return_field") != "total_return_close":
+    if not (
+        panel.meta.get("return_field") == "total_return_close"
+        and panel.meta.get("return_methodology")
+        == "krx_gross_dividend_reinvested_v1"
+        and panel.meta.get("return_contract_status") == "CERTIFIED"
+    ):
         result.checks.append(Check(
             "T4.1", "고정 OOS IC", False, None,
-            "Silver total_return_close", "총수익 필드 계약 실패",
+            "인증된 Silver 배당 포함 total_return_close",
+            "총수익 방법론 계약 실패",
         ))
         return result
     work = df.loc[
@@ -696,15 +810,15 @@ def evaluate_oos(
         "oos_ic_t": oos_t,
         "oos_ic_p": oos_p,
     })
-    passed = bool(
-        len(oos_series) == TH["min_oos_months"]
-        and oos_ic >= TH["oos_ic"]
+    oos_retention, oos_required_ic, oos_check = _oos_effect_check(
+        oos_series, oos_ic, discovery_ic,
     )
-    result.checks.append(Check(
-        "T4.1", "고정 OOS IC", passed, oos_ic,
-        f"months=={TH['min_oos_months']} & IC>={TH['oos_ic']}",
-        "HAC p는 동시 확인되는 자동 통과 후보의 BY 입력값",
-    ))
+    result.metrics.update({
+        "oos_discovery_ic": discovery_ic,
+        "oos_ic_retention": oos_retention,
+        "oos_required_ic": oos_required_ic,
+    })
+    result.checks.append(oos_check)
     result.series["oos_ic"] = oos_series
     return result
 

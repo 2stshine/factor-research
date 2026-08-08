@@ -16,6 +16,20 @@ import psycopg
 from dotenv import load_dotenv
 
 
+TOTAL_RETURN_METHOD = "krx_gross_dividend_reinvested_v1"
+
+
+TOTAL_RETURN_CONTRACT_SQL = """
+SELECT source, asset_type, field_name, methodology_version,
+       dividend_treatment, status, coverage_start, coverage_end,
+       quality_run_id, metadata, certified_at
+FROM public.price_return_contract
+WHERE source = 'KRX'
+  AND asset_type = 'stock'
+  AND field_name = 'total_return_close'
+"""
+
+
 PRICE_SNAPSHOT_SQL = """
 WITH certified AS (
     SELECT
@@ -34,6 +48,9 @@ WITH certified AS (
         p.shares,
         p.market,
         p.quality_run_id,
+        lag(p.total_return_close) OVER (
+            PARTITION BY p.asset_id ORDER BY p.trade_date
+        ) AS prior_total_return_close,
         avg(p.trading_value) OVER (
             PARTITION BY p.asset_id ORDER BY p.trade_date
             ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
@@ -61,19 +78,66 @@ WITH certified AS (
       AND a.exchange = 'KRX'
       AND a.asset_type = 'stock'
       AND p.market IN ('KOSPI', 'KOSDAQ')
-), monthly AS (
+), daily_returns AS (
     SELECT certified.*,
+           CASE
+               WHEN prior_total_return_close > 0
+                    AND total_return_close > 0
+               THEN total_return_close / prior_total_return_close - 1
+           END AS daily_total_return
+    FROM certified
+), daily_features AS (
+    SELECT daily_returns.*,
+           avg(abs(daily_total_return) / trading_value) FILTER (
+               WHERE daily_total_return IS NOT NULL
+                 AND trading_value > 0
+           ) OVER (
+               PARTITION BY asset_id, date_trunc('month', trade_date)
+           ) AS amihud_illiquidity_1m,
+           count(daily_total_return) FILTER (
+               WHERE trading_value > 0
+           ) OVER (
+               PARTITION BY asset_id, date_trunc('month', trade_date)
+           ) AS amihud_observations_1m,
+           stddev_samp(daily_total_return) OVER (
+               PARTITION BY asset_id ORDER BY trade_date
+               ROWS BETWEEN 251 PRECEDING AND CURRENT ROW
+           ) AS daily_volatility_252d,
+           count(daily_total_return) OVER (
+               PARTITION BY asset_id ORDER BY trade_date
+               ROWS BETWEEN 251 PRECEDING AND CURRENT ROW
+           ) AS daily_return_observations_252d,
+           max(daily_total_return) OVER (
+               PARTITION BY asset_id, date_trunc('month', trade_date)
+           ) AS max_daily_return_1m,
+           count(daily_total_return) OVER (
+               PARTITION BY asset_id, date_trunc('month', trade_date)
+           ) AS max_daily_return_observations_1m,
+           max(adj_close) OVER (
+               PARTITION BY asset_id ORDER BY trade_date
+               ROWS BETWEEN 251 PRECEDING AND CURRENT ROW
+           ) AS price_high_252d,
+           count(adj_close) OVER (
+               PARTITION BY asset_id ORDER BY trade_date
+               ROWS BETWEEN 251 PRECEDING AND CURRENT ROW
+           ) AS price_high_observations_252d
+    FROM daily_returns
+), monthly AS (
+    SELECT daily_features.*,
            min(trade_date) OVER () AS dataset_start,
            row_number() OVER (
                PARTITION BY asset_id, date_trunc('month', trade_date)
                ORDER BY trade_date DESC
            ) AS month_rank
-    FROM certified
+    FROM daily_features
 )
 SELECT asset_id, "Code", "Name", instrument_type, listed_from, listed_to,
        trade_date, close, adj_close, total_return_close, trading_value,
        market_cap, shares, market, adv20, age_days, first_seen, dataset_start,
-       quality_run_id
+       quality_run_id, amihud_illiquidity_1m, amihud_observations_1m,
+       daily_volatility_252d, daily_return_observations_252d,
+       max_daily_return_1m, max_daily_return_observations_1m,
+       price_high_252d, price_high_observations_252d
 FROM monthly
 WHERE month_rank = 1
 ORDER BY asset_id, trade_date
@@ -95,7 +159,54 @@ WHERE f.source = 'DART'
   AND f.unit_type = 'currency'
   AND f.available_date IS NOT NULL
   AND f.metric = ANY(%s)
-ORDER BY f.asset_id, f.available_date, f.period_end, f.metric, f.revision_key
+"""
+
+
+DIVIDEND_HISTORY_SQL = """
+WITH current_contract AS (
+    SELECT quality_run_id,
+           metadata->>'resolution_version' AS resolution_version,
+           (metadata->>'action_snapshot_run_id')::uuid AS action_snapshot_run_id
+    FROM public.price_return_contract
+    WHERE source = 'KRX'
+      AND asset_type = 'stock'
+      AND field_name = 'total_return_close'
+      AND methodology_version = 'krx_gross_dividend_reinvested_v1'
+      AND status = 'CERTIFIED'
+      AND certified_at IS NOT NULL
+      AND metadata->>'resolution_version' IS NOT NULL
+      AND metadata->>'action_snapshot_run_id' IS NOT NULL
+)
+SELECT r.asset_id, r.source, r.action_key, r.resolution_version,
+       ca.announcement_date, r.applied_trade_date,
+       r.adjusted_cash_amount, r.quality_run_id
+FROM current_contract c
+JOIN public.dividend_event_resolution r
+  ON r.quality_run_id = c.quality_run_id
+ AND r.resolution_version = c.resolution_version
+JOIN public.corporate_action ca
+  ON ca.asset_id = r.asset_id
+ AND ca.source = r.source
+ AND ca.action_key = r.action_key
+ AND ca.quality_run_id = c.action_snapshot_run_id
+JOIN public.asset a ON a.asset_id = r.asset_id
+JOIN public.dq_run resolution_q
+  ON resolution_q.run_id = r.quality_run_id
+ AND resolution_q.status = 'CERTIFIED'
+JOIN public.dq_run action_q
+  ON action_q.run_id = ca.quality_run_id
+ AND action_q.status = 'CERTIFIED'
+WHERE r.is_canonical IS TRUE
+  AND r.excluded_reason IS NULL
+  AND r.applied_trade_date IS NOT NULL
+  AND r.adjusted_cash_amount > 0
+  AND ca.announcement_date IS NOT NULL
+  AND ca.source = 'DART_DISCLOSURE'
+  AND ca.action_type = 'cash_dividend'
+  AND ca.action_scope = 'ISSUER'
+  AND a.exchange = 'KRX'
+  AND a.asset_type = 'stock'
+ORDER BY r.asset_id, r.applied_trade_date, r.action_key
 """
 
 
@@ -116,6 +227,14 @@ SELECT factor_key, asset_id, as_of_date, value
 FROM ranked
 WHERE month_rank = 1
 ORDER BY factor_key, asset_id, as_of_date
+"""
+
+
+APPROVED_FACTOR_KEYS_SQL = """
+SELECT DISTINCT factor_key
+FROM gold.factor
+WHERE status = 'APPROVED'
+ORDER BY factor_key
 """
 
 
@@ -209,11 +328,93 @@ def read_frame(conn, sql: str, params: Any = None, *, chunk_size: int = 50_000) 
 
 
 def load_price_snapshot(conn) -> pd.DataFrame:
-    return read_frame(conn, PRICE_SNAPSHOT_SQL)
+    try:
+        contract = read_frame(conn, TOTAL_RETURN_CONTRACT_SQL)
+    except psycopg.errors.UndefinedTable as exc:
+        conn.rollback()
+        raise RuntimeError(
+            "Silver 총수익 계약 테이블이 없습니다. 배당 총수익 migration과 "
+            "인증 rebuild를 먼저 완료하세요."
+        ) from exc
+    if len(contract) != 1:
+        raise RuntimeError(
+            "KRX stock total_return_close 계약은 정확히 한 행이어야 합니다: "
+            f"rows={len(contract)}"
+        )
+    row = contract.iloc[0]
+    if (
+        row["status"] != "CERTIFIED"
+        or row["methodology_version"] != TOTAL_RETURN_METHOD
+        or pd.isna(row["certified_at"])
+    ):
+        raise RuntimeError(
+            "Silver total_return_close가 배당 포함 총수익으로 인증되지 않았습니다: "
+            f"status={row['status']}, method={row['methodology_version']}"
+        )
+    prices = read_frame(conn, PRICE_SNAPSHOT_SQL)
+    prices.attrs["return_contract"] = {
+        key: (None if pd.isna(value) else str(value))
+        for key, value in row.to_dict().items()
+    }
+    return prices
 
 
 def load_fundamentals(conn, metrics: list[str] | tuple[str, ...]) -> pd.DataFrame:
+    # ``materialize_pit`` performs its own deterministic local sort.  Asking
+    # RDS to sort the complete revision ledger first only prolongs the SSM
+    # session and can make an otherwise read-only build fail on tunnel expiry.
     return read_frame(conn, FUNDAMENTAL_SQL, (list(metrics),))
+
+
+def load_dividend_history(conn) -> pd.DataFrame:
+    """Load only dividends used by the current certified KRX return build.
+
+    The resolution run and version are taken from the same contract that
+    certifies ``total_return_close``.  A stale action audit can therefore
+    never be mixed with a newer price-return snapshot.
+    """
+    try:
+        contract = read_frame(conn, TOTAL_RETURN_CONTRACT_SQL)
+    except psycopg.errors.UndefinedTable as exc:
+        conn.rollback()
+        raise RuntimeError(
+            "Silver 배당 총수익 계약 테이블이 없습니다. 인증 rebuild를 먼저 "
+            "완료하세요."
+        ) from exc
+    if len(contract) != 1:
+        raise RuntimeError(
+            "KRX stock total_return_close 계약은 정확히 한 행이어야 합니다: "
+            f"rows={len(contract)}"
+        )
+    row = contract.iloc[0]
+    metadata = row.get("metadata")
+    if (
+        row["status"] != "CERTIFIED"
+        or row["methodology_version"] != TOTAL_RETURN_METHOD
+        or pd.isna(row["certified_at"])
+        or pd.isna(row["coverage_start"])
+        or pd.isna(row["coverage_end"])
+        or not isinstance(metadata, dict)
+        or not metadata.get("resolution_version")
+        or not metadata.get("action_snapshot_run_id")
+    ):
+        raise RuntimeError(
+            "Silver 배당 이력이 인증된 총수익 계약에 묶여 있지 않습니다: "
+            f"status={row['status']}, method={row['methodology_version']}"
+        )
+    try:
+        dividends = read_frame(conn, DIVIDEND_HISTORY_SQL)
+    except psycopg.errors.UndefinedTable as exc:
+        conn.rollback()
+        raise RuntimeError(
+            "Silver 배당 resolution 테이블이 없습니다. 인증 rebuild를 먼저 "
+            "완료하세요."
+        ) from exc
+    dividends.attrs["return_contract"] = {
+        key: (None if pd.isna(value) else str(value))
+        for key, value in row.to_dict().items()
+    }
+    return dividends
 
 
 def load_approved_values(conn) -> pd.DataFrame:
@@ -222,6 +423,21 @@ def load_approved_values(conn) -> pd.DataFrame:
     except psycopg.errors.UndefinedTable:
         conn.rollback()
         return pd.DataFrame(columns=["factor_key", "asset_id", "as_of_date", "value"])
+
+
+def load_approved_factor_keys(conn) -> list[str]:
+    """Return the APPROVED catalog even when a factor has no value rows.
+
+    T5 must fail closed when approved metadata exists without enough comparable
+    history.  Deriving the catalog from ``factor_value`` would silently turn an
+    empty or partially loaded approved factor into "no approved factors".
+    """
+    try:
+        frame = read_frame(conn, APPROVED_FACTOR_KEYS_SQL)
+    except psycopg.errors.UndefinedTable:
+        conn.rollback()
+        return []
+    return sorted({str(value) for value in frame["factor_key"].dropna()})
 
 
 def load_gold_trial_history(conn) -> pd.DataFrame:

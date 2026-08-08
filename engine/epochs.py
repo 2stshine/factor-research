@@ -10,7 +10,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from engine.boundaries import CampaignWindow, QUALIFICATION_POLICY, validate_manifest
+from engine.boundaries import (
+    HISTORICAL_HOLDOUT_MODE,
+    PROSPECTIVE_HOLDOUT_MODE,
+    CampaignWindow,
+    QUALIFICATION_POLICY,
+    validate_manifest,
+)
 from engine.factors import Factor
 from engine.implementation import PARITY_SCHEMA_VERSION
 from engine.panel import INACTIVE_DAYS
@@ -25,7 +31,7 @@ from engine.gate import (
 )
 
 
-PROTOCOL_VERSION = "epoch-1.4"
+PROTOCOL_VERSION = "epoch-1.5"
 _ID = re.compile(r"^[a-z][a-z0-9-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -50,6 +56,10 @@ def _campaign_path(root: str | Path, campaign_id: str) -> Path:
 
 def _epoch_path(root: str | Path, campaign_id: str, epoch_id: str) -> Path:
     return _campaign_dir(root, campaign_id) / "epochs" / epoch_id / "manifest.json"
+
+
+def _exposure_dir(root: str | Path) -> Path:
+    return Path(root) / "oos-exposures"
 
 
 def _read(path: Path) -> dict:
@@ -79,6 +89,61 @@ def _payload_digest(payload: dict) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def _exposure_windows(root: str | Path) -> list[tuple[str, pd.Period, pd.Period]]:
+    """Load immutable OOS exposure records as half-open consumed intervals."""
+    output = []
+    for path in sorted(_exposure_dir(root).glob("*.json")):
+        row = _read(path)
+        try:
+            start = pd.Period(row["signal_start"], freq="M")
+            stop = pd.Period(row["return_end"], freq="M") + 1
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"OOS 공개 원장이 손상됐습니다: {path}") from exc
+        output.append((str(row.get("exposure_id", path.stem)), start, stop))
+    return output
+
+
+def _overlapping_exposure_ids(
+    root: str | Path, window: CampaignWindow,
+) -> list[str]:
+    return [
+        exposure_id
+        for exposure_id, start, stop in _exposure_windows(root)
+        if window.consumed_start < stop and start < window.consumed_stop
+    ]
+
+
+def _assert_window_unexposed(root: str | Path, window: CampaignWindow) -> None:
+    conflicts = _overlapping_exposure_ids(root, window)
+    if conflicts:
+        raise ValueError(
+            "이미 공개된 OOS 기간과 겹칩니다. 과거 기록을 삭제해도 공개 사실은 "
+            f"되돌릴 수 없습니다: {conflicts}"
+        )
+
+
+def _record_oos_exposure(root: str | Path, campaign: dict) -> Path:
+    """Persist the consumed interval before writing reveal result artifacts."""
+    path = _exposure_dir(root) / f"{campaign['campaign_id']}.json"
+    payload = {
+        "exposure_id": campaign["campaign_id"],
+        "campaign_id": campaign["campaign_id"],
+        "exposed_at": _now(),
+        "signal_start": campaign["oos"]["start"],
+        "signal_end": campaign["oos"]["signal_end"],
+        "return_end": campaign["oos"]["return_end"],
+        "source": "campaign_confirmation",
+    }
+    if path.exists():
+        existing = _read(path)
+        immutable = ("campaign_id", "signal_start", "signal_end", "return_end", "source")
+        if any(existing.get(key) != payload.get(key) for key in immutable):
+            raise ValueError(f"기존 OOS 공개 원장과 campaign 경계가 다릅니다: {path}")
+        return path
+    _write(path, payload)
+    return path
 
 
 def load_campaign(root: str | Path, campaign_id: str) -> dict:
@@ -125,8 +190,11 @@ def start_campaign(
     snapshot_digest: str,
     discovery_snapshot_digest: str,
     min_oos_months: int = TH["min_oos_months"],
+    mode: str = HISTORICAL_HOLDOUT_MODE,
+    oos_start: str | pd.Period | None = None,
+    planned_epoch_count: int = 1,
 ) -> Path:
-    """Create one trailing historical holdout without exposing it to discovery."""
+    """Create one historical or prospective holdout without exposing it."""
     campaign_id = _validate_id(campaign_id, "campaign id")
     path = _campaign_path(root, campaign_id)
     if path.exists():
@@ -135,25 +203,51 @@ def start_campaign(
         raise ValueError(
             f"min_oos_months는 현재 ruleset 고정값 {TH['min_oos_months']}이어야 합니다"
         )
+    if not isinstance(planned_epoch_count, int) or planned_epoch_count < 1:
+        raise ValueError("planned_epoch_count는 1 이상의 정수여야 합니다")
     for label, digest in (
         ("snapshot_digest", snapshot_digest),
         ("discovery_snapshot_digest", discovery_snapshot_digest),
     ):
         if not _SHA256.fullmatch(str(digest)):
             raise ValueError(f"{label}는 64자리 소문자 SHA-256이어야 합니다")
-    window = CampaignWindow.from_completed_snapshot(
-        discovery_data_cutoff=discovery_data_cutoff,
-        snapshot_cutoff=snapshot_cutoff,
-        oos_months=min_oos_months,
-    )
+    if mode == HISTORICAL_HOLDOUT_MODE:
+        window = CampaignWindow.from_completed_snapshot(
+            discovery_data_cutoff=discovery_data_cutoff,
+            snapshot_cutoff=snapshot_cutoff,
+            oos_months=min_oos_months,
+        )
+    elif mode == PROSPECTIVE_HOLDOUT_MODE:
+        if oos_start is None:
+            raise ValueError("prospective campaign에는 oos_start가 필요합니다")
+        window = CampaignWindow.from_prospective_snapshot(
+            discovery_data_cutoff=discovery_data_cutoff,
+            snapshot_cutoff=snapshot_cutoff,
+            oos_start=oos_start,
+            oos_months=min_oos_months,
+        )
+    else:
+        raise ValueError(f"지원하지 않는 OOS mode입니다: {mode!r}")
+    prior_exposures = _overlapping_exposure_ids(root, window)
+    # A prospective window must still be globally pristine.  Historical mode
+    # is the practical backtest split: definitions are frozen before their own
+    # OOS calculation, while any earlier use of the same calendar window is
+    # retained as explicit evidence metadata instead of making research wait
+    # three years for future observations.
+    if mode == PROSPECTIVE_HOLDOUT_MODE:
+        _assert_window_unexposed(root, window)
     conflicts = []
     for candidate in (Path(root) / "campaigns").glob("*/manifest.json"):
         existing = _read(candidate)
-        if existing.get("status") in {"CLOSED_NO_QUALIFIED"}:
+        if existing.get("status") in {
+            "CLOSED_NO_QUALIFIED", "REVEALED", "SUPERSEDED_BOUNDARY_POLICY",
+        }:
             continue
-        if existing.get("oos", {}).get("status") == "NOT_USED":
+        if existing.get("oos", {}).get("status") in {"NOT_USED", "REVEALED"}:
             continue
-        if existing.get("oos", {}).get("mode") != "trailing_historical_holdout":
+        if existing.get("oos", {}).get("mode") not in {
+            HISTORICAL_HOLDOUT_MODE, PROSPECTIVE_HOLDOUT_MODE,
+        }:
             continue
         existing_window = validate_manifest(
             existing, expected_oos_months=int(existing["oos"]["min_months"]),
@@ -181,7 +275,18 @@ def start_campaign(
             "discovery_input_digest": discovery_snapshot_digest,
         },
         "discovery": window.discovery_manifest(),
-        "oos": window.oos_manifest(),
+        "oos": {
+            **window.oos_manifest(),
+            "evidence_class": (
+                "PROSPECTIVE_PRISTINE_OOS"
+                if mode == PROSPECTIVE_HOLDOUT_MODE
+                else "HISTORICAL_REUSED_WINDOW"
+                if prior_exposures
+                else "HISTORICAL_HIDDEN_OOS"
+            ),
+            "prior_exposure_ids": prior_exposures,
+        },
+        "planned_epoch_count": planned_epoch_count,
         "epochs": [],
         "qualification_policy": QUALIFICATION_POLICY,
         "qualified_factors": [],
@@ -200,7 +305,7 @@ def migrate_open_campaign(
     """Never relabel already-observed evidence as a clean historical OOS."""
     del root, campaign_id, as_of_month, reason
     raise ValueError(
-        "epoch-1.4 historical holdout은 기존 campaign으로 migration할 수 없습니다. "
+        "epoch-1.5 holdout은 기존 campaign으로 migration할 수 없습니다. "
         "기존 증거는 legacy/retrospective로 보존하고 새 campaign을 시작하세요."
     )
 
@@ -218,6 +323,21 @@ def start_epoch(
     validate_manifest(campaign, expected_oos_months=TH["min_oos_months"])
     if campaign["status"] != "OPEN":
         raise ValueError(f"OPEN campaign에서만 epoch을 시작할 수 있습니다: {campaign['status']}")
+    open_epochs = [
+        row["epoch_id"] for row in campaign["epochs"] if row["status"] == "OPEN"
+    ]
+    if open_epochs:
+        raise ValueError(f"동시에 둘 이상의 epoch을 열 수 없습니다: {open_epochs}")
+    planned = int(campaign.get("planned_epoch_count", 1))
+    if len(campaign["epochs"]) >= planned:
+        raise ValueError(f"사전 고정한 epoch 수 {planned}개를 이미 등록했습니다")
+    if campaign.get("oos", {}).get("mode") == PROSPECTIVE_HOLDOUT_MODE:
+        current_month = pd.Timestamp.now(tz="UTC").tz_localize(None).to_period("M")
+        oos_start = pd.Period(campaign["oos"]["start"], freq="M")
+        if current_month >= oos_start:
+            raise ValueError(
+                "prospective OOS 관측이 시작된 뒤에는 새 epoch 후보를 정의할 수 없습니다"
+            )
     if not factors:
         raise ValueError("epoch에는 후보가 하나 이상 필요합니다")
     names = [factor.name for factor in factors]
@@ -326,7 +446,9 @@ def mark_evaluated(
     correlation = relation.get("abs_median_spearman")
     if correlation is None:
         novelty = "UNMEASURED"
-    elif correlation > TH["max_corr"]:
+    # This descriptive relationship label spans every registered candidate.
+    # It is intentionally separate from T5's stricter approved-Gold gate.
+    elif correlation > TH["candidate_duplicate_corr"]:
         novelty = "DUPLICATE"
     elif correlation >= .60:
         novelty = "RELATED"
@@ -459,6 +581,19 @@ def finalize_campaign(root: str | Path, campaign_id: str) -> Path:
         raise ValueError(f"OPEN campaign만 finalize할 수 있습니다: {campaign['status']}")
     if not campaign["epochs"] or any(row["status"] != "CLOSED" for row in campaign["epochs"]):
         raise ValueError("모든 epoch을 닫은 뒤 campaign을 finalize해야 합니다")
+    planned = int(campaign.get("planned_epoch_count", 1))
+    if len(campaign["epochs"]) != planned:
+        raise ValueError(
+            f"사전 고정한 epoch 수를 모두 마쳐야 합니다: "
+            f"planned={planned}, observed={len(campaign['epochs'])}"
+        )
+    if campaign.get("oos", {}).get("mode") == PROSPECTIVE_HOLDOUT_MODE:
+        current_month = pd.Timestamp.now(tz="UTC").tz_localize(None).to_period("M")
+        oos_start = pd.Period(campaign["oos"]["start"], freq="M")
+        if current_month >= oos_start:
+            raise ValueError(
+                "prospective OOS 관측이 시작된 뒤에는 discovery family를 finalize할 수 없습니다"
+            )
     epochs_by_id = {
         reference["epoch_id"]: load_epoch(root, campaign_id, reference["epoch_id"])
         for reference in campaign["epochs"]
@@ -650,7 +785,8 @@ def _validate_implementation_rows(campaign: dict, rows: list[dict]) -> None:
         counts = row.get("counts") or {}
         required_checks = {
             "nonempty", "scope_exact", "month_coverage_exact", "keys_exact",
-            "values_finite", "raw_values_close", "direction_adjusted_ranks_exact",
+            "values_finite", "raw_values_close",
+            "direction_adjusted_ranks_consistent",
         }
         expected_months = len(pd.period_range(
             RESEARCH_START, pd.Period(campaign["discovery"]["signal_end"], freq="M"),
@@ -890,6 +1026,7 @@ def record_reveal(
     ]
     if wrong_oos_window:
         raise ValueError(f"동결 OOS 구간과 다른 confirmation입니다: {wrong_oos_window}")
+    _record_oos_exposure(root, campaign)
     directory = _campaign_dir(root, campaign_id) / "confirmation"
     json_path = directory / "result.json"
     payload = {
@@ -907,14 +1044,16 @@ def record_reveal(
         f"- OOS start: `{campaign['oos']['start']}`",
         f"- OOS signal end: `{campaign['oos']['signal_end']}`",
         f"- Ruleset: `{campaign['ruleset_version']}`", "",
-        "| factor | verdict | OOS IC | OOS BY q | definition hash |",
-        "|---|---|---:|---:|---|",
+        "| factor | verdict | Discovery IC | OOS IC | OOS/Discovery | required OOS IC | OOS BY q | definition hash |",
+        "|---|---|---:|---:|---:|---:|---:|---|",
     ]
     for row in confirmations:
         metrics = row.get("evaluation", {}).get("metrics", {})
         lines.append(
             f"| `{row['factor']}` | {row['verdict']} | "
-            f"{metrics.get('oos_ic')} | {metrics.get('oos_fdr_qvalue')} | "
+            f"{metrics.get('oos_discovery_ic')} | {metrics.get('oos_ic')} | "
+            f"{metrics.get('oos_ic_retention')} | {metrics.get('oos_required_ic')} | "
+            f"{metrics.get('oos_fdr_qvalue')} | "
             f"`{row['definition_hash']}` |"
         )
     lines.append("")

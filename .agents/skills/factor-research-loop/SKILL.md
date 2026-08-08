@@ -1,6 +1,6 @@
 ---
 name: factor-research-loop
-description: factor-research 레포의 인증된 RDS Silver PIT 패널에서 단일 정량 주식 팩터 후보를 campaign/epoch 단위로 사전등록하고, 봉인 OOS를 보지 않는 discovery·자동 기준 통과·Gold SQL parity·일회성 confirmation을 수행한다. 팩터 발굴, 재검증, 문서화, 다음 연구 epoch 실행 요청에 사용한다. 결과 기반 튜닝, 수동 후보 선별, 반복 OOS 열람, 팩터 점수 합성, 자동 Gold 발행은 허용하지 않는다.
+description: factor-research 레포의 인증된 RDS Silver PIT 패널을 현재 판단 가능한 IS·embargo·과거 36개월 hidden OOS로 먼저 분리하고, 단일 정량 주식 팩터를 campaign/epoch 단위로 사전등록해 discovery·자동 기준 통과·Gold SQL parity·일회성 confirmation을 수행한다. 팩터 발굴, 재검증, 문서화, 다음 연구 epoch 실행 요청에 사용한다. 결과 기반 튜닝, 수동 후보 선별, 반복 OOS 열람, 팩터 점수 합성, 자동 Gold 발행은 허용하지 않는다.
 ---
 
 # 팩터 연구 루프
@@ -14,28 +14,30 @@ Agent는 가설을 만들고 상태에 맞는 다음 행동을 선택한다. 판
 
 - `research/context/latest.md`: 현재 Silver 입력·커버리지·등록 팩터·과거 시행 색인. 시작할 때 갱신하고 전부 읽는다.
 - `research/campaigns/<campaign>/`: 동결 snapshot·후보/구현 hash·epoch·OOS 상태. 진행 중이면 최신 `reflection.md`도 읽는다.
+- `research/oos-exposures/`: 이미 공개된 OOS signal·수익률 구간의 불변 원장. 삭제하지 않으며, 같은 달력 구간을 쓰면 evidence class에 그대로 남긴다.
 - `engine/gate.py`와 시행 원장: 판정 기준·임계값·시행 수의 유일한 소스다.
 - [전략 계약](references/strategy-contract.md): 후보를 쓰기 직전에 읽는다. [epoch 프로토콜](references/epoch-protocol.md): campaign 상태를 바꿀 때 읽는다.
 - `research/runs/<cycle>/report.md|result.json`: 필요한 유사 시행만 선택해서 읽는다. 설계를 수정하거나 설명할 때만 [연구 근거](references/research-rationale.md)를 읽는다.
 
 ## 불변조건
 
-1. 인증된 Silver PIT만 사용한다. Bronze는 금지하고 Gold는 기존 신호 비교용으로만 읽는다.
+1. 인증된 Silver PIT만 사용한다. Bronze는 금지하고 Gold는 기존 신호 비교용으로만 읽는다. 주식 수익률은 `price_return_contract`가 `krx_gross_dividend_reinvested_v1/CERTIFIED`로 증명한 `total_return_close`만 허용한다.
 2. 후보 하나는 단일 경제 신호여야 한다. 해석 가능한 비율은 허용하지만 rank·z-score·팩터 점수 합성과 `f_<name>` 재사용은 금지한다.
 3. 결과 전에 가설·정의·방향·파라미터·반증 조건·definition hash를 동결한다. 유효한 결과 뒤 같은 후보를 수정하거나 재평가하지 않는다.
 4. gate·임계값·유니버스·미래수익 레이블·비용모형·campaign cutoff/OOS 경계를 결과에 맞춰 바꾸지 않는다.
 5. 없는 PIT 입력을 현재값이나 유사 proxy로 대신하지 않는다. 실패한 후보와 시행 기록도 삭제하거나 덮어쓰지 않는다.
-6. campaign 시작 때 최신 완료 수익률월에서 역산한 36 signal개월을 OOS로 봉인하고, discovery에는 앞 구간만 노출한다. 두 구간 사이 한 signal개월을 embargo하며 정확한 산식은 epoch 프로토콜을 따른다.
-7. 후보의 정의·선정에 해당 OOS 결과가 이미 노출됐다면 다시 분할해도 공식 OOS가 아니다. `retrospective-only`로 기록하고, 한 번 공개한 OOS 구간은 다른 campaign에서 재사용하지 않는다.
+6. 새 campaign은 기본적으로 현재 Silver에서 45일 비활성 판정과 closure까지 끝난 가장 최근 36개 signal월을 hidden OOS로 먼저 떼고, 그 앞의 IS만 후보 Agent에게 보여준다. IS 마지막 signal의 수익률 지원월은 OOS에서 제외한다.
+7. 같은 달력 OOS가 과거 연구에 노출됐으면 재사용은 허용하되 `HISTORICAL_REUSED_WINDOW`와 기존 exposure id를 기록한다. 동일 정의가 그 OOS 결과를 이미 봤거나 후보가 post-cutoff 결과를 보고 만들어졌다면 `retrospective-only`이며 깨끗한 confirmation으로 표현하지 않는다.
 8. 모든 epoch을 닫은 뒤 campaign 전체에 BY를 한 번 적용한다. `REJECT`가 아니고 BY를 통과한 후보는 빠짐없이 자동 확인 대상이 되며 사람이 고르지 않는다.
 9. finalize 뒤 모든 자동 확인 대상에 query-only Gold SQL을 만든다. manifest의 `research_definition_hash`와 실제 SQL SHA256을 구현 검증 artifact에 동결하고, discovery 구간에서 Python/SQL key·raw value·sign 반영 rank parity를 통과해야 OOS 공개가 가능하다.
 10. 전체 패널 `scripts/run.py gate|publish`와 Gold 자동 write·발행은 금지한다. 앞 단계 hard fail 뒤 검사는 `통과`가 아니라 `미검증`이며 수익률·IR·회전율은 진단값이다.
-11. 자동 확인 대상·구현 검증·36개월 OOS readiness가 고정된 뒤 사용자가 요청할 때만 OOS를 한 번 공개하고 campaign을 종료한다.
+11. 자동 확인 대상·구현 검증·36개월 OOS readiness가 고정된 뒤 사용자가 요청할 때만 해당 campaign 후보의 OOS를 한 번 공개하고 campaign을 종료한다. 미래 prospective OOS는 사용자가 명시적으로 장기 추적을 원할 때만 선택한다.
+12. 원자재는 신호시점의 `available_at`과 롤 조정·총수익 방법론이 인증된 별도 PIT 패널일 때만 사전등록된 단일 노출 팩터로 쓴다. 2026년에 일괄 수집된 과거 연속선물 가격은 retrospective 참고자료일 뿐 hidden OOS나 Gold 후보 입력으로 쓰지 않는다.
 
 ## 실행
 
 1. `pyproject.toml`과 작업 트리를 확인하고 사용자 변경을 보존한다. 캐시가 없거나 낡았을 때만 Silver에서 다시 build한다.
-2. campaign manifest만 먼저 확인한다. 현재 protocol의 비종료 campaign이 없으면 최신 완료 Silver snapshot에서 역사적 OOS를 먼저 봉인한다. 그 뒤 `uv run python scripts/research.py context`를 실행해 cutoff 뒤 결과가 가려진 `latest.md`, manifest와 최신 reflection을 읽는다.
+2. campaign manifest와 OOS 공개 원장을 먼저 확인한다. 현재 protocol의 비종료 campaign이 없으면 최신 reveal-ready 과거 36개월 OOS를 먼저 고정하고 그 직전 수익률 지원월까지만 discovery로 동결한다. 그 뒤 `uv run python scripts/research.py context`를 실행해 cutoff 뒤 데이터·결과가 가려진 `latest.md`, manifest와 최신 reflection을 읽는다.
 3. 전략 계약에 맞는 서로 다른 단일 신호 후보를 모두 작성한 뒤, 결과를 보기 전에 한 epoch으로 사전등록한다.
 4. 테스트를 통과시킨 뒤 사전등록 후보를 각각 한 번 evaluate한다. 연결·캐시·구현 오류만 **결과가 생기기 전 동일 hash**로 재시도한다.
 5. 모든 후보 평가 후 epoch을 닫아 구조적 교훈만 남긴다. 다음 epoch에는 family 중복·데이터 병목·무결성 교훈만 전달하고 성과 수치나 파라미터 수정안은 전달하지 않는다.

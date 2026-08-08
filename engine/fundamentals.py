@@ -79,13 +79,22 @@ def _standalone_flow(state: dict, metric: str) -> list[tuple[pd.Timestamp, str, 
 
 def _snapshot(state: dict, asset_id: int, available_date: pd.Timestamp) -> dict:
     out: dict[str, object] = {"asset_id": asset_id, "available_date": available_date}
+    # Balance-sheet metrics occasionally can be represented by more than one
+    # fiscal-period label on the same period end.  Make that tie deterministic
+    # and identical to the Gold SQL contract instead of depending on input row
+    # order from the database.
+    stock_period_order = {"Q1": 1, "Q2": 2, "Q3": 3, "FY": 4, "Q4": 5}
     for metric in STOCK:
         known = [
-            (period_end, row)
-            for (period_end, _, met), row in state.items()
+            (period_end, fiscal_period, row)
+            for (period_end, fiscal_period, met), row in state.items()
             if met == metric and pd.notna(row["value"])
         ]
-        out[metric] = float(max(known, key=lambda x: x[0])[1]["value"]) if known else np.nan
+        latest = max(
+            known,
+            key=lambda item: (item[0], stock_period_order.get(item[1], 0)),
+        ) if known else None
+        out[metric] = float(latest[2]["value"]) if latest is not None else np.nan
 
     flow_series: dict[str, list[tuple[pd.Timestamp, str, float]]] = {}
     for metric in FLOW:

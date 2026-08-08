@@ -44,7 +44,8 @@ RESEARCH_SPEC = {
 - Make a larger final score mean higher expected return through `predicted_sign`.
 - Put tunable numerical literals in `params`; reference those values from a named function rather than hiding them in the formula.
 - Group time-series operations by `asset_id`, never ticker text.
-- Use `return_close`, which is mapped to Silver `total_return_close`.
+- Use `return_close`, which is mapped only from a Silver `total_return_close` carrying the certified `krx_gross_dividend_reinvested_v1` contract.
+- Commodity inputs require a separately certified point-in-time, roll-adjusted contract and a new preregistered single-exposure definition. Do not add the current historical-backfill continuous-futures series to an existing stock factor.
 - Declare financial inputs in `needs`. They must already be PIT-materialized in the panel.
 - Avoid masks that redefine the universe. Use denominator validity guards only to prevent undefined ratios.
 - Do not winsorize, neutralize, or select a sample inside the factor; the shared gate owns those decisions.

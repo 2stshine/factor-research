@@ -16,13 +16,14 @@ import pickle
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from engine import factors as F
-from engine import epochs, fundamentals, gate, implementation, null, panel as P, publish, silver, trials
-from engine.boundaries import CampaignWindow
+from engine import dividends, epochs, fundamentals, gate, implementation, null, panel as P, publish, silver, trials
+from engine.boundaries import CampaignWindow, validate_manifest
 
 CACHE = Path(os.environ.get("CACHE_DIR", ".cache"))
 TRIAL_DB = CACHE / "trials.sqlite3"
@@ -98,6 +99,7 @@ def cmd_build(args):
     load_registry()
     with silver.connect(read_only=True) as conn:
         pan = P.build(conn)
+        dividend_history = silver.load_dividend_history(conn)
         fund = fundamentals.build(conn)
     # Materializing the Silver revision ledger is the expensive part of a build.
     # Cache every PIT feature produced from that same immutable ledger so a newly
@@ -105,8 +107,10 @@ def cmd_build(args):
     # because it asks for a previously unused accounting column.
     available_features = sorted(set(fund.columns) - {"asset_id", "available_date"})
     df = fundamentals.attach(pan.monthly, fund, available_features)
+    df = dividends.attach(df, dividend_history)
     df = df.sort_values(["Code", "ym"]).reset_index(drop=True)
     pan.monthly = df
+    pan.meta["dividend_feature_contract"] = dividends.FEATURE_VERSION
     for tag, term in (("opt", 0.0), ("mid", -0.50), ("pess", -1.00)):
         df[f"fwd_{tag}"] = P.forward_returns(pan, terminal=term)   # 인덱스 정렬 (위치대입 금지)
     df = F.compute_all(F.REGISTRY, df)
@@ -119,11 +123,29 @@ def cmd_build(args):
 def _load():
     with open(CACHE / "panel.pkl", "rb") as fh:
         panel = pickle.load(fh)
-    required = {"asset_id", "return_close", "total_return_close", "quality_run_id"}
-    if panel.meta.get("source") != "RDS public Silver" or not required.issubset(panel.monthly.columns):
+    required = {
+        "asset_id", "return_close", "total_return_close", "quality_run_id",
+        "amihud_illiquidity_1m", "amihud_observations_1m",
+        "daily_volatility_252d", "daily_return_observations_252d",
+        "max_daily_return_1m", "max_daily_return_observations_1m",
+        "price_high_252d", "price_high_observations_252d",
+        dividends.DIVIDEND_CASH_TTM, dividends.DIVIDEND_EVENT_COUNT_TTM,
+    }
+    valid_return_contract = (
+        panel.meta.get("return_field") == "total_return_close"
+        and panel.meta.get("return_methodology") == silver.TOTAL_RETURN_METHOD
+        and panel.meta.get("return_contract_status") == "CERTIFIED"
+    )
+    if (
+        panel.meta.get("source") != "RDS public Silver"
+        or not required.issubset(panel.monthly.columns)
+        or not valid_return_contract
+        or panel.meta.get("dividend_feature_contract") != dividends.FEATURE_VERSION
+    ):
         raise SystemExit(
-            "캐시가 Bronze/v1 형식입니다. `uv run python scripts/run.py build`로 "
-            "인증 Silver 캐시를 다시 만드세요."
+            "캐시가 구형이거나 배당 포함 총수익 계약이 없습니다. "
+            "Silver 배당 rebuild 후 `uv run python scripts/run.py build`로 "
+            "인증 캐시를 다시 만드세요."
         )
     return panel
 
@@ -157,12 +179,16 @@ def _ensure_factor_columns(pan, targets):
 
 
 def _approved_signals(conn, df: pd.DataFrame) -> dict[str, pd.Series]:
+    approved_keys = silver.load_approved_factor_keys(conn)
     values = silver.load_approved_values(conn)
-    if values.empty:
-        return {}
-    values["ym"] = pd.to_datetime(values["as_of_date"]).dt.to_period("M")
     target = pd.MultiIndex.from_arrays([df["asset_id"], df["ym"]])
-    output = {}
+    output = {
+        name: pd.Series(float("nan"), index=df.index, dtype=float)
+        for name in approved_keys
+    }
+    if values.empty:
+        return output
+    values["ym"] = pd.to_datetime(values["as_of_date"]).dt.to_period("M")
     for name, group in values.groupby("factor_key"):
         keyed = (group.sort_values("as_of_date")
                  .drop_duplicates(["asset_id", "ym"], keep="last")
@@ -326,10 +352,8 @@ def _scope_confirmation_panel(
 
 def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict]:
     """Run read-only, discovery-only Python/Gold SQL parity for all qualifiers."""
-    window = CampaignWindow.from_completed_snapshot(
-        discovery_data_cutoff=campaign["discovery"]["data_cutoff"],
-        snapshot_cutoff=campaign["snapshot"]["data_cutoff"],
-        oos_months=gate.TH["min_oos_months"],
+    window = validate_manifest(
+        campaign, expected_oos_months=gate.TH["min_oos_months"],
     )
     base_panel = _load()
     discovery_panel = _scope_discovery_panel(
@@ -416,6 +440,15 @@ def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict
                             discovery_signal_start=start,
                             discovery_signal_end=end,
                             discovery_snapshot_digest=snapshot_digest,
+                            atol=float(spec.get(
+                                "parity_atol", implementation.DEFAULT_ATOL,
+                            )),
+                            rtol=float(spec.get(
+                                "parity_rtol", implementation.DEFAULT_RTOL,
+                            )),
+                            allow_tolerance_equivalent_ranks=bool(spec.get(
+                                "allow_tolerance_equivalent_ranks", False,
+                            )),
                         )
                     except Exception as exc:
                         evidence_by_name[factor.name] = implementation.failure_evidence(
@@ -465,13 +498,30 @@ def _merge_discovery_and_oos(
         failures = ", ".join(check.name for check in confirmation.failed) or "OOS 계산 불가"
         oos_check = gate.Check(
             "T4.1", "고정 OOS IC", False, None,
-            f"months=={gate.TH['min_oos_months']} & IC>={gate.TH['oos_ic']}",
+            gate.oos_effect_threshold_label(),
             failures,
         )
     discovery.checks.append(oos_check)
     if "oos_ic" in confirmation.series:
         discovery.series["oos_ic"] = confirmation.series["oos_ic"]
     return discovery
+
+
+def _assert_confirmation_discovery_ics(results: list[gate.Result]) -> None:
+    """Fail the whole batch before any sealed OOS value can be computed."""
+    invalid = [
+        result.factor
+        for result in results
+        if result.metrics.get("ic_investable") is None
+        or not np.isfinite(result.metrics["ic_investable"])
+        or result.metrics["ic_investable"] <= 0
+    ]
+    if invalid:
+        raise ValueError(
+            "인증된 Discovery 투자 가능 IC가 없거나 비양수입니다. "
+            "부분 OOS 공개를 막기 위해 전체 confirmation을 중단합니다: "
+            f"{invalid}"
+        )
 
 
 def _evaluate(
@@ -494,7 +544,7 @@ def _evaluate(
         or discovery_snapshot_digest is None
     ):
         raise ValueError(
-            "epoch-1.4 discovery는 campaign의 동결 cutoff·OOS 시작월·discovery "
+            "epoch-1.5 discovery는 campaign의 동결 cutoff·OOS 시작월·discovery "
             "snapshot digest가 필수입니다. scripts/research.py campaign workflow를 "
             "사용하세요."
         )
@@ -647,11 +697,13 @@ def _evaluate(
                 raise ValueError(f"동결 discovery q값 재현 실패: {result.factor}")
 
         authenticated_discovery = results
+        _assert_confirmation_discovery_ics(authenticated_discovery)
         results = []
         for f, discovery_result in zip(targets, authenticated_discovery, strict=True):
             confirmation_result = gate.evaluate_oos(
                 f, pan, df, oos_start=frozen_oos, oos_end=frozen_oos_end,
                 data_cutoff=data_cutoff,
+                discovery_ic=discovery_result.metrics.get("ic_investable"),
             )
             results.append(_merge_discovery_and_oos(
                 discovery_result, confirmation_result,
@@ -693,7 +745,7 @@ def _evaluate(
 def cmd_gate(args):
     del args
     raise SystemExit(
-        "전체 패널 gate는 역사적 OOS를 노출하므로 epoch-1.4에서 비활성화했습니다. "
+        "전체 패널 gate는 봉인 OOS를 노출하므로 epoch-1.5에서 비활성화했습니다. "
         "scripts/research.py의 campaign-start → epoch-start → evaluate를 사용하세요."
     )
 
@@ -755,7 +807,7 @@ def cmd_publish(args):
     """Never recompute or write Gold outside the authenticated campaign flow."""
     del args
     raise SystemExit(
-        "epoch-1.4 publish는 비활성화했습니다. campaign reveal 산출물을 사람 검토한 뒤 "
+        "epoch-1.5 publish는 비활성화했습니다. campaign reveal 산출물을 사람 검토한 뒤 "
         "별도 승인 절차에서만 Gold를 적재하세요."
     )
 

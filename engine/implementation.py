@@ -235,6 +235,16 @@ def _validate_binding(
         raise ValueError("Gold manifest predicted_sign이 Python 정의와 다릅니다")
     if manifest_spec["value_contract"] != VALUE_CONTRACT_ID:
         raise ValueError("Gold manifest value contract가 연구 계약과 다릅니다")
+    for field, default in (("parity_atol", DEFAULT_ATOL), ("parity_rtol", DEFAULT_RTOL)):
+        try:
+            tolerance = float(manifest_spec.get(field, default))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Gold manifest {field}이 숫자가 아닙니다") from exc
+        if not math.isfinite(tolerance) or tolerance < 0:
+            raise ValueError(f"Gold manifest {field}은 유한한 0 이상이어야 합니다")
+    rank_equivalence = manifest_spec.get("allow_tolerance_equivalent_ranks", False)
+    if not isinstance(rank_equivalence, bool):
+        raise ValueError("Gold manifest allow_tolerance_equivalent_ranks는 bool이어야 합니다")
     sql_path = str(manifest_spec["sql"]).strip()
     if not sql_path or not (
         implementation_uri == sql_path or implementation_uri.endswith(f"/{sql_path}")
@@ -306,6 +316,7 @@ def compare_parity(
     discovery_snapshot_digest: str,
     atol: float = DEFAULT_ATOL,
     rtol: float = DEFAULT_RTOL,
+    allow_tolerance_equivalent_ranks: bool = False,
 ) -> dict[str, Any]:
     """Compare raw values and direction-adjusted ranks and return evidence.
 
@@ -324,6 +335,8 @@ def compare_parity(
     )
     if not math.isfinite(atol) or not math.isfinite(rtol) or atol < 0 or rtol < 0:
         raise ValueError("parity tolerance는 유한한 0 이상 값이어야 합니다")
+    if not isinstance(allow_tolerance_equivalent_ranks, bool):
+        raise TypeError("rank tolerance-equivalence 계약은 bool이어야 합니다")
     start = pd.Period(discovery_signal_start, freq="M")
     end = pd.Period(discovery_signal_end, freq="M")
     if start > end:
@@ -353,6 +366,15 @@ def compare_parity(
             sql_values[finite_pairs], py_values[finite_pairs], atol=atol, rtol=rtol,
         )
     raw_mismatch_count = int((~close).sum())
+    raw_mismatch_samples = []
+    for position in np.flatnonzero(~close)[:10]:
+        key = ordered_shared[int(position)]
+        raw_mismatch_samples.append({
+            "asset_id": key[0],
+            "as_of_date": str(key[1].date()),
+            "python_value": float(py_values[position]),
+            "sql_value": float(sql_values[position]),
+        })
     if finite_pairs.any():
         absolute_errors = np.abs(sql_values[finite_pairs] - py_values[finite_pairs])
         relative_errors = absolute_errors / np.maximum(
@@ -369,18 +391,65 @@ def compare_parity(
         .groupby(py["_month"])
         .rank(method="min", ascending=False)
     )
+    allowed_rank_ranges: dict[int, tuple[int, int]] = {}
+    if allow_tolerance_equivalent_ranks:
+        for _month, group in py.groupby("_month", sort=False):
+            adjusted = (group["_value"] * factor.predicted_sign).sort_values(
+                ascending=False, kind="mergesort",
+            )
+            ordered_indices = list(adjusted.index)
+            ordered_values = adjusted.to_numpy(dtype=float)
+            cluster_start = 0
+            for position in range(1, len(ordered_values) + 1):
+                closes_cluster = position == len(ordered_values) or not np.isclose(
+                    ordered_values[position], ordered_values[cluster_start],
+                    atol=atol, rtol=rtol,
+                )
+                if closes_cluster:
+                    allowed = (cluster_start + 1, position)
+                    for index in ordered_indices[cluster_start:position]:
+                        allowed_rank_ranges[int(index)] = allowed
+                    cluster_start = position
     rank_mismatch_count = 0
+    tolerance_equivalent_rank_mismatches = 0
+    material_rank_mismatch_count = 0
+    rank_mismatch_samples = []
     for key in ordered_shared:
-        expected = float(py.at[py_unique[key], "_expected_rank"])
+        python_index = py_unique[key]
+        expected = float(py.at[python_index, "_expected_rank"])
         observed = float(sql.at[sql_unique[key], "_rank"])
-        if not (
+        exact = (
             math.isfinite(expected)
             and math.isfinite(observed)
             and observed > 0
             and observed.is_integer()
             and observed == expected
-        ):
+        )
+        if not exact:
             rank_mismatch_count += 1
+            allowed = allowed_rank_ranges.get(int(python_index))
+            tolerance_equivalent = bool(
+                allow_tolerance_equivalent_ranks
+                and allowed is not None
+                and math.isfinite(observed)
+                and observed.is_integer()
+                and allowed[0] <= observed <= allowed[1]
+            )
+            if tolerance_equivalent:
+                tolerance_equivalent_rank_mismatches += 1
+            else:
+                material_rank_mismatch_count += 1
+            if len(rank_mismatch_samples) < 10:
+                rank_mismatch_samples.append({
+                    "asset_id": key[0],
+                    "as_of_date": str(key[1].date()),
+                    "python_value": float(py.at[py_unique[key], "_value"]),
+                    "sql_value": float(sql.at[sql_unique[key], "_value"]),
+                    "python_rank": expected,
+                    "sql_rank": observed,
+                    "tolerance_equivalent": tolerance_equivalent,
+                    "allowed_rank_range": list(allowed) if allowed is not None else None,
+                })
 
     py_finite = np.isfinite(py["_value"].to_numpy(dtype=float))
     sql_finite = np.isfinite(sql["_value"].to_numpy(dtype=float))
@@ -420,6 +489,10 @@ def compare_parity(
         "sql_missing_signal_months": int(len(expected_months - sql_months)),
         "raw_mismatches": raw_mismatch_count,
         "rank_mismatches": int(rank_mismatch_count),
+        "tolerance_equivalent_rank_mismatches": int(
+            tolerance_equivalent_rank_mismatches
+        ),
+        "material_rank_mismatches": int(material_rank_mismatch_count),
     }
     checks = {
         "nonempty": counts["python_rows"] > 0 and counts["sql_rows"] > 0,
@@ -443,8 +516,9 @@ def compare_parity(
             and counts["sql_nonfinite_values"] == 0
         ),
         "raw_values_close": counts["raw_mismatches"] == 0,
-        "direction_adjusted_ranks_exact": (
-            counts["sql_invalid_ranks"] == 0 and counts["rank_mismatches"] == 0
+        "direction_adjusted_ranks_consistent": (
+            counts["sql_invalid_ranks"] == 0
+            and counts["material_rank_mismatches"] == 0
         ),
     }
     failure_reasons = [name for name, passed in checks.items() if not passed]
@@ -464,6 +538,14 @@ def compare_parity(
             "snapshot_digest": discovery_snapshot_digest,
         },
         "tolerances": {"atol": float(atol), "rtol": float(rtol)},
+        "rank_contract": {
+            "allow_tolerance_equivalent_ranks": allow_tolerance_equivalent_ranks,
+            "exact_rank_mismatches": counts["rank_mismatches"],
+            "tolerance_equivalent_rank_mismatches": counts[
+                "tolerance_equivalent_rank_mismatches"
+            ],
+            "material_rank_mismatches": counts["material_rank_mismatches"],
+        },
         "digests": {
             "python_frame": _frame_digest(py, sql=False),
             "sql_frame": _frame_digest(sql, sql=True),
@@ -476,6 +558,10 @@ def compare_parity(
             "extra_in_sql": counts["extra_in_sql"],
             "raw_values": counts["raw_mismatches"],
             "ranks": counts["rank_mismatches"],
+        },
+        "mismatch_samples": {
+            "raw_values": raw_mismatch_samples,
+            "ranks": rank_mismatch_samples,
         },
         "max_abs_error": max_abs_error,
         "max_rel_error": max_rel_error,
