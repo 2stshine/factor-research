@@ -3,7 +3,7 @@
 > 결정론 코드가 만든다. 다음 루프는 새 후보를 세우기 전에 이 파일을 읽는다.
 > **판정 결과는 담기지 않는다** — 봉인 OOS 를 지키기 위해 정체성과 구조적 교훈만 남긴다.
 
-시행 33건 · 생략 없음
+시행 42건 · 생략 없음
 
 ## 시도한 것
 
@@ -42,6 +42,15 @@
 | `cycle-0031-market_beta_36m` | `market_beta_36m` | `market_beta` | `fr-3.5.0` | Low Risk | Price |
 | `cycle-0032-paid_in_capital_ratio` | `paid_in_capital_ratio` | `equity_composition` | `fr-3.5.0` | - | Accounting |
 | `cycle-0033-current_liability_concentration` | `current_liability_concentration` | `liability_maturity_structure` | `fr-3.5.0` | Low Leverage | Accounting |
+| `cycle-0034-net_working_capital_to_assets` | `net_working_capital_to_assets` | `working_capital_buffer` | `fr-3.9.0` | - | - |
+| `cycle-0035-operating_return_on_capital_employed` | `operating_return_on_capital_employed` | `capital_employment_efficiency` | `fr-3.9.0` | - | - |
+| `cycle-0036-operating_margin_change_12m` | `operating_margin_change_12m` | `operating_margin_expansion` | `fr-3.9.0` | - | - |
+| `cycle-0037-posttax_income_conversion` | `posttax_income_conversion` | `tax_conversion_efficiency` | `fr-3.9.0` | - | - |
+| `cycle-0038-noncurrent_asset_encumbrance` | `noncurrent_asset_encumbrance` | `long_term_asset_encumbrance` | `fr-3.9.0` | - | - |
+| `cycle-0039-turnover_volatility_12m` | `turnover_volatility_12m` | `trading_activity_instability` | `fr-3.9.0` | - | - |
+| `cycle-0040-equity_growth_12m` | `equity_growth_12m` | `equity_growth` | `fr-3.9.0` | - | - |
+| `cycle-0041-positive_return_share_12m` | `positive_return_share_12m` | `return_consistency` | `fr-3.9.0` | - | - |
+| `cycle-0042-return_kurtosis_24m` | `return_kurtosis_24m` | `return_tail_concentration` | `fr-3.9.0` | - | - |
 
 ## 등록 팩터 요약
 
@@ -58,7 +67,7 @@
 - Short-Term Reversal: 1건 등록
 - Size: 0건 등록
 - Value: 7건 등록
-- (미매칭): 2건
+- (미매칭): 11건
 
 ## 구조적 교훈
 
@@ -74,4 +83,25 @@
 - `market_beta_36m` (market_beta) — NO_PREDICTIVE_EVIDENCE · 신규성 INDEPENDENT
 - `paid_in_capital_ratio` (equity_composition) — DISCOVERY_FDR_PENDING · 신규성 INDEPENDENT
 - `current_liability_concentration` (liability_maturity_structure) — NO_PREDICTIVE_EVIDENCE · 신규성 INDEPENDENT
+
+### campaign-20260807-002 / epoch-001
+
+- `net_working_capital_to_assets` (working_capital_buffer) — NO_PREDICTIVE_EVIDENCE · 신규성 DUPLICATE
+- `operating_return_on_capital_employed` (capital_employment_efficiency) — DISCOVERY_FDR_PENDING · 신규성 DUPLICATE
+- `operating_margin_change_12m` (operating_margin_expansion) — NO_PREDICTIVE_EVIDENCE · 신규성 DUPLICATE
+- 중복: net_working_capital_to_assets
+- 중복: operating_return_on_capital_employed
+- 중복: operating_margin_change_12m
+
+### campaign-20260807-002 / epoch-002
+
+- `posttax_income_conversion` (tax_conversion_efficiency) — DATA_OR_INTEGRITY · 신규성 INDEPENDENT
+- `noncurrent_asset_encumbrance` (long_term_asset_encumbrance) — DATA_OR_INTEGRITY · 신규성 RELATED
+- `turnover_volatility_12m` (trading_activity_instability) — DISCOVERY_FDR_PENDING · 신규성 INDEPENDENT
+
+### campaign-20260807-002 / epoch-003
+
+- `equity_growth_12m` (equity_growth) — DATA_OR_INTEGRITY · 신규성 RELATED
+- `positive_return_share_12m` (return_consistency) — DATA_OR_INTEGRITY · 신규성 RELATED
+- `return_kurtosis_24m` (return_tail_concentration) — DISCOVERY_FDR_PENDING · 신규성 RELATED
 
