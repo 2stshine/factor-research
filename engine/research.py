@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from engine import epochs, fundamentals
+from engine import dividends, epochs, fundamentals
 from engine.factors import Factor, Registry
 from engine.gate import RESEARCH_START, Result, RULESET_VERSION
 from engine.panel import Panel
@@ -196,8 +196,19 @@ def write_context(
         discovery_signal_end = df["ym"].max()
     base_inputs = {
         "return_close", "market_cap", "adv20", "trading_value", "shares", "market",
+        "adj_close", "amihud_illiquidity_1m", "amihud_observations_1m",
+        "daily_volatility_252d", "daily_return_observations_252d",
+        "max_daily_return_1m", "max_daily_return_observations_1m",
+        "price_high_252d", "price_high_observations_252d",
     }
-    available = sorted((base_inputs | set(fundamentals.PIT_FEATURES)) & set(df.columns))
+    available = sorted(
+        (
+            base_inputs
+            | set(fundamentals.PIT_FEATURES)
+            | set(dividends.PIT_FEATURES)
+        )
+        & set(df.columns)
+    )
     lines = [
         "# Factor research context",
         "",
@@ -211,6 +222,7 @@ def write_context(
         f"- Discovery return-support cutoff: `{visible_cutoff.date() if visible_cutoff is not None else '-'}`",
         f"- Rows/months/assets: `{len(df):,}` / `{df['ym'].nunique()}` / `{df['asset_id'].nunique():,}`",
         f"- Return field: `{panel.meta.get('return_field')}`",
+        f"- Return methodology: `{panel.meta.get('return_methodology')}`",
         f"- Gate ruleset: `{RULESET_VERSION}`",
         f"- Research protocol: `{epochs.PROTOCOL_VERSION}`",
         f"- Recorded autonomous cycles: `{len(history)}`",
@@ -456,8 +468,10 @@ def record_cycle(
             key: serialized["metrics"].get(key)
             for key in (
                 "ic_full", "ic_investable", "rank_icir_investable",
-                "ic_t_full", "ic_p_investable",
-                "oos_ic", "oos_ic_p", "turnover", "net", "net_ir",
+                "ic_t_full", "ic_p_investable", "neutral_ic",
+                "neutral_ic_retention", "oos_discovery_ic", "oos_ic",
+                "oos_ic_retention", "oos_required_ic", "oos_ic_p",
+                "turnover", "net", "net_ir",
             )
             if key in serialized["metrics"]
         },

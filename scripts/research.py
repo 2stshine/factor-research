@@ -13,7 +13,11 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from engine import epochs, panel as P, research
-from engine.boundaries import CampaignWindow
+from engine.boundaries import (
+    HISTORICAL_HOLDOUT_MODE,
+    PROSPECTIVE_HOLDOUT_MODE,
+    CampaignWindow,
+)
 from engine import factors as F
 from factors.candidate_loader import RESEARCH_SPECS
 from scripts import run
@@ -38,7 +42,69 @@ def _campaign_snapshot_boundary(
     *,
     as_of_date: date | str | None = None,
 ) -> CampaignWindow:
-    """Derive the fixed trailing 36-month holdout from completed Silver data."""
+    """Derive the latest trailing holdout that can be judged today.
+
+    The newest completed return month is not necessarily reveal-ready: its
+    preceding signal month still needs the fixed inactive-security observation
+    lag.  Walk backwards until both the return-support month and that lag are
+    already observable at ``as_of_date``.
+    """
+    current_month, completed_month, _snapshot_cutoff = _latest_completed_snapshot(
+        panel, as_of_date=as_of_date,
+    )
+    observed_as_of = pd.Timestamp(
+        as_of_date or datetime.now(ZoneInfo("Asia/Seoul")).date()
+    ).normalize()
+    while True:
+        signal_end = completed_month - 1
+        inactive_ready_after = (
+            signal_end.to_timestamp(how="end").normalize()
+            + pd.Timedelta(days=P.INACTIVE_DAYS)
+        )
+        closure_ready = current_month >= completed_month + 1
+        if observed_as_of > inactive_ready_after and closure_ready:
+            break
+        completed_month -= 1
+        if completed_month < pd.Period(epochs.RESEARCH_START, freq="M"):
+            raise ValueError("현재 판단 가능한 36개월 OOS 경계를 만들 수 없습니다")
+
+    snapshot_cutoff = panel.monthly.loc[
+        panel.monthly["ym"].eq(completed_month), "trade_date"
+    ].max()
+    if pd.isna(snapshot_cutoff):
+        raise ValueError(f"OOS 마지막 수익률월 {completed_month}이 Silver에 없습니다")
+    calendar_month_end = completed_month.to_timestamp(how="end").normalize()
+    if pd.Timestamp(snapshot_cutoff).normalize() < calendar_month_end - pd.Timedelta(days=7):
+        raise ValueError(
+            f"Silver OOS 수익률월 {completed_month}은 월말까지 적재됐다고 볼 수 없습니다: "
+            f"마지막 관측 {pd.Timestamp(snapshot_cutoff).date()}"
+        )
+    oos_signal_end = completed_month - 1
+    oos_start = oos_signal_end - (epochs.TH["min_oos_months"] - 1)
+    discovery_return_end = oos_start - 1
+    discovery_cutoff = panel.monthly.loc[
+        panel.monthly["ym"].eq(discovery_return_end), "trade_date"
+    ].max()
+    if pd.isna(discovery_cutoff):
+        raise ValueError(
+            "36개월 OOS와 최소 discovery를 분리할 Silver 이력이 부족합니다: "
+            f"필요 discovery return 월 {discovery_return_end}"
+        )
+    window = CampaignWindow.from_completed_snapshot(
+        discovery_data_cutoff=str(pd.Timestamp(discovery_cutoff).date()),
+        snapshot_cutoff=str(pd.Timestamp(snapshot_cutoff).date()),
+        oos_months=epochs.TH["min_oos_months"],
+    )
+    _assert_minimum_discovery(window)
+    return window
+
+
+def _latest_completed_snapshot(
+    panel,
+    *,
+    as_of_date: date | str | None = None,
+) -> tuple[pd.Period, pd.Period, pd.Timestamp]:
+    """Return current month, latest completed month, and its final observation."""
     months = sorted(panel.monthly["ym"].dropna().unique())
     if not months:
         raise ValueError("Silver 월 데이터가 없습니다")
@@ -81,22 +147,10 @@ def _campaign_snapshot_boundary(
             f"Silver 최신 월 {completed_month}은 월말까지 적재됐다고 볼 수 없습니다: "
             f"마지막 관측 {pd.Timestamp(snapshot_cutoff).date()}"
         )
-    oos_signal_end = completed_month - 1
-    oos_start = oos_signal_end - (epochs.TH["min_oos_months"] - 1)
-    discovery_return_end = oos_start - 1
-    discovery_cutoff = panel.monthly.loc[
-        panel.monthly["ym"].eq(discovery_return_end), "trade_date"
-    ].max()
-    if pd.isna(discovery_cutoff):
-        raise ValueError(
-            "36개월 OOS와 최소 discovery를 분리할 Silver 이력이 부족합니다: "
-            f"필요 discovery return 월 {discovery_return_end}"
-        )
-    window = CampaignWindow.from_completed_snapshot(
-        discovery_data_cutoff=str(pd.Timestamp(discovery_cutoff).date()),
-        snapshot_cutoff=str(pd.Timestamp(snapshot_cutoff).date()),
-        oos_months=epochs.TH["min_oos_months"],
-    )
+    return current_month, completed_month, pd.Timestamp(snapshot_cutoff).normalize()
+
+
+def _assert_minimum_discovery(window: CampaignWindow) -> None:
     discovery_months = len(pd.period_range(
         epochs.RESEARCH_START, window.discovery_signal_end, freq="M",
     ))
@@ -105,6 +159,25 @@ def _campaign_snapshot_boundary(
             "36개월 OOS를 봉인한 뒤 최소 discovery 기간이 부족합니다: "
             f"현재 {discovery_months}, 최소 {epochs.TH['min_months']} signal개월"
         )
+
+
+def _prospective_campaign_boundary(
+    panel,
+    *,
+    as_of_date: date | str | None = None,
+) -> CampaignWindow:
+    """Reserve 36 future signal months after the current partial month."""
+    current_month, completed_month, snapshot_cutoff = _latest_completed_snapshot(
+        panel, as_of_date=as_of_date,
+    )
+    oos_start = max(current_month + 1, completed_month + 2)
+    window = CampaignWindow.from_prospective_snapshot(
+        discovery_data_cutoff=str(snapshot_cutoff.date()),
+        snapshot_cutoff=str(snapshot_cutoff.date()),
+        oos_start=oos_start,
+        oos_months=epochs.TH["min_oos_months"],
+    )
+    _assert_minimum_discovery(window)
     return window
 
 
@@ -112,7 +185,11 @@ def cmd_campaign_start(args) -> None:
     run.load_registry()
     panel = run._load()
     try:
-        window = _campaign_snapshot_boundary(panel)
+        window = (
+            _prospective_campaign_boundary(panel)
+            if args.mode == PROSPECTIVE_HOLDOUT_MODE
+            else _campaign_snapshot_boundary(panel)
+        )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     snapshot_panel = run._scope_snapshot_panel(
@@ -129,9 +206,14 @@ def cmd_campaign_start(args) -> None:
         snapshot_cutoff=window.snapshot_cutoff,
         snapshot_digest=P.snapshot_digest(snapshot_panel),
         discovery_snapshot_digest=P.snapshot_digest(discovery_panel),
+        mode=args.mode,
+        oos_start=window.oos_signal_start,
+        planned_epoch_count=args.epochs,
     )
     context = research.write_context(panel, F.REGISTRY)
     print(f"campaign 생성: {path}")
+    print(f"OOS mode: {window.mode}")
+    print(f"사전 고정 epoch 수: {args.epochs}")
     print(
         f"Discovery signal 종료 {window.discovery_signal_end}; "
         f"OOS signal {window.oos_signal_start}~{window.oos_signal_end} (SEALED)"
@@ -389,6 +471,19 @@ def main() -> None:
     commands.add_parser("context", help="다음 루프가 읽을 현재 연구 상태 생성")
     campaign_start = commands.add_parser("campaign-start", help="봉인 OOS campaign 시작")
     campaign_start.add_argument("--campaign", required=True)
+    campaign_start.add_argument(
+        "--mode",
+        choices=[HISTORICAL_HOLDOUT_MODE, PROSPECTIVE_HOLDOUT_MODE],
+        default=HISTORICAL_HOLDOUT_MODE,
+        help=(
+            "기본값은 현재 데이터 안의 최신 reveal-ready 36개월을 처음부터 "
+            "숨기는 trailing_historical_holdout; 미래 추적은 명시적으로 선택"
+        ),
+    )
+    campaign_start.add_argument(
+        "--epochs", type=int, default=1,
+        help="campaign에서 결과 전에 고정할 전체 epoch 수",
+    )
     epoch_start = commands.add_parser("epoch-start", help="후보 배치 사전등록")
     epoch_start.add_argument("--campaign", required=True)
     epoch_start.add_argument("--epoch", required=True)

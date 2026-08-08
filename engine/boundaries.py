@@ -8,6 +8,7 @@ import pandas as pd
 
 QUALIFICATION_POLICY = "all_discovery_non_reject_by_pass_v1"
 HISTORICAL_HOLDOUT_MODE = "trailing_historical_holdout"
+PROSPECTIVE_HOLDOUT_MODE = "prospective_holdout"
 
 
 def _date(value: str, *, label: str) -> pd.Timestamp:
@@ -43,6 +44,8 @@ class CampaignWindow:
     oos_return_end: pd.Period
     closure_month: pd.Period
     oos_months: int
+    mode: str
+    snapshot_completed_month: pd.Period
 
     @classmethod
     def from_completed_snapshot(
@@ -90,6 +93,58 @@ class CampaignWindow:
             oos_return_end=snapshot_month,
             closure_month=snapshot_month + 1,
             oos_months=int(oos_months),
+            mode=HISTORICAL_HOLDOUT_MODE,
+            snapshot_completed_month=snapshot_month,
+        )
+
+    @classmethod
+    def from_prospective_snapshot(
+        cls,
+        *,
+        discovery_data_cutoff: str,
+        snapshot_cutoff: str,
+        oos_start: str | pd.Period,
+        oos_months: int,
+    ) -> "CampaignWindow":
+        """Freeze definitions now and reserve a future, never-observed OOS.
+
+        The creation snapshot contains discovery only.  ``oos_start`` must be
+        later than its completed month; callers normally choose the month after
+        the current partial month so no in-progress signal can leak into design.
+        """
+        if oos_months < 1:
+            raise ValueError("OOS 기간은 1개월 이상이어야 합니다")
+        discovery_cutoff = _date(
+            discovery_data_cutoff, label="discovery data cutoff",
+        )
+        snapshot = _date(snapshot_cutoff, label="snapshot cutoff")
+        if discovery_cutoff != snapshot:
+            raise ValueError(
+                "prospective campaign의 discovery cutoff와 생성 snapshot은 "
+                "같아야 합니다"
+            )
+        snapshot_month = snapshot.to_period("M")
+        start = pd.Period(oos_start, freq="M")
+        if start <= snapshot_month:
+            raise ValueError(
+                f"prospective OOS 시작 {start}는 생성 snapshot 월 "
+                f"{snapshot_month}보다 뒤여야 합니다"
+            )
+        signal_end = start + int(oos_months) - 1
+        return_end = signal_end + 1
+        return cls(
+            discovery_data_cutoff=str(discovery_cutoff.date()),
+            snapshot_cutoff=str(snapshot.date()),
+            discovery_signal_end=snapshot_month - 1,
+            discovery_return_end=snapshot_month,
+            oos_signal_start=start,
+            oos_signal_end=signal_end,
+            oos_return_start=start + 1,
+            oos_return_end=return_end,
+            closure_month=return_end + 1,
+            oos_months=int(oos_months),
+            mode=PROSPECTIVE_HOLDOUT_MODE,
+            snapshot_completed_month=snapshot_month,
         )
 
     @classmethod
@@ -156,6 +211,8 @@ class CampaignWindow:
             oos_return_end=return_end,
             closure_month=return_end + 1,
             oos_months=int(oos_months),
+            mode=HISTORICAL_HOLDOUT_MODE,
+            snapshot_completed_month=snapshot.to_period("M"),
         )
 
     @property
@@ -183,7 +240,7 @@ class CampaignWindow:
     def snapshot_manifest(self) -> dict:
         return {
             "data_cutoff": self.snapshot_cutoff,
-            "completed_month": str(self.oos_return_end),
+            "completed_month": str(self.snapshot_completed_month),
         }
 
     def discovery_manifest(self) -> dict:
@@ -195,7 +252,7 @@ class CampaignWindow:
 
     def oos_manifest(self) -> dict:
         return {
-            "mode": HISTORICAL_HOLDOUT_MODE,
+            "mode": self.mode,
             "status": "SEALED",
             "start": str(self.oos_signal_start),
             "signal_end": str(self.oos_signal_end),
@@ -211,7 +268,7 @@ class CampaignWindow:
 
 
 def validate_manifest(campaign: dict, *, expected_oos_months: int) -> CampaignWindow:
-    """Authenticate every stored epoch-1.4 boundary from its two cutoffs."""
+    """Authenticate every stored epoch-1.5 boundary from its frozen inputs."""
     snapshot = campaign.get("snapshot") or {}
     discovery = campaign.get("discovery") or {}
     oos = campaign.get("oos") or {}
@@ -219,12 +276,23 @@ def validate_manifest(campaign: dict, *, expected_oos_months: int) -> CampaignWi
         raise ValueError(
             f"campaign OOS는 현재 ruleset의 정확한 {expected_oos_months}개월이어야 합니다"
         )
+    mode = oos.get("mode")
     try:
-        window = CampaignWindow.from_completed_snapshot(
-            discovery_data_cutoff=discovery.get("data_cutoff"),
-            snapshot_cutoff=snapshot.get("data_cutoff"),
-            oos_months=expected_oos_months,
-        )
+        if mode == PROSPECTIVE_HOLDOUT_MODE:
+            window = CampaignWindow.from_prospective_snapshot(
+                discovery_data_cutoff=discovery.get("data_cutoff"),
+                snapshot_cutoff=snapshot.get("data_cutoff"),
+                oos_start=oos.get("start"),
+                oos_months=expected_oos_months,
+            )
+        elif mode == HISTORICAL_HOLDOUT_MODE:
+            window = CampaignWindow.from_completed_snapshot(
+                discovery_data_cutoff=discovery.get("data_cutoff"),
+                snapshot_cutoff=snapshot.get("data_cutoff"),
+                oos_months=expected_oos_months,
+            )
+        else:
+            raise ValueError(f"지원하지 않는 OOS mode입니다: {mode!r}")
     except (TypeError, ValueError) as exc:
         raise ValueError(
             "campaign snapshot/discovery/OOS 경계 무결성 검증에 실패했습니다"

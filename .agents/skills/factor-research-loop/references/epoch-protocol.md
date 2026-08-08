@@ -14,10 +14,11 @@
 
 ## 목적
 
-같은 OOS 결과를 본 뒤 다음 가설을 선택하는 간접 과최적화와, 사람이 좋아 보이는 후보만
-confirmation에 보내는 선택 편향을 함께 막는다. 새 campaign은 `epoch-1.4`를 적용하며 역사적
+같은 후보의 OOS 결과를 본 뒤 정의를 바꾸는 과최적화와, 사람이 좋아 보이는 후보만
+confirmation에 보내는 선택 편향을 함께 막는다. 새 campaign은 `epoch-1.5`를 적용하며 역사적
 cycle과 산출물은 원래 규칙의 기록으로 보존한다. 과거 결과를 본 후보에 새 경계를 소급 적용하지
-않는다.
+않는다. 공개 구간은 `research/oos-exposures/`에 영구 기록하며, 같은 달력 구간을 다시 쓰면
+manifest에 재사용 사실을 남긴다.
 
 ## 상태 전이
 
@@ -41,26 +42,29 @@ READY_FOR_CONFIRMATION → 사용자 요청·readiness PASS → REVEALED(종료)
 
 ## 시작
 
-부분월은 쓰지 않는다. campaign을 시작할 때 Silver의 최신 **완료 수익률월**을
-`snapshot_cutoff`로 동결하고, 그 월에 미래수익이 끝나는 직전 36개 signal월을 역사적 OOS로
-역산한다. discovery는 OOS 앞에서 끝내고 두 구간 사이 한 signal월을 embargo한다. snapshot에
-OOS 행이 물리적으로 있어도 discovery 입력·출력에서는 숨긴다.
+부분월은 쓰지 않는다. 기본 `trailing_historical_holdout`은 현재 Silver 안에서 마지막 signal월의
+45일 비활성 판정과 마지막 수익률월 다음 closure월까지 이미 관측된 가장 최근 36개 signal월을
+먼저 hidden OOS로 고정한다. 후보 Agent에는 그 직전 수익률 지원월까지만 보여준다. 미래 36개월을
+기다리는 `prospective_holdout`은 사용자가 장기 추적을 명시할 때만 선택한다.
 
-예를 들어 최신 완료 수익률월이 `2026-07`이면 경계는 다음과 같다.
+예를 들어 관측일이 `2026-08-07`이고 Silver가 그날까지 들어왔다면 `2026-06` 수익률월까지가
+현재 즉시 판정 가능한 최신 경계다. `2026-06` signal은 45일 판정이 `2026-08-14` 뒤에 끝나므로
+아직 쓰지 않는다.
 
 | 용도 | signal월 | 해당 미래수익월 |
 |---|---|---|
-| Discovery 마지막 | `2023-05` | `2023-06` |
-| Embargo | `2023-06` | `2023-07` |
-| OOS 36개월 | `2023-07~2026-06` | `2023-08~2026-07` |
+| Discovery 마지막 | `2023-04` | `2023-05` |
+| 경계 수익률 지원월 | `2023-05` | OOS signal에 포함하지 않음 |
+| OOS 36개월 | `2023-06~2026-05` | `2023-07~2026-06` |
+| closure 관측 | `2026-07` | 비활성·종착수익률 확정용 |
 
-`2026-08` 관측이 필요하면 마지막 수익률 마감과 비활성 종목의 경계를 확인하는 데만 쓰며 OOS
-IC에는 넣지 않는다. 이 예에서는 `2026-06-30 + 45일`보다 늦은 실제 Silver 관측일이어야 하므로
-8월 초의 부분월만으로는 reveal하지 않는다. discovery와 OOS의 signal·미래수익 행은 겹치지 않는다.
+campaign 시작부터 discovery와 OOS의 signal·미래수익 행은 겹치지 않는다. 후보 정의와 전체
+목록을 동결한 뒤에만 OOS를 계산한다.
 
-이 구간의 IC·수익률을 후보 정의나 선택 전에 봉인했을 때만 공식 OOS다. 이미 결과가 노출된
-후보는 같은 경계를 다시 적용해도 `retrospective-only`이며 승격 근거로 쓰지 않는다. 한 번
-reveal한 OOS signal·수익률 구간은 이후 campaign에서 재사용하지 않는다.
+이 구간의 해당 후보 IC·수익률을 후보 정의나 선택 전에 숨겼을 때만 hidden OOS다. 동일 정의가
+이미 결과를 봤거나 post-cutoff 결과로 만들어진 후보는 `retrospective-only`다. 달력 구간이 과거
+다른 연구에 쓰였다면 `HISTORICAL_REUSED_WINDOW`와 기존 exposure id를 남겨 사람이 증거의
+독립성을 판단할 수 있게 한다.
 
 ```bash
 uv run python scripts/research.py campaign-start --campaign campaign-001
@@ -140,9 +144,10 @@ key mismatch, 수치 오차와 rank mismatch를 남긴다. SQL 오류는 OOS 결
 OOS는 **정확히 36 signal개월**이고 유효한 투자 가능 Rank IC도 정확히 36개여야 한다. 한 달이
 빠지거나 뒤의 월을 덧붙여 기간을 바꾸면 실패한다. 시작·종료월은 campaign 시작 때 고정한다.
 
-경계는 최신 완료 수익률월에서 역산해 campaign 시작 때 동결한다. 늦게 reveal해도 뒤의 월을
-덧붙이지 않는다. 마지막 경계 확인월은 비활성 종목과 수익률 마감 확인에만 쓰고 IC에는 넣지
-않는다.
+기본 historical 경계는 campaign 시작 시점에 reveal-ready인 정확한 36개월로 고정한다. 모든 예정
+epoch의 후보 등록과 discovery finalize 동안 post-cutoff 데이터·보고서를 읽지 않는다. 마지막
+closure월은 비활성 종목과 수익률 마감 확인에만 쓰고 IC에는 넣지 않는다. 명시적 prospective
+경계도 동일하게 정확한 36개월을 유지하며 뒤의 월을 덧붙이지 않는다.
 
 ## 일회성 공개
 
@@ -159,9 +164,9 @@ readiness, 전체 자동 확인 대상의 definition/SQL hash와 parity, 확정 
 `qualified_factors`의 OOS를 동시에 한 번 공개하고 하나의 family로 BY 보정한다. p값이 없는
 후보도 `p=1`로 포함해 `NOT_TESTABLE`로 실패시킨다.
 
-결과는 `confirmation/`에 저장하고 campaign을 `REVEALED`로 종료한다. 같은 OOS를 다시 열거나
-결과를 보고 종료된 후보를 수정하지 않는다. 공개된 구간은 이후 campaign의 OOS로 재사용하지
-않는다. reveal과 `PROMOTE` 판정은 Gold를 쓰지 않으며,
+결과는 `confirmation/`에 저장하고 campaign을 `REVEALED`로 종료한다. 같은 campaign 후보의 OOS를
+다시 열거나 결과를 보고 종료된 정의를 수정하지 않는다. 달력 구간을 새 후보에 재사용하면
+exposure metadata를 보존한다. reveal과 `PROMOTE` 판정은 Gold를 쓰지 않으며,
 별도 사람 검토 없이는 어떤 팩터도 자동 발행하지 않는다.
 
 ## 산출물

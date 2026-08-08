@@ -87,7 +87,7 @@ def test_negative_sign_and_tie_rank_parity_passes():
     ("mutation", "reason"),
     [
         (lambda frame: frame.assign(value=[1.0, 1.0, 2.1]), "raw_values_close"),
-        (lambda frame: frame.assign(rank=[1, 2, 3]), "direction_adjusted_ranks_exact"),
+        (lambda frame: frame.assign(rank=[1, 2, 3]), "direction_adjusted_ranks_consistent"),
         (lambda frame: frame.iloc[:-1], "keys_exact"),
     ],
 )
@@ -108,6 +108,43 @@ def test_parity_mismatches_are_auditable_failures(mutation, reason):
 
     assert evidence["status"] == "FAIL"
     assert reason in evidence["failure_reasons"]
+
+
+def test_rank_contract_allows_only_tolerance_equivalent_reordering():
+    factor = _factor()
+    python = pd.DataFrame({
+        "asset_id": [1, 2, 3],
+        "as_of_date": pd.to_datetime(["2023-05-31"] * 3),
+        "value": [1.0, 1.0 + 1e-7, 2.0],
+    })
+    sql = python.copy()
+    sql["rank"] = [2, 1, 3]
+    spec = _spec(factor)
+    spec["allow_tolerance_equivalent_ranks"] = True
+
+    tolerated = implementation.compare_parity(
+        factor, python, sql,
+        implementation_uri="repo://TeamAlpha-data/pipeline/gold/factors/parity_factor.sql",
+        implementation_sha256="a" * 64, manifest_spec=spec,
+        discovery_signal_start="2023-05", discovery_signal_end="2023-05",
+        discovery_snapshot_digest="b" * 64, atol=1e-6,
+        allow_tolerance_equivalent_ranks=True,
+    )
+    material = implementation.compare_parity(
+        factor, python, sql,
+        implementation_uri="repo://TeamAlpha-data/pipeline/gold/factors/parity_factor.sql",
+        implementation_sha256="a" * 64, manifest_spec=spec,
+        discovery_signal_start="2023-05", discovery_signal_end="2023-05",
+        discovery_snapshot_digest="b" * 64, atol=1e-10,
+        allow_tolerance_equivalent_ranks=True,
+    )
+
+    assert tolerated["status"] == "PASS"
+    assert tolerated["counts"]["rank_mismatches"] == 2
+    assert tolerated["counts"]["tolerance_equivalent_rank_mismatches"] == 2
+    assert tolerated["counts"]["material_rank_mismatches"] == 0
+    assert material["status"] == "FAIL"
+    assert "direction_adjusted_ranks_consistent" in material["failure_reasons"]
 
 
 def test_manifest_definition_hash_must_bind_python_definition():
