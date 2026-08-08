@@ -321,6 +321,13 @@ def write_context(
                 f"{_safe(failed)} | "
                 f"{_safe(relation_text)} | {report_text} |"
             )
+        omitted = len(history) - 30
+        if omitted > 0:
+            lines += [
+                "",
+                f"> 위 표는 최근 30건만 담는다. 오래된 {omitted}건은 생략됐다. "
+                "전문은 `research/history.jsonl`.",
+            ]
     lines.append("")
     path = context_dir / "latest.md"
     path.write_text("\n".join(lines), encoding="utf-8")
