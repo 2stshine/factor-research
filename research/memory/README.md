@@ -13,6 +13,8 @@
 | `references.md` | OSAP · JKP 인용과 라이선스 자세 |
 | `labels.jsonl` | 시행별 라벨 |
 | `lessons.md` | `scripts/lessons.py` 가 만드는 생성물 |
+| `build_labels.py` | 라벨의 근거 표. 고치고 재실행하면 `labels.jsonl` 이 갱신된다 |
+| `ab-test.md` | **컨텍스트가 행동을 바꾸는지 잰 기록.** 1차는 효과 없음 |
 
 ```bash
 python scripts/lessons.py                   # lessons.md 갱신
@@ -26,6 +28,7 @@ python scripts/lessons.py --view before-after
 2. **문헌 대응이 아예 없는 3건**(`nonoperating_burden_to_assets` · `paid_in_capital_ratio` · `positive_return_share_12m`)은 축을 비웠다. OSAP 331·JKP 153 어디에도 없다.
 3. **`analysis` 필드가 전부 `null`** 이다. 사람이 읽는 근거 슬롯이고 아직 안 채웠다.
 4. **테스트가 `tests/` 에 없다.** 시나리오는 통과를 확인했지만 `tests/` 는 이 작업 범위 밖으로 뒀다. 필요하면 올린다.
+5. **⚠️ 컨텍스트가 아직 행동을 바꾸지 못한다.** A/B 1차에서 개념 중복률이 대조군과 같았다(50% vs 50%). 원인과 다음 수는 `ab-test.md` 에 있다. **이 층을 손대기 전에 그 파일을 먼저 읽으라.**
 
 ## 설계 메모
 
