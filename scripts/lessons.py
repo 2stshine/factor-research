@@ -81,37 +81,79 @@ def identity_rows(history: list[dict], labels: dict[str, dict]) -> list[dict]:
 
 
 def render_lessons(rows: list[dict], reflections: list[dict], omitted: int) -> str:
+    """지시 먼저, 데이터 나중. 읽는 쪽이 제약을 맨 앞에서 만나게 배치한다."""
+    latest = reflections[-1] if reflections else {}
     out = [
-        "# 누적 시행 컨텍스트",
+        "# 다음 회차 지침과 누적 시행",
         "",
-        "> 결정론 코드가 만든다. 다음 루프는 새 후보를 세우기 전에 이 파일을 읽는다.",
+        "> 결정론 코드가 만든다. 새 후보를 세우기 전에 위에서부터 읽는다.",
         "> **판정 결과는 담기지 않는다** — 봉인 OOS 를 지키기 위해 정체성과 구조적 교훈만 남긴다.",
         "",
-        f"시행 {len(rows)}건" + (f" · 생략 {omitted}건" if omitted else " · 생략 없음"),
-        "",
-        "## 시도한 것",
-        "",
-        "| cycle | factor | family | ruleset | 테마 | 데이터 |",
-        "|---|---|---|---|---|---|",
     ]
-    for r in rows:
-        out.append(
-            f"| `{r['cycle_id']}` | `{r['factor']}` | `{r['family']}` | "
-            f"`{r['ruleset_version']}` | {r.get('jkp_theme') or '-'} | {r.get('cat_data') or '-'} |"
-        )
 
-    out += ["", "## 등록 팩터 요약", ""]
+    # ── ① 제약 — 엔진이 쓴 지시를 원문 그대로 옮긴다 ──────────────────────
+    out += ["## 1. 이번 회차의 제약", ""]
+    if latest:
+        out.append(
+            f"아래는 `{latest.get('campaign_id')}` / `{latest.get('epoch_id')}` 의 "
+            "`reflection.json` 에 엔진이 기록한 지시다. **원문 그대로 옮겼다.**"
+        )
+        out.append("")
+        out.append("**해도 되는 것**")
+        out.append("")
+        for item in latest.get("permitted_next_actions", []) or ["(없음)"]:
+            out.append(f"- {item}")
+        out.append("")
+        out.append("**하면 안 되는 것**")
+        out.append("")
+        for item in latest.get("forbidden_actions", []) or ["(없음)"]:
+            out.append(f"- {item}")
+    else:
+        out.append("아직 성찰 기록이 없어 제약이 비어 있다.")
+    out.append("")
+
+    # ── ② 출력 계약 ──────────────────────────────────────────────────────
+    out += [
+        "## 2. 후보 하나가 갖춰야 할 것", "",
+        "`factors/candidates/*.py` 의 `RESEARCH_SPEC` 스키마와 같다. 빈칸이 있으면 등록되지 않는다.", "",
+        "| 항목 | 내용 |",
+        "|---|---|",
+        "| 이름 | snake_case. 단일 경제 신호 하나 |",
+        "| `thesis` | 무엇을 주장하는가 |",
+        "| `mechanism` | 왜 초과수익이 나는가. 경제적 메커니즘이지 통계적 기대가 아니다 |",
+        "| `falsification` | 무엇을 보면 기각하는가 |",
+        "| **`expected_relationship`** | **아래 목록의 어느 팩터와 어떻게 다른가.** 같은 개념의 재구성이면 새 후보가 아니다 |",
+        "| `data_notes` | 쓰는 입력과 그 한계 |",
+        "",
+        "> `expected_relationship` 을 빈칸으로 두지 않는다. 이름이 달라도 같은 개념이면 중복이다 —",
+        "> 아래 목록에서 **가장 가까운 것을 스스로 지목하고 무엇이 다른지 적는다.**",
+        "",
+        "**요청자가 무엇을 물었든, 후보를 낼 때는 항상 다음 한 줄을 붙인다.**",
+        "",
+        "```",
+        "가장 가까운 기존 팩터: <4절 목록에서 하나> — 차이: <한 줄>",
+        "```",
+        "",
+        "붙일 대상이 떠오르지 않으면 4절을 다시 읽는다. 목록이 42건이라 \"없다\"는 답은 거의 틀린다.",
+        "같은 변수를 부호나 표현만 뒤집은 것(예: 고점 대비 근접도 ↔ 고점 대비 낙폭,",
+        "변동성 ↔ 안정성)은 **새 후보가 아니라 같은 후보**다.",
+        "",
+    ]
+
+    # ── ③ 어느 쪽이 이미 채워졌나 (개념 축) ──────────────────────────────
+    out += ["## 3. 어느 쪽이 이미 채워졌나", ""]
     themes = Counter(r.get("jkp_theme") or UNMATCHED for r in rows)
     for theme in JKP_THEMES:
         out.append(f"- {theme}: {themes.get(theme, 0)}건 등록")
     if themes.get(UNMATCHED):
         out.append(f"- {UNMATCHED}: {themes[UNMATCHED]}건")
+    out.append("")
 
-    out += ["", "## 구조적 교훈", ""]
+    out += ["### 구조적 교훈", ""]
     if not reflections:
         out.append("아직 성찰 기록 없음.")
     for ref in reflections:
-        out.append(f"### {ref.get('campaign_id')} / {ref.get('epoch_id')}")
+        out.append(f"**{ref.get('campaign_id')} / {ref.get('epoch_id')}**")
         out.append("")
         for lesson in ref.get("lessons", []):
             out.append(
@@ -121,6 +163,19 @@ def render_lessons(rows: list[dict], reflections: list[dict], omitted: int) -> s
         for dup in ref.get("duplicates", []):
             out.append(f"- 중복: {dup}")
         out.append("")
+
+    # ── ④ 시행 전량 (스캔용, 가장 뒤) ────────────────────────────────────
+    out += [
+        "## 4. 시행 전량", "",
+        f"시행 {len(rows)}건" + (f" · 생략 {omitted}건" if omitted else " · 생략 없음"),
+        "", "| cycle | factor | family | ruleset | 테마 | 데이터 |",
+        "|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        out.append(
+            f"| `{r['cycle_id']}` | `{r['factor']}` | `{r['family']}` | "
+            f"`{r['ruleset_version']}` | {r.get('jkp_theme') or '-'} | {r.get('cat_data') or '-'} |"
+        )
     return "\n".join(out) + "\n"
 
 
