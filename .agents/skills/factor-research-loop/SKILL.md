@@ -18,6 +18,7 @@ Agent는 가설을 만들고 상태에 맞는 다음 행동을 선택한다. 판
 - `engine/gate.py`와 시행 원장: 판정 기준·임계값·시행 수의 유일한 소스다.
 - [전략 계약](references/strategy-contract.md): 후보를 쓰기 직전에 읽는다. [epoch 프로토콜](references/epoch-protocol.md): campaign 상태를 바꿀 때 읽는다.
 - `research/runs/<cycle>/report.md|result.json`: 필요한 유사 시행만 선택해서 읽는다. 설계를 수정하거나 설명할 때만 [연구 근거](references/research-rationale.md)를 읽는다.
+- `research/memory/lessons.md`: 시행 전량의 정체성·분류 축과 epoch 지시를 결정론 코드가 모은 색인. 후보를 쓰기 전에 읽는다. 판정 결과는 담기지 않는다.
 
 ## 불변조건
 
