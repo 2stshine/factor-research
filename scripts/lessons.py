@@ -14,6 +14,7 @@
     python scripts/lessons.py                   # lessons.md 생성
     python scripts/lessons.py --view crosstab   # 분류 교차표 (13테마 항상 전부)
     python scripts/lessons.py --view before-after
+    python scripts/lessons.py --view duplication  # 중복 재발: 예측→발생→해결
 """
 from __future__ import annotations
 
@@ -145,6 +146,58 @@ def render_crosstab(rows: list[dict]) -> str:
     return "\n".join(out)
 
 
+def render_duplication(rows: list[dict], reflections: list[dict], labels: dict[str, dict]) -> str:
+    """중복 재발을 예측·발생·해결 세 단으로 보인다.
+
+    novelty 는 엔진이 reflection 채널에 범주형으로 남긴 값이다. 판정 수치가 아니라
+    구조적 교훈이므로 봉인 반출 범위 안에 있다 — 이 뷰가 성립하는 근거다.
+    """
+    seen: dict[str, str] = {}          # factor -> novelty
+    order: list[str] = []
+    for ref in reflections:
+        for lesson in ref.get("lessons", []):
+            name = lesson.get("factor")
+            if name and name not in seen:
+                seen[name] = lesson.get("novelty") or "UNMEASURED"
+                order.append(name)
+    counts = Counter(seen.values())
+    repeats = [f for f in order if seen[f] in {"DUPLICATE", "RELATED"}]
+    parents = {r["factor"]: r.get("variant_of") for r in labels.values()}
+
+    out = [
+        "# 중복 연구가 실제로 일어나고 있다", "",
+        "## ① 예측 — 기억층이 없으면 중복이 난다", "",
+        "루프는 회차마다 독립이다. 앞 회차가 무엇을 시도했는지 다음 회차가 모르면",
+        "같은 자리를 다시 판다. 이 계획의 전제이자, 검증 가능한 예측이다.", "",
+        "## ② 발생 — 엔진이 스스로 중복이라고 찍었다", "",
+        f"성찰이 남은 {len(seen)}건의 신규성 판정:", "",
+    ]
+    for key in ("DUPLICATE", "RELATED", "INDEPENDENT", "UNMEASURED"):
+        if counts.get(key):
+            out.append(f"- `{key}` {counts[key]}건")
+    out += ["",
+            f"**{len(repeats)}건이 신규가 아니다.** 우리가 붙인 라벨과 무관하게",
+            "엔진이 판정한 값이다.", "",
+            "| factor | 신규성 | 라벨이 지목한 부모 |",
+            "|---|---|---|"]
+    for name in repeats:
+        out.append(f"| `{name}` | {seen[name]} | {parents.get(name) or '—'} |")
+
+    agree = [f for f in repeats if parents.get(f)]
+    out += ["",
+            "## ③ 해결 — 기억층이 이 정보를 다음 회차로 넘긴다", "",
+            "`lessons.md` 는 시행 전량의 정체성과 이 신규성 판정을 함께 싣는다.",
+            "다음 회차는 무엇이 이미 시도됐고 무엇이 무엇의 변형인지 보고 시작한다.", "",
+            f"라벨의 `variant_of` 와 엔진의 신규성 판정이 겹치는 건 {len(agree)}건이다 — ",
+            "서로 다른 두 경로가 같은 중복을 지목한다.", "",
+            "---", "",
+            "> **봉인 관련 주석** — `novelty` 는 `reflection.json` 채널의 **범주형 라벨**이다.",
+            "> 성과 수치도 판정 결과도 아니고, 엔진이 다음 epoch 에 넘기려고 만든 구조적 교훈이다.",
+            "> 따라서 이 뷰가 쓰는 값은 전부 봉인 반출 허용 범위 안에 있다.",
+            "> 반출 금지 대상 — 판정 결과, 실패한 검사의 이름, 성과 수치, 결과 집계 — 은 이 뷰에 없다.", ""]
+    return "\n".join(out)
+
+
 def render_before_after(rows: list[dict], latest: Path) -> str:
     """현행 latest.md 와 신규 컨텍스트의 반영 범위를 나란히 놓는다. latest.md 는 읽기만 한다."""
     before = 0
@@ -171,7 +224,7 @@ def render_before_after(rows: list[dict], latest: Path) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description="누적 시행 컨텍스트를 만든다")
     ap.add_argument("--research-dir", default="research", help="기본 research")
-    ap.add_argument("--view", choices=["lessons", "crosstab", "before-after"], default="lessons")
+    ap.add_argument("--view", choices=["lessons", "crosstab", "before-after", "duplication"], default="lessons")
     ap.add_argument("--out", help="지정하면 파일로 쓴다 (기본: lessons 만 저장)")
     args = ap.parse_args()
 
@@ -181,6 +234,8 @@ def main() -> None:
 
     if args.view == "crosstab":
         text = render_crosstab(rows)
+    elif args.view == "duplication":
+        text = render_duplication(rows, reflections, {r["cycle_id"]: r for r in read_jsonl(root / "memory" / "labels.jsonl")})
     elif args.view == "before-after":
         text = render_before_after(rows, root / "context" / "latest.md")
     else:
