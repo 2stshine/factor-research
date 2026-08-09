@@ -46,20 +46,20 @@
 
 ## 3. 어느 쪽이 이미 채워졌나
 
-- Accruals: 2건 등록
+- Accruals: 1건 등록
 - Debt Issuance: 1건 등록
 - Investment: 4건 등록
-- Low Leverage: 4건 등록
-- Low Risk: 6건 등록
+- Low Leverage: 5건 등록
+- Low Risk: 7건 등록
 - Momentum: 1건 등록
 - Profit Growth: 3건 등록
 - Profitability: 3건 등록
-- Quality: 5건 등록
+- Quality: 4건 등록
 - Seasonality: 1건 등록
-- Short-Term Reversal: 2건 등록
+- Short-Term Reversal: 1건 등록
 - Size: 0건 등록
 - Value: 7건 등록
-- (미매칭): 3건
+- (미매칭): 4건
 
 ### 구조적 교훈
 
@@ -136,12 +136,12 @@
 | `cycle-0031-market_beta_36m` | `market_beta_36m` | `market_beta` | `fr-3.5.0` | Low Risk | Price |
 | `cycle-0032-paid_in_capital_ratio` | `paid_in_capital_ratio` | `equity_composition` | `fr-3.5.0` | - | Accounting |
 | `cycle-0033-current_liability_concentration` | `current_liability_concentration` | `liability_maturity_structure` | `fr-3.5.0` | Low Leverage | Accounting |
-| `cycle-0034-net_working_capital_to_assets` | `net_working_capital_to_assets` | `working_capital_buffer` | `fr-3.9.0` | Accruals | Accounting |
+| `cycle-0034-net_working_capital_to_assets` | `net_working_capital_to_assets` | `working_capital_buffer` | `fr-3.9.0` | Low Leverage | Accounting |
 | `cycle-0035-operating_return_on_capital_employed` | `operating_return_on_capital_employed` | `capital_employment_efficiency` | `fr-3.9.0` | Profitability | Accounting |
-| `cycle-0036-operating_margin_change_12m` | `operating_margin_change_12m` | `operating_margin_expansion` | `fr-3.9.0` | Quality | Accounting |
-| `cycle-0037-posttax_income_conversion` | `posttax_income_conversion` | `tax_conversion_efficiency` | `fr-3.9.0` | Profit Growth | Accounting |
+| `cycle-0036-operating_margin_change_12m` | `operating_margin_change_12m` | `operating_margin_expansion` | `fr-3.9.0` | Profit Growth | Accounting |
+| `cycle-0037-posttax_income_conversion` | `posttax_income_conversion` | `tax_conversion_efficiency` | `fr-3.9.0` | - | Accounting |
 | `cycle-0038-noncurrent_asset_encumbrance` | `noncurrent_asset_encumbrance` | `long_term_asset_encumbrance` | `fr-3.9.0` | Low Leverage | Accounting |
 | `cycle-0039-turnover_volatility_12m` | `turnover_volatility_12m` | `trading_activity_instability` | `fr-3.9.0` | Profitability | Trading |
 | `cycle-0040-equity_growth_12m` | `equity_growth_12m` | `equity_growth` | `fr-3.9.0` | Investment | Accounting |
 | `cycle-0041-positive_return_share_12m` | `positive_return_share_12m` | `return_consistency` | `fr-3.9.0` | - | Price |
-| `cycle-0042-return_kurtosis_24m` | `return_kurtosis_24m` | `return_tail_concentration` | `fr-3.9.0` | Short-Term Reversal | Price |
+| `cycle-0042-return_kurtosis_24m` | `return_kurtosis_24m` | `return_tail_concentration` | `fr-3.9.0` | Low Risk | Price |

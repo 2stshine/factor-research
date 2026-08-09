@@ -67,20 +67,33 @@ MAP = {
     "current_liability_concentration": ("Leverage", "low", "at_be", "low", None),
     "trading_turnover_20d":          (None, "low", "turnover_126d", "high", None),
     # cycle-0034~0042
-    "net_working_capital_to_assets": ("quick", "low", "cowc_gr1a", "low", None),
+    "net_working_capital_to_assets": ("quick", "low", "z_score", "low", None),
     "operating_return_on_capital_employed": ("OperProf", "low", "ebit_bev", "high", None),
-    "operating_margin_change_12m":   (None, "low", "dgp_dsale", "low", "operating_roa_change_12m"),
-    "posttax_income_conversion":     (None, "low", "tax_gr1a", "low", None),
+    "operating_margin_change_12m":   (None, "low", "ocf_at_chg1", "low", "operating_roa_change_12m"),
+    "posttax_income_conversion":     ("ETR", "low", None, "low", None),
     "noncurrent_asset_encumbrance":  ("Leverage", "low", "at_be", "low", "current_liability_concentration"),
     "turnover_volatility_12m":       (None, "low", "turnover_var_126d", "high", "trading_turnover_20d"),
     "equity_growth_12m":             ("AssetGrowth", "low", "be_gr1a", "high", None),
     "positive_return_share_12m":     (None, "low", None, "low", None),
-    "return_kurtosis_24m":           ("ReturnSkew", "low", "rskew_21d", "low", "return_skewness_24m"),
+    "return_kurtosis_24m":           ("ReturnSkew", "low", "rmax1_21d", "low", "return_skewness_24m"),
 }
 
 # OSAP 의 GScholarCites 는 스크래핑 값이라 일부가 실제와 크게 어긋난다.
 # Accruals(Sloan 1996)=56 이 확인된 예다. 값은 출처 그대로 두고 의심 표시만 단다.
 SUSPECT_CITES = {"Accruals"}
+
+# 앵커가 근사일 때 그 사실을 evidence 에 남긴다. 산식이 아니라 메커니즘으로 붙인 건은
+# 읽는 쪽이 근사임을 알아야 재검토가 가능하다.
+NOTES = {
+    "return_kurtosis_24m":
+        "첨도 자체는 JKP·OSAP 무대응, 메커니즘(복권형 수요) 기준 최근접 근사 = rmax1_21d",
+    "posttax_income_conversion":
+        "OSAP ETR(txt/pi)과 분모가 같고 우리 비율은 1-ETR. JKP 는 비율형 세금 특성이 없어 비움",
+    "net_working_capital_to_assets":
+        "JKP cowc_gr1a 는 변화량이라 부적합. 완충력 메커니즘 기준 z_score 계열로 근사",
+    "operating_margin_change_12m":
+        "OSAP 무대응. 변화 축이므로 부모(operating_roa_change_12m)와 같은 Profit Growth 로 정렬",
+}
 
 # needs 는 재무 컬럼만 선언한다(SKILL.md). 가격·거래 컬럼은 compute 본문에서 읽는다.
 TRADE_COLS = {"adv20", "trading_value", "amount", "dolvol"}
@@ -152,7 +165,8 @@ def main() -> None:
             "variant_of": parent,
             "analysis": None,
             "confidence": "high" if (osap_conf == "high" and jkp_conf == "high") else "low",
-            "evidence": f"runs/{h['cycle_id']}/report.md; factors/candidates/{factor}.py",
+            "evidence": f"runs/{h['cycle_id']}/report.md; factors/candidates/{factor}.py"
+                        + (f"; 근사: {NOTES[factor]}" if factor in NOTES else ""),
         })
 
     Path(args.out).write_text(
