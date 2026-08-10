@@ -223,7 +223,14 @@ def _rebuild_scoped_panel(
     # metadata such as last_day/n_dead that lies beyond the frozen cutoff.
     meta = {
         key: pan.meta.get(key)
-        for key in ("source", "return_field")
+        for key in (
+            "source",
+            "return_field",
+            "return_methodology",
+            "return_contract_status",
+            "return_contract_run_id",
+            "dividend_feature_contract",
+        )
         if key in pan.meta
     }
     meta.update(meta_updates)
@@ -335,7 +342,14 @@ def _scope_confirmation_panel(
     dead = last_seen[last_seen < closure_as_of - pd.Timedelta(days=P.INACTIVE_DAYS)]
     meta = {
         key: pan.meta.get(key)
-        for key in ("source", "return_field")
+        for key in (
+            "source",
+            "return_field",
+            "return_methodology",
+            "return_contract_status",
+            "return_contract_run_id",
+            "dividend_feature_contract",
+        )
         if key in pan.meta
     }
     meta.update({

@@ -19,7 +19,7 @@ from engine.factors import Factor
 from engine.panel import Panel
 
 
-RULESET_VERSION = "fr-3.10.0"
+RULESET_VERSION = "fr-3.10.1"
 RESEARCH_START = pd.Period("2018-03", freq="M")
 EVALUATION_PHASES = {"discovery", "full"}
 

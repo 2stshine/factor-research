@@ -45,6 +45,13 @@ def test_query_only_contract_rejects_dml_and_requires_closed_month_range():
         "FROM public.price_daily "
         "WHERE month BETWEEN %(start_month)s AND %(end_month)s"
     )
+    implementation.validate_query_only_sql(
+        "SELECT r.asset_id, r.applied_trade_date AS as_of_date, "
+        "r.adjusted_cash_amount AS value, 1 AS rank "
+        "FROM public.price_return_contract c "
+        "JOIN public.dividend_event_resolution r ON r.quality_run_id = c.quality_run_id "
+        "WHERE r.applied_trade_date BETWEEN %(start_month)s AND %(end_month)s"
+    )
     with pytest.raises(ValueError, match="SELECT 또는 WITH|변경 명령"):
         implementation.validate_query_only_sql(
             "INSERT INTO x SELECT * FROM y WHERE m BETWEEN %(start_month)s AND %(end_month)s"

@@ -124,7 +124,7 @@ discovery 자동 확인 대상은 OOS가 봉인되어 있으므로 soft fail이 
 강제 부여하고 세 시나리오 전부에서 부호가 유지되어야 한다. 안 하면 롱레그의 최악 실현값만
 표본에서 증발한다.
 
-## 현재 판정 기준: `fr-3.10.0`
+## 현재 판정 기준: `fr-3.10.1`
 
 판정은 IC 효과크기·시간 강건성·다중검정·표본 무결성·기존 Gold와의 비중복을 함께 본다.
 절대 포트폴리오 수익률과 비용 지표는 운용 진단이며 팩터 승격선이 아니다. 지표 정의, 모든
@@ -229,7 +229,7 @@ REGISTRY.add(Factor(
   연구자의 시행을 합산할 수 있다
 - 귀무 보정은 같은 Silver snapshot·ruleset·campaign family, Gold 신호 digest에 결박한다. 필요한
   생성 수와 오류율 기준은 [판정 기준](docs/factor-promotion-criteria.md)을 따른다
-- 현재 ruleset이 `fr-3.10.0`으로 변경됐으므로 이 버전의 귀무 보정을 새로 만들기 전에는
+- 현재 ruleset이 `fr-3.10.1`으로 변경됐으므로 이 버전의 귀무 보정을 새로 만들기 전에는
   안전장치상 `PROMOTE`가 나오지 않는다
 - `epoch-1.5`는 campaign 시작 때 분리한 36개월 OOS를 후보 family에 한 번만 공개하며, 구현 parity·campaign reveal·별도 사람 검토 전
   `publish --apply`를 차단한다

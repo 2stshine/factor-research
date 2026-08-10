@@ -349,6 +349,8 @@ def test_campaign_discovery_scope_honors_exact_cutoff_and_oos_boundary():
     assert scoped.monthly["ym"].max() == pd.Period("2024-02", freq="M")
     assert scoped.monthly["trade_date"].max() == pd.Timestamp("2024-02-29")
     assert "f_leaked_full_sample" not in scoped.monthly
+    assert scoped.meta["return_methodology"] == RETURN_META["return_methodology"]
+    assert scoped.meta["return_contract_status"] == "CERTIFIED"
     with pytest.raises(ValueError, match="정확히 재현"):
         run_script._scope_discovery_panel(
             panel, data_cutoff="2024-02-15", oos_start="2024-03",
@@ -363,6 +365,7 @@ def test_confirmation_scope_discards_months_after_fixed_oos_label():
             oos_start="2021-01", oos_end="2023-12",
         )
     panel = _monthly_panel("2020-12", "2024-03")
+    panel.meta.update({"source": "RDS public Silver", **RETURN_META})
     panel.monthly["f_leaked_full_sample"] = 1.0
     scoped = run_script._scope_confirmation_panel(
         panel, data_cutoff="2020-12-31",
@@ -370,6 +373,8 @@ def test_confirmation_scope_discards_months_after_fixed_oos_label():
     )
     assert scoped.monthly["ym"].max() == pd.Period("2024-01", freq="M")
     assert scoped.meta["confirmation_closure_month"] == "2024-02"
+    assert scoped.meta["return_methodology"] == RETURN_META["return_methodology"]
+    assert scoped.meta["return_contract_status"] == "CERTIFIED"
     assert "f_leaked_full_sample" not in scoped.monthly
 
 
@@ -611,7 +616,7 @@ def test_composite_rank_signals_are_rejected_but_single_ratio_is_allowed():
 
 
 def test_return_hurdles_are_not_part_of_ruleset_v3():
-    assert gate.RULESET_VERSION == "fr-3.10.0"
+    assert gate.RULESET_VERSION == "fr-3.10.1"
     assert "net_alpha" not in gate.TH
     assert "net_ir" not in gate.TH
     assert "dsr_probability" not in gate.TH
@@ -1787,7 +1792,7 @@ def test_campaign_finalize_auto_qualifies_every_discovery_pass(tmp_path):
     )
     context = research.write_context(panel, Registry(), research_dir=tmp_path).read_text()
     assert "| `candidate_a` | `candidate_a` | `candidate_a` |" in context
-    assert "| `fr-3.10.0` | PROVISIONAL | - |" in context
+    assert "| `fr-3.10.1` | PROVISIONAL | - |" in context
     assert "old-full-sample" in context
     assert "WITHHELD_POST_CUTOFF" in context
     assert "research/runs/old/report.md" not in context

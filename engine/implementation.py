@@ -34,9 +34,11 @@ _ALLOWED_SILVER_RELATIONS = frozenset({
     "public.asset",
     "public.asset_identifier",
     "public.corporate_action",
+    "public.dividend_event_resolution",
     "public.dq_run",
     "public.fundamental",
     "public.price_daily",
+    "public.price_return_contract",
 })
 _CTE_NAME = re.compile(r"(?:\bwith|,)\s*([a-z_][a-z0-9_]*)\s+as\s*\(", re.I)
 _RELATION = re.compile(

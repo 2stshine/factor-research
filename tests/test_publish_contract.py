@@ -96,7 +96,17 @@ def test_gold_trial_history_prefers_research_hash_with_legacy_fallback():
 
 @pytest.mark.parametrize(
     "factor_name",
-    ["trading_turnover_20d", "paid_in_capital_ratio"],
+    [
+        "amihud_illiquidity_1m",
+        "dividend_event_frequency_ttm",
+        "dividend_yield_ttm",
+        "max_daily_return_1m",
+        "net_equity_issuance_price_adjusted_12m",
+        "operating_income_to_liabilities",
+        "paid_in_capital_ratio",
+        "realized_volatility_252d",
+        "trading_turnover_20d",
+    ],
 )
 def test_research_candidate_binds_to_real_teamalpha_sql(factor_name: str):
     load_candidates(factor_registry.REGISTRY)
