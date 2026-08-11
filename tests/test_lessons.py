@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+import importlib.util
+import inspect
 import json
 import re
 import subprocess
@@ -19,6 +21,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 RESEARCH = REPO / "research"
+sys.path.insert(0, str(REPO))
 
 # 컨텍스트에 나오면 안 되는 판정 흔적. 팩터명 일부로 등장하는 경우를 배제하려고
 # 독립 식별자로만 찾는다 (`net_roa` 의 net 은 metrics 키가 아니다).
@@ -62,6 +65,60 @@ def test_context_carries_no_metric_keys(lessons):
     for token in FORBIDDEN_TOKENS:
         assert not re.search(rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])", lessons), \
             f"금지 필드가 컨텍스트로 나갔다: {token}"
+
+
+def _lessons_module():
+    """생성기를 모듈로 들여온다. 봉인 판정을 테스트가 다시 구현하지 않기 위해서다."""
+    spec = importlib.util.spec_from_file_location("lessons_mod", REPO / "scripts" / "lessons.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_sealed_cycles_carry_no_evaluation_labels(lessons):
+    """봉인에 걸린 시행 줄에는 평가에서 파생된 라벨이 없어야 한다.
+
+    이 작업이 고친 결함 그 자체다. `outcome` 은 `failed_tiers` 의 순함수라
+    이름만 바뀐 판정이고, `novelty` 는 `strongest_relationship` 의 3분할이다.
+    필드명 가드는 값이 바뀌어 있어서 못 잡는다.
+    """
+    module = _lessons_module()
+    root = RESEARCH
+    history, _, reflections = module.load(root)
+    visible_cutoff, active = module.seal_state(root, None)
+    sealed = module.sealed_lessons(
+        history, reflections, module.sealed_cycles(history, visible_cutoff, active))
+    assert sealed, "봉인 대상이 하나도 없다. 판정이 무력화됐는지 확인하라"
+
+    for _, _, name in sealed:
+        for line in lessons.splitlines():
+            if f"`{name}`" not in line:
+                continue
+            for word in module.RESULT_VOCABULARY:
+                assert not re.search(rf"(?<![A-Za-z0-9_]){re.escape(word)}(?![A-Za-z0-9_])", line), \
+                    f"봉인된 {name} 의 평가 파생 라벨이 컨텍스트로 나갔다: {word}"
+
+
+def test_seal_rule_is_the_engine_function_not_a_copy():
+    """판정식을 우리가 들고 있으면 엔진이 경계를 바꿀 때 우리 것만 낡는다."""
+    module = _lessons_module()
+    from engine import research as engine_research
+
+    assert module.engine_research.exposed_after_cutoff is engine_research.exposed_after_cutoff
+    source = (REPO / "scripts" / "lessons.py").read_text(encoding="utf-8")
+    assert "engine_research.exposed_after_cutoff(" in source, "엔진 판정을 부르지 않는다"
+    assert 'pd.Timestamp(row["data_cutoff"])' not in source, "봉인 비교식을 자체 구현했다"
+
+
+def test_result_vocabulary_is_read_from_the_engine():
+    """어휘 목록을 손으로 적어두면 엔진이 값을 늘릴 때 가드만 낡는다."""
+    module = _lessons_module()
+    from engine import epochs
+
+    for word in re.findall(r'return\s+"([A-Z][A-Z_]+)"', inspect.getsource(epochs._failure_bucket)):
+        assert word in module.RESULT_VOCABULARY, f"엔진 outcome 어휘가 가드에 빠졌다: {word}"
+    for word in re.findall(r'novelty\s*=\s*"([A-Z][A-Z_]+)"', inspect.getsource(epochs.mark_evaluated)):
+        assert word in module.RESULT_VOCABULARY, f"엔진 novelty 어휘가 가드에 빠졌다: {word}"
 
 
 def test_context_carries_no_decimal_numbers(lessons):

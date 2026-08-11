@@ -5,11 +5,20 @@
 `research/context/latest.md` 는 읽지도 쓰지도 않는다.
 
 내보내는 것은 두 가지뿐이다.
-  ① 정체성   cycle_id · factor · family · ruleset_version · 축 라벨
-  ② 교훈     reflection.json 의 lessons[] (outcome · novelty) 와 duplicates
+  ① 정체성   cycle_id · factor · family · ruleset_version · 축 라벨 · variant_of
+  ② 지시     reflection.json 의 permitted_next_actions · forbidden_actions 원문
 
-내보내지 않는 것 — verdict, failed_checks, strongest_relationship, 결과 집계와 빈도,
-성과 수치, 파라미터 수정안, analysis. 봉인 OOS 를 지키기 위한 제약이며 WHITELIST 가 강제한다.
+①은 평가 **이전**에 정해지는 정보이고, ②는 엔진이 다음 epoch 에 넘기려고 만든 공인 통로다.
+둘 다 봉인 밖이다.
+
+내보내지 않는 것 — verdict, failed_checks, strongest_relationship, 성과 수치, 결과 집계,
+그리고 **평가에서 파생된 라벨 일체**(outcome · novelty · duplicates). 뒤쪽 셋은 이름만
+범주형일 뿐 게이트 결과의 함수다. `_failure_bucket` 은 `failed_tiers` 의 순함수이고
+`novelty` 는 `strongest_relationship` 을 3분할한 값이다.
+
+봉인 판정은 우리가 정하지 않는다. `engine.research.exposed_after_cutoff` 를 그대로 부른다 —
+`latest.md` 가 `WITHHELD_POST_CUTOFF` 를 찍는 바로 그 규칙이다. 여기에 reflection 의
+`oos_status` 를 함께 본다. 경계가 바뀌면 엔진 한 곳만 고치면 된다.
 
     python scripts/lessons.py                   # lessons.md 생성
     python scripts/lessons.py --view crosstab   # 분류 교차표 (13테마 항상 전부)
@@ -19,10 +28,18 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import re
+import sys
 from collections import Counter
 from pathlib import Path
+
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from engine import epochs, research as engine_research
 
 # 컨텍스트로 나갈 수 있는 필드. 이 목록 밖은 어떤 경로로도 출력하지 않는다.
 WHITELIST = frozenset({
@@ -44,6 +61,62 @@ JKP_THEMES = (
 )
 CAT_DATA = ("Accounting", "Price", "Trading", "Event", "Analyst", "Options", "13F", "Other")
 UNMATCHED = "(미매칭)"
+
+# 봉인된 시행의 자리에 남기는 표시. `latest.md` 의 WITHHELD_POST_CUTOFF 와 같은 뜻이지만
+# 그 문자열 자체가 판정 어휘라서 쓰지 않는다.
+SEALED_NOTE = "결과는 봉인 경계 뒤라 싣지 않는다"
+
+# reflection 의 oos_status 가 이 값일 때만 그 epoch 의 평가 파생 라벨이 봉인 밖이다.
+RELEASED_OOS_STATUSES = frozenset({"REVEALED"})
+
+
+def _engine_result_vocabulary() -> frozenset[str]:
+    """평가 파생 라벨의 값 어휘를 엔진 소스에서 뽑는다.
+
+    목록을 여기에 옮겨 적으면 엔진이 값을 늘릴 때 우리 가드만 낡는다. 뽑히지 않으면
+    가드가 조용히 약해지므로 실패로 처리한다.
+    """
+    outcomes = set(re.findall(
+        r'return\s+"([A-Z][A-Z_]+)"', inspect.getsource(epochs._failure_bucket)))
+    novelties = set(re.findall(
+        r'novelty\s*=\s*"([A-Z][A-Z_]+)"', inspect.getsource(epochs.mark_evaluated)))
+    if len(outcomes) < 5 or len(novelties) < 3:
+        raise SystemExit(
+            "엔진에서 평가 파생 라벨의 어휘를 뽑지 못했다. "
+            "engine/epochs.py 의 _failure_bucket · mark_evaluated 구조가 바뀌었는지 확인하라."
+        )
+    return frozenset(outcomes | novelties)
+
+
+RESULT_VOCABULARY = _engine_result_vocabulary()
+
+
+def seal_state(root: Path, context_cutoff: str | None) -> tuple[object, str | None]:
+    """엔진과 같은 방식으로 현재 컨텍스트의 가시 cutoff 와 진행 campaign 을 정한다."""
+    active = []
+    for row in epochs.context_rows(root):
+        campaign = epochs.load_campaign(root, row["campaign_id"])
+        if engine_research.is_active_campaign(campaign):
+            active.append(campaign)
+    if len(active) > 1:
+        raise SystemExit("동시에 진행 중인 current-protocol campaign이 둘 이상입니다")
+    if active:
+        return pd.Timestamp(active[0]["discovery"]["data_cutoff"]).normalize(), active[0]["campaign_id"]
+    if context_cutoff:
+        return pd.Timestamp(context_cutoff).normalize(), None
+    # 진행 campaign 도 인자도 없으면 경계를 알 수 없다. 열지 않고 닫는다.
+    return None, None
+
+
+def sealed_cycles(history: list[dict], visible_cutoff, active_campaign_id: str | None) -> set[str]:
+    """봉인에 걸리는 cycle_id. 판정식은 엔진 것을 그대로 부른다."""
+    if visible_cutoff is None:
+        return {h["cycle_id"] for h in history}      # 경계 미상 = 전량 봉인
+    return {
+        h["cycle_id"] for h in history
+        if engine_research.exposed_after_cutoff(
+            h, visible_cutoff=visible_cutoff, active_campaign_id=active_campaign_id)
+    }
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -80,7 +153,28 @@ def identity_rows(history: list[dict], labels: dict[str, dict]) -> list[dict]:
     return rows
 
 
-def render_lessons(rows: list[dict], reflections: list[dict], omitted: int) -> str:
+def sealed_lessons(
+    history: list[dict], reflections: list[dict], sealed_ids: set[str]
+) -> set[tuple]:
+    """평가 파생 라벨을 가려야 할 (campaign, epoch, factor). 매핑이 안 되면 가린다."""
+    index = {
+        (h.get("campaign_id"), h.get("epoch_id"), h["factor"]): h["cycle_id"]
+        for h in history
+    }
+    out = set()
+    for ref in reflections:
+        epoch_sealed = ref.get("oos_status") not in RELEASED_OOS_STATUSES
+        for lesson in ref.get("lessons", []) or []:
+            key = (ref.get("campaign_id"), ref.get("epoch_id"), lesson.get("factor"))
+            cycle = index.get(key)
+            if epoch_sealed or cycle is None or cycle in sealed_ids:
+                out.add(key)
+    return out
+
+
+def render_lessons(
+    rows: list[dict], reflections: list[dict], omitted: int, sealed: set[tuple]
+) -> str:
     """지시 먼저, 데이터 나중. 읽는 쪽이 제약을 맨 앞에서 만나게 배치한다."""
     latest = reflections[-1] if reflections else {}
     out = [
@@ -155,13 +249,23 @@ def render_lessons(rows: list[dict], reflections: list[dict], omitted: int) -> s
     for ref in reflections:
         out.append(f"**{ref.get('campaign_id')} / {ref.get('epoch_id')}**")
         out.append("")
+        epoch_sealed = False
         for lesson in ref.get("lessons", []):
+            key = (ref.get("campaign_id"), ref.get("epoch_id"), lesson.get("factor"))
+            if key in sealed:
+                epoch_sealed = True
+                out.append(f"- `{lesson.get('factor')}` ({lesson.get('family')}) — 시행함")
+                continue
             out.append(
                 f"- `{lesson.get('factor')}` ({lesson.get('family')}) — "
                 f"{lesson.get('outcome')} · 신규성 {lesson.get('novelty')}"
             )
-        for dup in ref.get("duplicates", []):
-            out.append(f"- 중복: {dup}")
+        # duplicates 는 같은 상관 신호에서 나온 평가 파생값이라 봉인되면 함께 가린다.
+        if epoch_sealed:
+            out.append(f"- {SEALED_NOTE}. 무엇을 시도했는지만 남는다.")
+        else:
+            for dup in ref.get("duplicates", []):
+                out.append(f"- 중복: {dup}")
         out.append("")
 
     # ── ④ 시행 전량 (스캔용, 가장 뒤) ────────────────────────────────────
@@ -201,55 +305,71 @@ def render_crosstab(rows: list[dict]) -> str:
     return "\n".join(out)
 
 
-def render_duplication(rows: list[dict], reflections: list[dict], labels: dict[str, dict]) -> str:
+def render_duplication(
+    rows: list[dict], reflections: list[dict], labels: dict[str, dict], sealed: set[tuple]
+) -> str:
     """중복 재발을 예측·발생·해결 세 단으로 보인다.
 
-    novelty 는 엔진이 reflection 채널에 범주형으로 남긴 값이다. 판정 수치가 아니라
-    구조적 교훈이므로 봉인 반출 범위 안에 있다 — 이 뷰가 성립하는 근거다.
+    **사람이 읽는 분석 뷰이지 에이전트 컨텍스트가 아니다.** `lessons.md` 만 파일로 쓰이고
+    SKILL.md 가 등록한다. 그래서 여기서는 봉인된 판정을 수치로 세지 않고, 몇 건이 가려졌는지만
+    밝힌 뒤 봉인 밖 신호인 라벨의 `variant_of` 로 같은 주장을 세운다.
     """
-    seen: dict[str, str] = {}          # factor -> novelty
-    order: list[str] = []
+    measured: dict[str, str] = {}       # factor -> novelty (봉인 밖만)
+    withheld: list[str] = []
     for ref in reflections:
         for lesson in ref.get("lessons", []):
             name = lesson.get("factor")
-            if name and name not in seen:
-                seen[name] = lesson.get("novelty") or "UNMEASURED"
-                order.append(name)
-    counts = Counter(seen.values())
-    repeats = [f for f in order if seen[f] in {"DUPLICATE", "RELATED"}]
+            if not name:
+                continue
+            key = (ref.get("campaign_id"), ref.get("epoch_id"), name)
+            if key in sealed:
+                if name not in withheld:
+                    withheld.append(name)
+                continue
+            measured.setdefault(name, lesson.get("novelty") or "UNMEASURED")
+    counts = Counter(measured.values())
+    repeats = [f for f, v in measured.items() if v in {"DUPLICATE", "RELATED"}]
     parents = {r["factor"]: r.get("variant_of") for r in labels.values()}
+    variants = [f for f, p in parents.items() if p]
 
     out = [
         "# 중복 연구가 실제로 일어나고 있다", "",
         "## ① 예측 — 기억층이 없으면 중복이 난다", "",
         "루프는 회차마다 독립이다. 앞 회차가 무엇을 시도했는지 다음 회차가 모르면",
         "같은 자리를 다시 판다. 이 계획의 전제이자, 검증 가능한 예측이다.", "",
-        "## ② 발생 — 엔진이 스스로 중복이라고 찍었다", "",
-        f"성찰이 남은 {len(seen)}건의 신규성 판정:", "",
+        "## ② 발생", "",
     ]
-    for key in ("DUPLICATE", "RELATED", "INDEPENDENT", "UNMEASURED"):
-        if counts.get(key):
-            out.append(f"- `{key}` {counts[key]}건")
-    out += ["",
-            f"**{len(repeats)}건이 신규가 아니다.** 우리가 붙인 라벨과 무관하게",
-            "엔진이 판정한 값이다.", "",
-            "| factor | 신규성 | 라벨이 지목한 부모 |",
-            "|---|---|---|"]
-    for name in repeats:
-        out.append(f"| `{name}` | {seen[name]} | {parents.get(name) or '—'} |")
+    if withheld:
+        out += [
+            f"성찰이 남은 {len(withheld) + len(measured)}건 중 **{len(withheld)}건은 봉인 경계 뒤**라",
+            "엔진의 신규성 판정을 여기에 세지 않는다. 판정을 반출하지 않고도 중복을 말할 수 있는",
+            "경로가 아래 ③이다.", "",
+        ]
+    if measured:
+        out += [f"봉인 밖 {len(measured)}건의 신규성 판정:", ""]
+        for key in ("DUPLICATE", "RELATED", "INDEPENDENT", "UNMEASURED"):
+            if counts.get(key):
+                out.append(f"- `{key}` {counts[key]}건")
+        out += ["", f"**{len(repeats)}건이 신규가 아니다.**", ""]
 
-    agree = [f for f in repeats if parents.get(f)]
+    out += [
+        "## ③ 해결 — 봉인 밖 신호로 같은 것을 말한다", "",
+        "라벨의 `variant_of` 는 공개 분류(OSAP·JKP)와 정의를 보고 붙인다. **평가 결과를 쓰지 않는다.**",
+        f"시행 {len(rows)}건 중 **{len(variants)}건이 다른 시행의 변형**으로 지목돼 있다.", "",
+        "| factor | 변형의 부모 | 테마 |",
+        "|---|---|---|",
+    ]
+    themes = {r["factor"]: r.get("jkp_theme") for r in labels.values()}
+    for name in variants:
+        out.append(f"| `{name}` | `{parents[name]}` | {themes.get(name) or '—'} |")
     out += ["",
-            "## ③ 해결 — 기억층이 이 정보를 다음 회차로 넘긴다", "",
-            "`lessons.md` 는 시행 전량의 정체성과 이 신규성 판정을 함께 싣는다.",
-            "다음 회차는 무엇이 이미 시도됐고 무엇이 무엇의 변형인지 보고 시작한다.", "",
-            f"라벨의 `variant_of` 와 엔진의 신규성 판정이 겹치는 건 {len(agree)}건이다 — ",
-            "서로 다른 두 경로가 같은 중복을 지목한다.", "",
+            "`lessons.md` 는 이 계보와 시행 전량의 정체성을 다음 회차로 넘긴다.",
+            "판정이 아니라 **무엇을 이미 시도했는가**가 중복을 막는다.", "",
             "---", "",
-            "> **봉인 관련 주석** — `novelty` 는 `reflection.json` 채널의 **범주형 라벨**이다.",
-            "> 성과 수치도 판정 결과도 아니고, 엔진이 다음 epoch 에 넘기려고 만든 구조적 교훈이다.",
-            "> 따라서 이 뷰가 쓰는 값은 전부 봉인 반출 허용 범위 안에 있다.",
-            "> 반출 금지 대상 — 판정 결과, 실패한 검사의 이름, 성과 수치, 결과 집계 — 은 이 뷰에 없다.", ""]
+            "> **봉인 관련 주석** — `outcome` 은 `failed_tiers` 의 순함수이고 `novelty` 는",
+            "> `strongest_relationship` 을 3분할한 값이다. 둘 다 이름만 범주형일 뿐 게이트 결과의",
+            "> 함수라, 봉인에 걸리는 시행에서는 반출하지 않는다. 위 ③의 `variant_of` 는 공개 분류에서",
+            "> 유도한 값이라 경계와 무관하다.", ""]
     return "\n".join(out)
 
 
@@ -281,20 +401,32 @@ def main() -> None:
     ap.add_argument("--research-dir", default="research", help="기본 research")
     ap.add_argument("--view", choices=["lessons", "crosstab", "before-after", "duplication"], default="lessons")
     ap.add_argument("--out", help="지정하면 파일로 쓴다 (기본: lessons 만 저장)")
+    ap.add_argument(
+        "--context-cutoff",
+        help="진행 중 campaign 이 없을 때의 가시 cutoff. 없으면 전량 봉인으로 본다",
+    )
     args = ap.parse_args()
 
     root = Path(args.research_dir)
     history, labels, reflections = load(root)
     rows = identity_rows(history, labels)
 
+    visible_cutoff, active_campaign_id = seal_state(root, args.context_cutoff)
+    sealed_ids = sealed_cycles(history, visible_cutoff, active_campaign_id)
+    sealed = sealed_lessons(history, reflections, sealed_ids)
+
     if args.view == "crosstab":
         text = render_crosstab(rows)
     elif args.view == "duplication":
-        text = render_duplication(rows, reflections, {r["cycle_id"]: r for r in read_jsonl(root / "memory" / "labels.jsonl")})
+        text = render_duplication(
+            rows, reflections,
+            {r["cycle_id"]: r for r in read_jsonl(root / "memory" / "labels.jsonl")},
+            sealed,
+        )
     elif args.view == "before-after":
         text = render_before_after(rows, root / "context" / "latest.md")
     else:
-        text = render_lessons(rows, reflections, omitted=0)
+        text = render_lessons(rows, reflections, omitted=0, sealed=sealed)
 
     # 부분 문자열이 아니라 독립 식별자로만 잡는다. `net_roa` 의 net, `trading_turnover_20d` 의
     # turnover 는 팩터명의 일부이지 metrics 키가 아니다.
@@ -304,6 +436,21 @@ def main() -> None:
     )
     if leaked:
         raise SystemExit(f"금지 필드가 출력에 들어갔다: {', '.join(leaked)}")
+
+    # 평가 파생 라벨의 **값**은 위 필드명 가드에 안 걸린다 — 이름이 바뀌어 있기 때문이다.
+    # 봉인된 시행을 언급하는 줄에 그 어휘가 있으면 막는다. 봉인 밖 시행은 실어도 된다.
+    for name in sorted(factor for _, _, factor in sealed):
+        for line in text.splitlines():
+            if f"`{name}`" not in line:
+                continue
+            hit = sorted(
+                w for w in RESULT_VOCABULARY
+                if re.search(rf"(?<![A-Za-z0-9_]){re.escape(w)}(?![A-Za-z0-9_])", line)
+            )
+            if hit:
+                raise SystemExit(
+                    f"봉인된 시행 {name} 의 평가 파생 라벨이 출력에 들어갔다: {', '.join(hit)}"
+                )
 
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")

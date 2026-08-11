@@ -159,10 +159,23 @@ evidence          근거 위치 (예: "runs/cycle-0031/report.md ## Mechanism")
 
 `lessons.md` 생성기는 아래만 내보낸다.
 
-- **정체성** — `cycle_id`, `factor`, `family`, `ruleset_version`, 축 1·2·3 값
-- **reflection 교훈** — `reflection.json` 의 `lessons[]`(`outcome`·`novelty`)와 `duplicates`
+- **정체성** — `cycle_id`, `factor`, `family`, `ruleset_version`, 축 1·2·3 값, `variant_of`
+- **엔진 지시** — `reflection.json` 의 `permitted_next_actions` · `forbidden_actions` 원문
+
+앞은 평가 **이전**에 정해지는 정보고, 뒤는 엔진이 다음 epoch 에 넘기려고 만든 공인 통로다.
 
 **내보내지 않는 것** — `verdict`, `failed_checks`, `strongest_relationship`, 결과 집계와 빈도,
-성과 수치, 파라미터 수정안, `analysis`.
+성과 수치, 파라미터 수정안, `analysis`, 그리고 **평가에서 파생된 라벨 일체**
+(`outcome` · `novelty` · `duplicates`).
+
+> **왜 뒤쪽 셋이 여기 있나** — 처음에는 "범주형이라 안전하다"고 보고 반출 목록에 넣었다.
+> 틀렸다. `engine/epochs.py` 의 `_failure_bucket` 은 `failed_tiers` 의 **순함수**라
+> `DATA_OR_INTEGRITY` 하나로 "T0/T1 에서 REJECT" 가 복원된다. `novelty` 도
+> `strongest_relationship.abs_median_spearman` 을 임계값으로 3분할한 값이고,
+> `latest.md` 는 봉인 행의 그 열을 `-` 로 가린다. **이름이 범주형인 것과 결과가 아닌 것은 다르다.**
+
+봉인 판정은 우리가 정하지 않는다. `engine.research.exposed_after_cutoff` 를 그대로 부르고
+reflection 의 `oos_status` 를 함께 본다. 진행 중 campaign 도 `--context-cutoff` 인자도 없으면
+경계를 모르는 상태이므로 **전량 봉인**으로 닫는다.
 
 등록 팩터의 축별 개수는 예외로 허용한다. 결과가 아니라 등록 사실의 요약이다.

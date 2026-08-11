@@ -65,37 +65,38 @@
 
 **campaign-20260806-001 / epoch-001**
 
-- `trading_turnover_20d` (trading_activity) — DISCOVERY_FDR_PENDING · 신규성 INDEPENDENT
-- `working_capital_accruals_12m` (working_capital_accruals) — DATA_OR_INTEGRITY · 신규성 INDEPENDENT
-- `earnings_change_to_assets` (quarterly_earnings_change) — NO_PREDICTIVE_EVIDENCE · 신규성 DUPLICATE
-- 중복: earnings_change_to_assets
+- `trading_turnover_20d` (trading_activity) — 시행함
+- `working_capital_accruals_12m` (working_capital_accruals) — 시행함
+- `earnings_change_to_assets` (quarterly_earnings_change) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
 
 **campaign-20260806-001 / epoch-002**
 
-- `market_beta_36m` (market_beta) — NO_PREDICTIVE_EVIDENCE · 신규성 INDEPENDENT
-- `paid_in_capital_ratio` (equity_composition) — DISCOVERY_FDR_PENDING · 신규성 INDEPENDENT
-- `current_liability_concentration` (liability_maturity_structure) — NO_PREDICTIVE_EVIDENCE · 신규성 INDEPENDENT
+- `market_beta_36m` (market_beta) — 시행함
+- `paid_in_capital_ratio` (equity_composition) — 시행함
+- `current_liability_concentration` (liability_maturity_structure) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
 
 **campaign-20260807-002 / epoch-001**
 
-- `net_working_capital_to_assets` (working_capital_buffer) — NO_PREDICTIVE_EVIDENCE · 신규성 DUPLICATE
-- `operating_return_on_capital_employed` (capital_employment_efficiency) — DISCOVERY_FDR_PENDING · 신규성 DUPLICATE
-- `operating_margin_change_12m` (operating_margin_expansion) — NO_PREDICTIVE_EVIDENCE · 신규성 DUPLICATE
-- 중복: net_working_capital_to_assets
-- 중복: operating_return_on_capital_employed
-- 중복: operating_margin_change_12m
+- `net_working_capital_to_assets` (working_capital_buffer) — 시행함
+- `operating_return_on_capital_employed` (capital_employment_efficiency) — 시행함
+- `operating_margin_change_12m` (operating_margin_expansion) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
 
 **campaign-20260807-002 / epoch-002**
 
-- `posttax_income_conversion` (tax_conversion_efficiency) — DATA_OR_INTEGRITY · 신규성 INDEPENDENT
-- `noncurrent_asset_encumbrance` (long_term_asset_encumbrance) — DATA_OR_INTEGRITY · 신규성 RELATED
-- `turnover_volatility_12m` (trading_activity_instability) — DISCOVERY_FDR_PENDING · 신규성 INDEPENDENT
+- `posttax_income_conversion` (tax_conversion_efficiency) — 시행함
+- `noncurrent_asset_encumbrance` (long_term_asset_encumbrance) — 시행함
+- `turnover_volatility_12m` (trading_activity_instability) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
 
 **campaign-20260807-002 / epoch-003**
 
-- `equity_growth_12m` (equity_growth) — DATA_OR_INTEGRITY · 신규성 RELATED
-- `positive_return_share_12m` (return_consistency) — DATA_OR_INTEGRITY · 신규성 RELATED
-- `return_kurtosis_24m` (return_tail_concentration) — DISCOVERY_FDR_PENDING · 신규성 RELATED
+- `equity_growth_12m` (equity_growth) — 시행함
+- `positive_return_share_12m` (return_consistency) — 시행함
+- `return_kurtosis_24m` (return_tail_concentration) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
 
 ## 4. 시행 전량
 
