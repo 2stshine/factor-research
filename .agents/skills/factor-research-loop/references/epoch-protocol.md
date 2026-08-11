@@ -15,7 +15,7 @@
 ## 목적
 
 같은 후보의 OOS 결과를 본 뒤 정의를 바꾸는 과최적화와, 사람이 좋아 보이는 후보만
-confirmation에 보내는 선택 편향을 함께 막는다. 새 campaign은 `epoch-1.5`를 적용하며 역사적
+confirmation에 보내는 선택 편향을 함께 막는다. 새 campaign은 `epoch-1.6`을 적용하며 역사적
 cycle과 산출물은 원래 규칙의 기록으로 보존한다. 과거 결과를 본 후보에 새 경계를 소급 적용하지
 않는다. 공개 구간은 `research/oos-exposures/`에 영구 기록하며, 같은 달력 구간을 다시 쓰면
 manifest에 재사용 사실을 남긴다.
@@ -43,6 +43,13 @@ READY_FOR_CONFIRMATION → 사용자 요청·readiness PASS → REVEALED(종료)
 - `CLOSED_INVALIDATED_INPUT_IDENTITY`: cache와 live Silver의 `asset_id↔ticker`가 달라 기존 계산 입력을 인증할 수 없어 종료한 상태다. 기존 산출물은 보존하고 OOS는 쓰지 않는다.
 
 ## 시작
+
+원시 Silver cache는 identity 대사를 위해 1995년 이후 이력을 보존한다. campaign snapshot과 live
+RDS identity는 이 전체 cutoff 범위에서 먼저 대조한다. 일치한 뒤에만 `2015-01` 이후 행을 복사한
+research view를 후보 코드에 전달하며, 공통 IC 시작은 `2018-03`, 최대 룩백은 36개월로 고정한다.
+따라서 pre-2015 행, `fwd_*` 미래수익 정답, 기존 cache의 `f_*` 팩터 컬럼, universe·lineage
+메타데이터는 후보 계산에 노출되지 않는다. 동시점 PIT `market`은 시장수익 계산용으로 유지하고,
+후보 파일 SHA-256도 epoch에 함께 동결한다.
 
 부분월은 쓰지 않는다. 기본 `trailing_historical_holdout`은 현재 Silver 안에서 마지막 signal월의
 45일 비활성 판정과 마지막 수익률월 다음 **완전히 종료된** closure월까지 이미 관측된 가장 최근 36개 signal월을

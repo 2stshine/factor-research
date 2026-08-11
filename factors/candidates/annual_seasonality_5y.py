@@ -14,7 +14,7 @@ MIN_YEARS = 3
 def compute(frame):
     ordered = frame.sort_values(["asset_id", "ym"])
     asset = ordered["asset_id"]
-    monthly_return = ordered.groupby("asset_id")["return_close"].pct_change(fill_method=None)
+    monthly_return = ordered.groupby("asset_id")["adj_close"].pct_change(fill_method=None)
     seasonal_returns = [
         monthly_return.groupby(asset).shift(MONTHS_PER_YEAR * year)
         for year in range(1, HISTORY_YEARS + 1)
@@ -46,7 +46,7 @@ FACTOR = Factor(
 
 RESEARCH_SPEC = {
     "thesis": (
-        "Silver PIT 총수익지수로 계산한 과거 1~5년 동일 월 수익률의 평균이 높은 종목은 낮은 "
+        "Silver PIT 분할조정 가격으로 계산한 과거 1~5년 동일 월 가격수익률의 평균이 높은 종목은 낮은 "
         "종목보다 이후 한 달 수익률 순위가 높을 것이다."
     ),
     "mechanism": (
@@ -64,7 +64,7 @@ RESEARCH_SPEC = {
         "입력을 사용하지 않아 품질·가치 팩터와도 독립적일 것으로 예상한다."
     ),
     "data_notes": (
-        "Silver total_return_close에 매핑된 return_close로 월수익률을 계산하고 12·24·36·48·60개월 "
+        "Silver PIT 분할조정 가격 adj_close로 월 가격수익률을 계산하고 12·24·36·48·60개월 "
         "전 동일 월 관측 중 최소 3개를 사용한다. 상장 이력이 짧은 종목은 결측이며, 거래일 수와 "
         "정확한 공시일을 직접 모델링하지 않는 월 단위 근사치다."
     ),

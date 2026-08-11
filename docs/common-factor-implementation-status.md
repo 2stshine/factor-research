@@ -1,8 +1,11 @@
 # 널리 쓰이는 주식 팩터 구현 현황
 
 이 문서는 “시중에서 널리 쓰인다”는 이유만으로 유사 proxy를 같은 이름으로 등록하지 않기 위한
-구현 대장이다. 데이터 가능 여부는 후보가 볼 수 있는 Silver 구간(`2015-01~2023-05`)과 PIT
-가용성을 기준으로 판단한다. 팩터 성과, hidden OOS, Gold 승격 여부는 이 문서의 범위가 아니다.
+구현 대장이다. 원시 Silver/cache는 원본 대사와 identity 감사를 위해 1995년 이후 이력을
+보존할 수 있지만, 후보가 보는 입력은 `2015-01` 이후 KOSPI·KOSDAQ 보통주로 제한한다.
+아래 과거 구현 점검의 후보 가시 구간은 `2015-01~2023-05`였으며, 데이터 가능 여부는 이
+연구 view와 PIT 가용성을 기준으로 판단한다. 팩터 성과, hidden OOS, Gold 승격 여부는 이
+문서의 범위가 아니다.
 
 ## 이미 구현된 코어 팩터
 
@@ -12,8 +15,8 @@
 | Earnings-to-price | `value_ep` | `net_income_ttm / market_cap` |
 | Sales-to-price | `value_sp` | `revenue_ttm / market_cap` |
 | Size | `size` | 양의 시가총액 로그, 저규모 방향 |
-| Momentum | `mom_12_1` | 배당 포함 총수익의 12-1개월 모멘텀 |
-| Short reversal | `rev_1m` | 직전 1개월 총수익의 반대 방향 |
+| Momentum | `mom_12_1` | 분할조정 가격수익의 12-1개월 모멘텀 |
+| Short reversal | `rev_1m` | 직전 1개월 분할조정 가격수익의 반대 방향 |
 | Profitability | `qual_roe`, `qual_opm`, `operating_roa` | 순이익·영업이익 기반 proxy |
 | Investment | `asset_growth_12m` | 12개월 총자산 증가율의 반대 방향 |
 | Low risk | `low_vol_12m`, `market_beta_36m` | 월별 변동성·내부 시장 beta |
@@ -31,10 +34,10 @@ size, book-to-market, operating profitability, investment, momentum, reversal �
 |---|---|---:|---|
 | `net_equity_issuance_price_adjusted_12m` | `(market_cap / adj_close)`의 정확한 12개월 증가율 | 낮을수록 + | 월말 시가총액·분할조정 가격 |
 | `high_52w_price_proximity` | `adj_close / 최근 252거래일 최고 adj_close` | 높을수록 + | 일별 분할조정 가격 |
-| `amihud_illiquidity_1m` | 월중 평균 `abs(일별 총수익률) / 거래대금` | 높을수록 + | 일별 총수익·거래대금 |
-| `realized_volatility_252d` | 최근 252개 일별 총수익률 표준편차 | 낮을수록 + | 일별 총수익 |
-| `max_daily_return_1m` | 최근 달의 최대 일별 총수익률 | 낮을수록 + | 일별 총수익 |
-| `dividend_yield_ttm` | 알려진 최근 12개월 분할조정 주당 현금배당 / 월말 `adj_close` | 높을수록 + | canonical 배당 audit·가격 |
+| `amihud_illiquidity_1m` | 월중 평균 `abs(일별 분할조정 가격수익률) / 거래대금` | 높을수록 + | 일별 `adj_close`·거래대금 |
+| `realized_volatility_252d` | 최근 252개 일별 분할조정 가격수익률 표준편차 | 낮을수록 + | 일별 `adj_close` |
+| `max_daily_return_1m` | 최근 달의 최대 일별 분할조정 가격수익률 | 낮을수록 + | 일별 `adj_close` |
+| `dividend_yield_ttm` | 최근 12개월 주당 현금배당 / 월말 `adj_close` | 높을수록 + | **비활성**: historical-vintage/known-at 계약 필요 |
 
 정의 선택 근거는 다음과 같다.
 
@@ -82,9 +85,10 @@ size, book-to-market, operating profitability, investment, momentum, reversal �
 
 ## 기존 정의에서 발견한 주의사항
 
-- `net_equity_issuance_12m`은 배당 포함 `return_close`를 가격수익처럼 사용한다. 기존 시행은
-  보존하고 새 `net_equity_issuance_price_adjusted_12m`으로 교정한다.
-- `high_12m_proximity`는 배당재투자 지수 고점을 사용한다. 가격 앵커 후보는 새 52주 가격 정의다.
+- 과거 `net_equity_issuance_12m` 시행은 배당 포함 `return_close`를 가격수익처럼 사용했다. 시행
+  기록은 보존하되 현재 소스는 `adj_close`로 교정했고, 새 명시적 가격조정 후보도 함께 남긴다.
+- 과거 `high_12m_proximity` 시행은 배당재투자 지수 고점을 사용했다. 현재 소스와 새 52주 가격
+  정의는 모두 `adj_close` 가격 앵커를 사용한다.
 - `max_monthly_return_12m`은 문헌의 MAX가 아니라 최대 월수익 proxy다.
 - `working_capital_accruals_12m`은 현금·단기차입금·감가상각을 제외하지 못한 넓은 proxy다.
 - 여러 횡단면 rank를 합치는 기존 후보 7개(`small_value`, `defensive_value` 등)는 현재의
@@ -94,8 +98,13 @@ size, book-to-market, operating profitability, investment, momentum, reversal �
 
 ## Silver 원천 검증
 
-2026-08-08 읽기 전용 검증에서 `total_return_close` 계약은 `CERTIFIED`였고,
-2015-01-02~2026-08-06의 6,769,127행·3,301종목에 결측·비양수·키 중복이 없었다.
+아래 수치는 2026-08-08의 **구형 총수익 계약**을 읽기 전용으로 점검한 과거 기록이다.
+현재 연구의 **forward-return label**로 다시 사용하려면 v2 배당 복구 후 별도 행 lineage, 원천
+DART snapshot, 배당 resolution, asset identity가 모두 인증된 새 cache를 build해야 한다.
+이 최신 정정 ex-post 총수익 이력은 역사적 후보 feature에는 노출하지 않는다. 당시
+`total_return_close`는 2015-01-02~2026-08-06의 6,769,127행·3,301종목에
+결측·비양수·키 중복이 없었다. 여기서 2015-01-02는 배당 포함 총수익 인증 범위의 첫
+거래일이지 원시 가격 이력의 시작일이 아니며, 원시 이력은 1995년 이후를 보존한다.
 같은 계약에 묶인 canonical·applied·positive 현금배당은 13,594건·1,751종목이며,
 공시일·적용일·금액·lineage 결측과 중복은 0건이다. 가격·배당 SQL의 PostgreSQL
 `EXPLAIN`도 모두 통과했다.
@@ -110,11 +119,10 @@ size, book-to-market, operating profitability, investment, momentum, reversal �
 | `amihud_illiquidity_1m` | 198,944 | 99.52% |
 | `realized_volatility_252d` | 188,977 | 94.53% |
 | `max_daily_return_1m` | 199,797 | 99.95% |
-| `dividend_yield_ttm` | 199,904 | 100.00% |
+| `dividend_yield_ttm` | — | 비활성 |
 
-배당 입력의 100% 커버리지는 모든 기업이 배당했다는 뜻이 아니다. 인증 범위 안에서 PIT상
-알려진 적용 배당이 없는 121,452행을 명시적 0으로 표시했고, 78,452행은 양의
-추적 12개월 배당이 있었다.
+기존 배당 커버리지 수치는 latest-corrected ledger를 로컬 규칙으로 PIT처럼 해석한 결과이므로
+새 연구 증거로 재사용하지 않는다.
 
 ## 현재 검증 범위
 

@@ -18,6 +18,27 @@ DIVIDEND_CASH_TTM = "dividend_cash_ttm"
 DIVIDEND_EVENT_COUNT_TTM = "dividend_event_count_ttm"
 FEATURE_VERSION = "certified_canonical_applied_dividend_ttm_v1"
 PIT_FEATURES = frozenset({DIVIDEND_CASH_TTM, DIVIDEND_EVENT_COUNT_TTM})
+PIT_AVAILABILITY_META_KEY = "dividend_pit_availability_contract"
+
+
+def pit_availability_contract() -> dict:
+    """Exact evidence required for point-in-time dividend feature exposure."""
+    return {
+        "contract": silver.DIVIDEND_PIT_AVAILABILITY_CONTRACT,
+        "canonical_resolution_only": True,
+        "known_at_field": "announcement_date",
+        "known_at_lag_days": 1,
+    }
+
+
+def _verify_pit_availability_contract(history: pd.DataFrame) -> None:
+    expected = pit_availability_contract()
+    actual = history.attrs.get("pit_availability_contract")
+    if actual != expected:
+        raise RuntimeError(
+            "Silver 배당 이력의 latest terminal announcement PIT 계약이 "
+            f"없거나 다릅니다: {actual!r}"
+        )
 
 
 def _certified_coverage(history: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -32,11 +53,25 @@ def _certified_coverage(history: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timesta
             "Silver 배당 이력의 총수익 계약이 인증 기준과 다릅니다: "
             f"{contract}"
         )
+    evidence = silver.verify_total_return_validation_evidence(
+        contract.get("validation_evidence"),
+    )
+    if str(contract.get("quality_run_id")) != str(evidence["quality_run_id"]):
+        raise RuntimeError(
+            "Silver 배당 이력 계약 run과 validation evidence run이 다릅니다"
+        )
     start = pd.to_datetime(contract.get("coverage_start"), errors="coerce")
     end = pd.to_datetime(contract.get("coverage_end"), errors="coerce")
     if pd.isna(start) or pd.isna(end) or start > end:
         raise RuntimeError(
             "Silver 배당 이력의 인증 coverage_start/coverage_end가 잘못되었습니다"
+        )
+    if (
+        start.date().isoformat() != evidence["coverage_start"]
+        or end.date().isoformat() != evidence["coverage_end"]
+    ):
+        raise RuntimeError(
+            "Silver 배당 이력 coverage와 validation evidence가 다릅니다"
         )
     return pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
 
@@ -58,6 +93,7 @@ def attach(monthly: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
         )
 
     coverage_start, coverage_end = _certified_coverage(history)
+    _verify_pit_availability_contract(history)
     output = monthly.copy()
     asset_ids = pd.to_numeric(output["asset_id"], errors="coerce")
     as_of = pd.to_datetime(output["trade_date"], errors="coerce").dt.normalize()
@@ -126,9 +162,11 @@ def attach(monthly: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
     if events.duplicated(event_key).any():
         raise RuntimeError("인증된 Silver 배당 resolution 키가 중복되었습니다")
 
-    # One calendar day after the filing is a deliberately conservative PIT
-    # availability rule.  The applied-date condition separately prevents an
-    # announced future dividend from entering the trailing realized cash sum.
+    # ``announcement_date`` belongs to the latest terminal POSITIVE receipt
+    # selected by the canonical resolution. One calendar day after that filing
+    # is a deliberately conservative PIT availability rule. The applied-date
+    # condition separately prevents an announced future dividend from entering
+    # the trailing realized cash sum.
     events["known_date"] = (
         events["announcement_date"] + pd.Timedelta(days=1)
     )

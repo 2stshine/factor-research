@@ -18,6 +18,7 @@ MIN_LISTING_DAYS = 250
 INVESTABLE_ADV = 0.0
 SUPPORTED_MARKETS = ("KOSPI", "KOSDAQ")
 INACTIVE_DAYS = 45
+RETURN_ROLE_META_KEYS = silver.RETURN_ROLE_META_KEYS
 
 
 def asset_identity_evidence(
@@ -81,13 +82,40 @@ class Panel:
             d["in_universe"]
             & d["market_cap"].notna()
             & (d["market_cap"] > 0)
-            & d["return_close"].notna()
-            & (d["return_close"] > 0)
+            & d["adj_close"].notna()
+            & (d["adj_close"] > 0)
         )
 
     @property
     def investable(self) -> pd.Series:
         return self.universe & (self.monthly["adv20"] > INVESTABLE_ADV)
+
+
+def verify_return_roles(panel: Panel) -> dict:
+    """Fail closed unless candidate features and ex-post labels are isolated."""
+    expected = silver.return_role_contract()
+    actual = {key: panel.meta.get(key) for key in RETURN_ROLE_META_KEYS}
+    mismatches = {
+        key: {"expected": expected[key], "actual": actual.get(key)}
+        for key in RETURN_ROLE_META_KEYS
+        if actual.get(key) != expected[key]
+    }
+    if mismatches:
+        raise RuntimeError(
+            "패널의 역사적 feature/forward label 역할 계약이 다릅니다: "
+            f"{mismatches}"
+        )
+    required = {silver.FEATURE_PRICE_FIELD, silver.LABEL_RETURN_FIELD}
+    missing = required - set(panel.monthly.columns)
+    if missing:
+        raise RuntimeError(
+            f"패널의 feature/label 가격 컬럼이 없습니다: {sorted(missing)}"
+        )
+    if "return_close" in panel.monthly.columns:
+        raise RuntimeError(
+            "구형 return_close가 남아 있어 feature와 label을 구분할 수 없습니다"
+        )
+    return expected
 
 
 def snapshot_digest(panel: Panel) -> str:
@@ -145,12 +173,31 @@ def from_silver_frame(prices: pd.DataFrame, *, verbose: bool = True) -> Panel:
             "Silver total_return_close 방법론 계약이 인증 기준과 다릅니다: "
             f"{return_contract}"
         )
+    return_evidence = silver.verify_total_return_validation_evidence(
+        return_contract.get("validation_evidence"),
+    )
+    if (
+        str(return_contract.get("quality_run_id"))
+        != str(return_evidence["quality_run_id"])
+    ):
+        raise RuntimeError(
+            "Silver 총수익 계약 run과 validation evidence run이 다릅니다"
+        )
+
+    return_roles = prices.attrs.get("return_roles")
+    expected_return_roles = silver.return_role_contract()
+    if return_roles != expected_return_roles:
+        raise RuntimeError(
+            "Silver 가격 스냅샷의 feature/label 역할 계약이 없습니다: "
+            f"{return_roles!r}"
+        )
 
     required = {
         "asset_id", "Code", "Name", "instrument_type", "trade_date",
         "adj_close", "total_return_close", "trading_value", "market_cap",
         "shares", "market", "adv20", "age_days", "first_seen",
-        "dataset_start", "quality_run_id", "amihud_illiquidity_1m",
+        "dataset_start", "quality_run_id", "total_return_quality_run_id",
+        "amihud_illiquidity_1m",
         "amihud_observations_1m", "daily_volatility_252d",
         "daily_return_observations_252d", "max_daily_return_1m",
         "max_daily_return_observations_1m", "price_high_252d",
@@ -188,14 +235,48 @@ def from_silver_frame(prices: pd.DataFrame, *, verbose: bool = True) -> Panel:
          "max_daily_return_1m", "max_daily_return_observations_1m",
          "price_high_252d", "price_high_observations_252d"),
     )
-    bad_total_return = d["total_return_close"].isna() | (d["total_return_close"] <= 0)
+    certified_label_scope = (
+        d["instrument_type"].eq("common_stock")
+        & d["market"].isin(SUPPORTED_MARKETS)
+        & d["trade_date"].dt.date.ge(silver.TOTAL_RETURN_SCOPE_START)
+        & d["trade_date"].dt.date.le(pd.Timestamp(
+            return_evidence["coverage_end"],
+        ).date())
+    )
+    feature_scope = certified_label_scope.copy()
+    if not certified_label_scope.any():
+        raise RuntimeError("2015+ KRX common_stock 총수익 월말 행이 없습니다")
+    observed_lineage = d["total_return_quality_run_id"].astype("string")
+    expected_run = str(return_evidence["quality_run_id"])
+    bad_lineage = certified_label_scope & observed_lineage.ne(expected_run).fillna(True)
+    if bad_lineage.any():
+        raise RuntimeError(
+            "Silver 월말 총수익 행의 total_return_quality_run_id가 인증 run과 "
+            f"다릅니다: {int(bad_lineage.sum()):,}행"
+        )
+    bad_total_return = certified_label_scope & (
+        d["total_return_close"].isna() | (d["total_return_close"] <= 0)
+    )
     if bad_total_return.any():
         raise RuntimeError(
             "Silver total_return_close가 비었거나 0 이하입니다: "
             f"{int(bad_total_return.sum()):,}행. 총수익 적재를 완료한 뒤 build 하세요."
         )
+    bad_feature_price = feature_scope & (
+        d["adj_close"].isna() | (d["adj_close"] <= 0)
+    )
+    if bad_feature_price.any():
+        raise RuntimeError(
+            "Silver adj_close가 비었거나 0 이하라 PIT-safe 역사적 feature를 "
+            f"계산할 수 없습니다: {int(bad_feature_price.sum()):,}행"
+        )
 
-    d["return_close"] = d["total_return_close"]
+    # Pre-2015 and non-common rows stay in the raw cache for the complete
+    # 1995+ identity digest, but their derived return is outside the certified
+    # contract and must not be usable as research evidence.
+    d["total_return_close"] = d["total_return_close"].where(
+        certified_label_scope,
+    )
     d["amount"] = d["trading_value"]
     d["Market"] = d["market"]
     d["ym"] = d["trade_date"].dt.to_period("M")
@@ -210,7 +291,7 @@ def from_silver_frame(prices: pd.DataFrame, *, verbose: bool = True) -> Panel:
     d["seasoned"] = d["first_seen"].eq(d["dataset_start"])
     d["ok_age"] = (d["age_days"] >= MIN_LISTING_DAYS) | d["seasoned"]
     d["in_universe"] = (
-        d["ok_market"] & d["ok_common"] & ~d["is_spac"]
+        feature_scope & d["ok_market"] & d["ok_common"] & ~d["is_spac"]
         & ~d["is_reit"] & d["ok_age"]
     )
     d["is_distress"] = False  # Silver has no PIT distress classification yet.
@@ -228,10 +309,21 @@ def from_silver_frame(prices: pd.DataFrame, *, verbose: bool = True) -> Panel:
         "n_dead": len(dead),
         "n_stocks": d["asset_id"].nunique(),
         "quality_run_ids": sorted(d["quality_run_id"].dropna().astype(str).unique()),
-        "return_field": "total_return_close",
-        "return_methodology": return_contract["methodology_version"],
-        "return_contract_status": return_contract["status"],
+        **expected_return_roles,
+        "label_return_contract_status": return_contract["status"],
         "return_contract_run_id": return_contract.get("quality_run_id"),
+        "return_contract_validation_status": return_evidence["validation_status"],
+        "return_contract_evidence_sha256": return_evidence["evidence_sha256"],
+        "return_contract_scope_start": return_evidence["certified_scope_start"],
+        "return_contract_coverage_start": return_evidence["coverage_start"],
+        "return_contract_coverage_end": return_evidence["coverage_end"],
+        "return_contract_action_snapshot_run_id": return_evidence[
+            "action_snapshot_run_id"
+        ],
+        "return_contract_asset_identity_digest": return_evidence[
+            "asset_identity_digest"
+        ],
+        "return_contract_validation_evidence": return_evidence,
         **identity,
     }
     if verbose:
@@ -241,7 +333,9 @@ def from_silver_frame(prices: pd.DataFrame, *, verbose: bool = True) -> Panel:
             f"최종 유니버스 {int(snap['in_universe'].sum()):,}종목 / "
             f"비활성·상폐 {len(dead):,}종목"
         )
-    return Panel(monthly=d, dead=dead, meta=meta)
+    panel = Panel(monthly=d, dead=dead, meta=meta)
+    verify_return_roles(panel)
+    return panel
 
 
 def build(conn, *, verbose: bool = True) -> Panel:
@@ -253,11 +347,12 @@ def build(conn, *, verbose: bool = True) -> Panel:
 
 def forward_returns(panel: Panel, terminal: float = -0.50) -> pd.Series:
     """One-month total return with an explicit terminal return for inactive assets."""
+    verify_return_roles(panel)
     d = panel.monthly.sort_values(["asset_id", "ym"])
-    next_close = d.groupby("asset_id")["return_close"].shift(-1)
+    next_close = d.groupby("asset_id")["total_return_close"].shift(-1)
     next_ym = d.groupby("asset_id")["ym"].shift(-1)
     consecutive = next_ym.eq(d["ym"] + 1)
-    fwd = (next_close / d["return_close"] - 1).where(consecutive)
+    fwd = (next_close / d["total_return_close"] - 1).where(consecutive)
 
     last_ym = d["ym"].max()
     last_for_asset = d["ym"].eq(d.groupby("asset_id")["ym"].transform("max"))

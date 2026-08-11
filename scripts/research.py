@@ -31,6 +31,11 @@ def cmd_context(_args) -> None:
     run.load_registry()
     panel = run._load()
     try:
+        with silver.connect(read_only=True) as conn:
+            silver.verify_live_total_return_contract(
+                conn,
+                panel.meta.get("return_contract_validation_evidence"),
+            )
         next_window = _campaign_snapshot_boundary(panel)
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
@@ -47,6 +52,10 @@ def cmd_identity_audit(_args) -> None:
     expected = P.verify_asset_identity(panel)
     try:
         with silver.connect(read_only=True) as conn:
+            return_contract = silver.verify_live_total_return_contract(
+                conn,
+                panel.meta.get("return_contract_validation_evidence"),
+            )
             actual = P.verify_live_asset_identity(conn, panel)
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
@@ -54,6 +63,7 @@ def cmd_identity_audit(_args) -> None:
         "status": "MATCH",
         "cache": expected,
         "rds": actual,
+        "total_return_contract": return_contract,
         "gold_write": False,
     }, ensure_ascii=False, indent=2))
 
@@ -263,6 +273,10 @@ def cmd_campaign_start(args) -> None:
     )
     try:
         with silver.connect(read_only=True) as conn:
+            silver.verify_live_total_return_contract(
+                conn,
+                panel.meta.get("return_contract_validation_evidence"),
+            )
             P.verify_live_asset_identity(
                 conn, snapshot_panel, cutoff=window.snapshot_cutoff,
             )
@@ -331,7 +345,13 @@ def cmd_epoch_start(args) -> None:
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
     try:
-        path = epochs.start_epoch("research", args.campaign, args.epoch, factors)
+        path = epochs.start_epoch(
+            "research", args.campaign, args.epoch, factors,
+            strategy_digests={
+                factor.name: RESEARCH_SPECS[factor.name]["strategy_sha256"]
+                for factor in factors
+            },
+        )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     print(f"epoch 사전등록: {path}")
@@ -357,7 +377,8 @@ def cmd_evaluate(args) -> None:
             ),
         )
         epochs.assert_candidate_ready(
-            "research", args.campaign, args.epoch, F.REGISTRY[args.factor]
+            "research", args.campaign, args.epoch, F.REGISTRY[args.factor],
+            strategy_sha256=RESEARCH_SPECS[args.factor]["strategy_sha256"],
         )
         campaign = epochs.load_campaign("research", args.campaign)
     except ValueError as exc:
@@ -387,6 +408,7 @@ def cmd_evaluate(args) -> None:
     )
     epochs.mark_evaluated(
         "research", args.campaign, args.epoch, factor, result,
+        strategy_sha256=RESEARCH_SPECS[factor.name]["strategy_sha256"],
         report=str(report),
         strongest_relationship=relationships[0] if relationships else None,
     )
@@ -444,6 +466,10 @@ def cmd_campaign_verify_implementations(args) -> None:
         factor = F.REGISTRY[row["name"]] if row["name"] in F.REGISTRY else None
         if factor is None or factor.definition_hash != row["definition_hash"]:
             raise SystemExit(f"동결 후보 소스/hash를 재현할 수 없습니다: {row['name']}")
+        if RESEARCH_SPECS.get(row["name"], {}).get("strategy_sha256") != row.get(
+            "strategy_sha256"
+        ):
+            raise SystemExit(f"동결 후보 전략 파일이 바뀌었습니다: {row['name']}")
         factors.append(factor)
     try:
         evidence = run.verify_implementations(campaign, factors)
@@ -497,6 +523,10 @@ def cmd_campaign_reveal(args) -> None:
             raise SystemExit(f"동결 후보 소스가 없습니다: {row['name']}")
         if F.REGISTRY[row["name"]].definition_hash != row["definition_hash"]:
             raise SystemExit(f"동결 후 정의가 바뀌었습니다: {row['name']}")
+        if RESEARCH_SPECS.get(row["name"], {}).get("strategy_sha256") != row.get(
+            "strategy_sha256"
+        ):
+            raise SystemExit(f"동결 후 전략 파일이 바뀌었습니다: {row['name']}")
     factors = [F.REGISTRY[name] for name in names]
     try:
         bindings = run._implementation_bindings(factors)
@@ -557,6 +587,7 @@ def cmd_campaign_reveal(args) -> None:
         confirmations.append({
             "factor": factor.name,
             "definition_hash": factor.definition_hash,
+            "strategy_sha256": RESEARCH_SPECS[factor.name]["strategy_sha256"],
             "verdict": result.verdict.value,
             "evaluation": serialized,
         })

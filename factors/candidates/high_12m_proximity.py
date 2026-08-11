@@ -10,12 +10,12 @@ LOOKBACK_MONTHS = 12
 def compute(frame):
     ordered = frame.sort_values(["asset_id", "ym"])
     rolling_high = (
-        ordered.groupby("asset_id")["return_close"]
+        ordered.groupby("asset_id")["adj_close"]
         .rolling(LOOKBACK_MONTHS, min_periods=LOOKBACK_MONTHS)
         .max()
         .reset_index(level=0, drop=True)
     )
-    proximity = ordered["return_close"] / rolling_high.where(rolling_high > 0)
+    proximity = ordered["adj_close"] / rolling_high.where(rolling_high > 0)
     return proximity.reindex(frame.index)
 
 
@@ -37,7 +37,7 @@ FACTOR = Factor(
 
 RESEARCH_SPEC = {
     "thesis": (
-        "현재 총수익지수가 최근 12개월 월말 최고치에 가까운 종목을 보유하면, 단순 시작점-종점 "
+        "현재 분할조정 가격이 최근 12개월 월말 최고치에 가까운 종목을 보유하면, 단순 시작점-종점 "
         "모멘텀과 다른 고점 기준점 효과로 이후 롱온리 초과수익을 얻는다."
     ),
     "mechanism": (
@@ -54,7 +54,7 @@ RESEARCH_SPEC = {
         "거리이므로 완전히 같지는 않을 것으로 예상한다. 가치·품질 팩터와는 낮은 관계를 예상한다."
     ),
     "data_notes": (
-        "Silver PIT total_return_close의 월말 관측치로 12개월 이동 최고치를 계산한다. 일별 52주 고가가 "
+        "Silver PIT 분할조정 가격 adj_close의 월말 관측치로 12개월 이동 최고치를 계산한다. 일별 52주 고가가 "
         "아니며, 최초 11개월은 의도적으로 결측이다."
     ),
 }

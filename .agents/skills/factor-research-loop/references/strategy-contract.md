@@ -44,7 +44,11 @@ RESEARCH_SPEC = {
 - Make a larger final score mean higher expected return through `predicted_sign`.
 - Put tunable numerical literals in `params`; reference those values from a named function rather than hiding them in the formula.
 - Group time-series operations by `asset_id`, never ticker text.
-- Use `return_close`, which is mapped only from a Silver `total_return_close` carrying the certified `krx_gross_dividend_reinvested_v1` contract.
+- Candidate code receives only the authenticated `2015-01` onward research view. Common IC evaluation remains fixed at `2018-03` after warm-up.
+- The maximum permitted lookback is 36 months. Declare every time-series horizon in `params` with an interpretable month/lag/window key; an undeclared horizon or a value above 36 months is fail-closed before registration or computation.
+- Candidate modules are declarative files: only the approved numerical-library imports are allowed, import-time I/O is forbidden, and the full file SHA-256 is frozen in the epoch. Candidate functions never receive raw `close`, `total_return_close`, the removed legacy alias `return_close`, `fwd_*` labels, cached `f_*` signals, or universe/lineage metadata. Every authoritative signal month is computed separately from that month's cross-section and no more than the candidate's declared trailing lookback. Static validation rejects unbounded asset-history GroupBy reducers while allowing explicit rolling windows of at most 36 months and same-month cross-sectional operations.
+- Historical price features (momentum, reversal, volatility, beta, MAX, Amihud, price anchors) use `adj_close` and therefore mean **split-adjusted price return**, not dividend total return. The latest-revision ex-post `krx_gross_dividend_reinvested_v3/CERTIFIED` `total_return_close` is evaluator-only data used to construct next-month forward-return and IC labels.
+- Direct dividend features remain disabled until Silver certifies a separate historical-vintage/known-at action contract. The latest-corrected ex-post action ledger must never be upgraded into feature evidence by locally synthesized metadata.
 - Commodity inputs require a separately certified point-in-time, roll-adjusted contract and a new preregistered single-exposure definition. Do not add the current historical-backfill continuous-futures series to an existing stock factor.
 - Declare financial inputs in `needs`. They must already be PIT-materialized in the panel.
 - Avoid masks that redefine the universe. Use denominator validity guards only to prevent undefined ratios.

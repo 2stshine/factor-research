@@ -180,6 +180,11 @@ def _campaign_manifest(source: dict, window, snapshot, discovery) -> dict:
 
 def _gold_scope(confirmation) -> tuple[dict[str, pd.Series], pd.DataFrame, dict]:
     with silver.connect(read_only=True) as conn:
+        silver.verify_live_total_return_contract(
+            conn,
+            confirmation.meta.get("return_contract_validation_evidence"),
+        )
+        run._verify_confirmation_live_identity(conn, confirmation)
         approved = run._approved_signals(conn, confirmation.monthly)
         gold_trials = silver.load_gold_trial_history(conn)
     names = sorted(approved)
@@ -380,30 +385,46 @@ def _verify_one_implementation(manifest: dict, factor):
     digest = P.snapshot_digest(discovery)
     if digest != manifest["snapshot"]["discovery_input_digest"]:
         raise ValueError("회고 discovery Silver snapshot digest가 달라졌습니다")
-    frame = discovery.monthly
     start = gate.RESEARCH_START
     end = window.discovery_signal_end
-    in_scope = discovery.universe & frame["ym"].ge(start) & frame["ym"].le(end)
+    from factors.candidate_loader import RESEARCH_SPECS
+
+    strategy_sha256 = RESEARCH_SPECS[factor.name]["strategy_sha256"]
     binding = None
     interrupted = False
     try:
         _ref, spec, sql_path, binding = run._implementation_contract(factor)
-        raw = factor.compute(frame.copy())
-        if not isinstance(raw, pd.Series) or not raw.index.equals(frame.index):
-            raise ValueError(
-                f"Python factor가 입력 index의 Series를 반환하지 않습니다: {factor.name}"
-            )
-        raw = pd.to_numeric(raw, errors="coerce")
-        finite = raw.notna() & raw.abs().ne(float("inf"))
-        valid = in_scope & finite
-        python_frame = frame.loc[valid, ["asset_id", "trade_date"]].rename(
-            columns={"trade_date": "as_of_date"},
-        )
-        python_frame["value"] = raw.loc[valid].astype(float).to_numpy()
-        print(f"  [parity SQL] {factor.name} {start}~{end}", flush=True)
-        frames: list[pd.DataFrame] = []
         with silver.connect(read_only=True) as conn:
             conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
+            silver.verify_live_total_return_contract(
+                conn,
+                discovery.meta.get("return_contract_validation_evidence"),
+            )
+            P.verify_live_asset_identity(
+                conn, discovery, cutoff=window.discovery_data_cutoff,
+            )
+            research_frame = run._research_input_panel(discovery)
+            frame = research_frame.monthly
+            in_scope = (
+                research_frame.universe
+                & frame["ym"].ge(start)
+                & frame["ym"].le(end)
+            )
+            raw = run.research_policy.compute_factor(factor, frame)
+            if not isinstance(raw, pd.Series) or not raw.index.equals(frame.index):
+                raise ValueError(
+                    "Python factor가 입력 index의 Series를 반환하지 않습니다: "
+                    f"{factor.name}"
+                )
+            raw = pd.to_numeric(raw, errors="coerce")
+            finite = raw.notna() & raw.abs().ne(float("inf"))
+            valid = in_scope & finite
+            python_frame = frame.loc[valid, ["asset_id", "trade_date"]].rename(
+                columns={"trade_date": "as_of_date"},
+            )
+            python_frame["value"] = raw.loc[valid].astype(float).to_numpy()
+            print(f"  [parity SQL] {factor.name} {start}~{end}", flush=True)
+            frames: list[pd.DataFrame] = []
             with conn.cursor() as cursor:
                 cursor.execute(
                     f"SET LOCAL statement_timeout = {PARITY_STATEMENT_TIMEOUT_MS}"
@@ -429,6 +450,7 @@ def _verify_one_implementation(manifest: dict, factor):
             discovery_signal_start=start,
             discovery_signal_end=end,
             discovery_snapshot_digest=digest,
+            strategy_sha256=strategy_sha256,
             atol=float(spec.get("parity_atol", implementation.DEFAULT_ATOL)),
             rtol=float(spec.get("parity_rtol", implementation.DEFAULT_RTOL)),
             allow_tolerance_equivalent_ranks=bool(spec.get(
@@ -442,6 +464,7 @@ def _verify_one_implementation(manifest: dict, factor):
             discovery_signal_start=start,
             discovery_signal_end=end,
             discovery_snapshot_digest=digest,
+            strategy_sha256=strategy_sha256,
             stage="interrupted",
             error=exc,
             binding=binding,
@@ -452,6 +475,7 @@ def _verify_one_implementation(manifest: dict, factor):
             discovery_signal_start=start,
             discovery_signal_end=end,
             discovery_snapshot_digest=digest,
+            strategy_sha256=strategy_sha256,
             stage="sql_execute_or_parity",
             error=exc,
             binding=binding,
@@ -591,6 +615,11 @@ def calibrate_null(
             raise SystemExit("기존 null calibration artifact가 현재 manifest와 다릅니다")
         return payload
     with silver.connect(read_only=True) as conn:
+        silver.verify_live_total_return_contract(
+            conn,
+            confirmation.meta.get("return_contract_validation_evidence"),
+        )
+        run._verify_confirmation_live_identity(conn, confirmation)
         approved = run._approved_signals(conn, confirmation.monthly)
     gold_digest = run._signal_family_digest(approved)
     confirmation_digest = P.snapshot_digest(confirmation)

@@ -16,11 +16,13 @@ import pandas as pd
 from scipy import stats
 
 from engine.factors import Factor
-from engine.panel import Panel
+from engine.panel import Panel, verify_return_roles
+from engine import research_policy, silver
+from engine.research_policy import COMMON_EVALUATION_START
 
 
-RULESET_VERSION = "fr-3.10.1"
-RESEARCH_START = pd.Period("2018-03", freq="M")
+RULESET_VERSION = "fr-3.13.0"
+RESEARCH_START = COMMON_EVALUATION_START
 EVALUATION_PHASES = {"discovery", "full"}
 
 SECURITIES_TAX = {
@@ -62,6 +64,31 @@ class Verdict(str, Enum):
     PROMOTE = "PROMOTE"
     PROVISIONAL = "PROVISIONAL"
     REJECT = "REJECT"
+
+
+def _label_return_certified(panel: Panel) -> bool:
+    try:
+        verify_return_roles(panel)
+        evidence = silver.verify_total_return_validation_evidence(
+            panel.meta.get("return_contract_validation_evidence"),
+        )
+    except RuntimeError:
+        return False
+    return bool(
+        panel.meta.get("label_return_field") == "total_return_close"
+        and panel.meta.get("label_return_methodology") == silver.TOTAL_RETURN_METHOD
+        and panel.meta.get("label_return_usage") == silver.LABEL_RETURN_USAGE
+        and panel.meta.get("label_candidate_access") is False
+        and panel.meta.get("feature_price_field") == "adj_close"
+        and panel.meta.get("feature_return_methodology")
+        == silver.FEATURE_RETURN_METHOD
+        and panel.meta.get("label_return_contract_status") == "CERTIFIED"
+        and panel.meta.get("return_contract_validation_status") == "VERIFIED"
+        and panel.meta.get("return_contract_run_id")
+        == evidence["quality_run_id"]
+        and panel.meta.get("return_contract_evidence_sha256")
+        == evidence["evidence_sha256"]
+    )
 
 
 @dataclass
@@ -349,16 +376,46 @@ def _validate_factor(factor: Factor, df: pd.DataFrame, cached: str) -> list[Chec
     checks.append(Check("T0.1", "미선언 상수", not undeclared, len(undeclared), "0개", str(undeclared)))
     composite = factor.composite_evidence()
     checks.append(Check(
-        "T0.1", "단일 팩터 계약", not composite, len(composite),
+        "T0.2", "단일 팩터 계약", not composite, len(composite),
         "합성 신호 0개", str(composite),
     ))
+    try:
+        lookback = research_policy.assert_allowed_lookback(
+            name=factor.name, source=factor.source, params=factor.params,
+        )
+        lookback_ok = True
+        lookback_note = ""
+    except ValueError as exc:
+        lookback = None
+        lookback_ok = False
+        lookback_note = str(exc)
+    checks.append(Check(
+        "T0.3", "최대 룩백", lookback_ok, lookback,
+        f"<={research_policy.MAX_FACTOR_LOOKBACK_MONTHS}개월", lookback_note,
+    ))
+    try:
+        research_policy.assert_research_input_frame(df)
+        input_floor_ok = True
+        input_floor_note = ""
+    except ValueError as exc:
+        input_floor_ok = False
+        input_floor_note = str(exc)
+    checks.append(Check(
+        "T0.4", "연구 입력 하한", input_floor_ok, None,
+        f">={research_policy.RESEARCH_INPUT_START}", input_floor_note,
+    ))
+    forbidden_inputs = research_policy.forbidden_candidate_inputs(factor.needs)
+    checks.append(Check(
+        "T0.5", "label 전용 입력 차단", not forbidden_inputs,
+        len(forbidden_inputs), "0개", str(forbidden_inputs),
+    ))
     missing = sorted(set(factor.needs) - set(df.columns))
-    checks.append(Check("T0.2", "입력 계약", not missing, len(missing), "누락 0개", str(missing)))
-    if missing:
+    checks.append(Check("T0.6", "입력 계약", not missing, len(missing), "누락 0개", str(missing)))
+    if forbidden_inputs or missing or not lookback_ok or not input_floor_ok:
         return checks
     try:
-        first = factor.compute(df)
-        second = factor.compute(df)
+        first = research_policy.compute_factor(factor, df)
+        second = research_policy.compute_factor(factor, df)
         valid_series = isinstance(first, pd.Series) and first.index.equals(df.index)
         numeric = valid_series and pd.api.types.is_numeric_dtype(first)
         finite = numeric and not np.isinf(pd.to_numeric(first, errors="coerce")).any()
@@ -377,14 +434,20 @@ def _validate_factor(factor: Factor, df: pd.DataFrame, cached: str) -> list[Chec
                 equal_nan=True,
             )
         )
+        causal_ok, causal_note = (
+            research_policy.causal_lookback_check(factor, df, first)
+            if numeric else (False, "출력이 numeric Series가 아닙니다")
+        )
     except Exception as exc:
-        valid_series = numeric = finite = deterministic = cache_match = False
-        checks.append(Check("T0.3", "계산 예외", False, None, "없음", f"{type(exc).__name__}: {exc}"))
+        valid_series = numeric = finite = deterministic = cache_match = causal_ok = False
+        causal_note = f"{type(exc).__name__}: {exc}"
+        checks.append(Check("T0.7", "계산 예외", False, None, "없음", f"{type(exc).__name__}: {exc}"))
     checks.extend([
-        Check("T0.3", "출력 타입·인덱스", bool(valid_series and numeric), None, "numeric Series / 동일 index"),
-        Check("T0.3", "유한값", bool(finite), None, "±inf 없음"),
-        Check("T0.4", "결정성", bool(deterministic), None, "동일 입력 2회 일치"),
-        Check("T0.4", "캐시 정의 일치", bool(cache_match), None, "현재 정의와 캐시 일치"),
+        Check("T0.8", "출력 타입·인덱스", bool(valid_series and numeric), None, "numeric Series / 동일 index"),
+        Check("T0.9", "유한값", bool(finite), None, "±inf 없음"),
+        Check("T0.10", "결정성", bool(deterministic), None, "동일 입력 2회 일치"),
+        Check("T0.11", "36개월 인과성", bool(causal_ok), None, "36개월 이전·미래 행 비의존", causal_note),
+        Check("T0.12", "캐시 정의 일치", bool(cache_match), None, "현재 정의와 캐시 일치"),
     ])
     return checks
 
@@ -535,15 +598,10 @@ def evaluate(
             scenario_means[tag] = float(series.mean()) if len(series) else float("nan")
     terminal_stable = len(scenario_means) == 3 and all(value > 0 for value in scenario_means.values())
     add(Check("T1.2", "종착수익률 3점 방향", terminal_stable, None, "세 시나리오 IC > 0", str({k: round(v, 4) for k, v in scenario_means.items()})))
-    total_return_certified = bool(
-        panel.meta.get("return_field") == "total_return_close"
-        and panel.meta.get("return_methodology")
-        == "krx_gross_dividend_reinvested_v1"
-        and panel.meta.get("return_contract_status") == "CERTIFIED"
-    )
+    total_return_certified = _label_return_certified(panel)
     add(Check(
         "T1.3", "배당 포함 총수익 계약", total_return_certified, None,
-        "Silver total_return_close / krx_gross_dividend_reinvested_v1 / CERTIFIED",
+        "feature=adj_close / label=total_return_close v3(CERTIFIED) / candidate label 차단",
     ))
     if result.tier_failed("T1"):
         return result
@@ -782,16 +840,11 @@ def evaluate_oos(
     result.checks.extend(_validate_factor(factor, df, col))
     if result.tier_failed("T0"):
         return result
-    if not (
-        panel.meta.get("return_field") == "total_return_close"
-        and panel.meta.get("return_methodology")
-        == "krx_gross_dividend_reinvested_v1"
-        and panel.meta.get("return_contract_status") == "CERTIFIED"
-    ):
+    if not _label_return_certified(panel):
         result.checks.append(Check(
             "T4.1", "고정 OOS IC", False, None,
-            "인증된 Silver 배당 포함 total_return_close",
-            "총수익 방법론 계약 실패",
+            "feature/label 역할 분리 + 인증된 label total_return_close",
+            "수익률 역할 또는 label 총수익 계약 실패",
         ))
         return result
     work = df.loc[

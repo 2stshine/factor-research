@@ -98,8 +98,6 @@ def test_gold_trial_history_prefers_research_hash_with_legacy_fallback():
     "factor_name",
     [
         "amihud_illiquidity_1m",
-        "dividend_event_frequency_ttm",
-        "dividend_yield_ttm",
         "max_daily_return_1m",
         "net_equity_issuance_price_adjusted_12m",
         "operating_income_to_liabilities",
@@ -119,3 +117,15 @@ def test_research_candidate_binds_to_real_teamalpha_sql(factor_name: str):
     )
     assert len(implementation.sha256) == 64
     assert implementation.research_definition_hash == factor.definition_hash
+
+
+def test_uncertified_direct_dividend_candidates_have_no_gold_binding():
+    from factors.candidate_loader import DISABLED_RESEARCH_SPECS
+
+    load_candidates(factor_registry.REGISTRY)
+
+    for name in ("dividend_event_frequency_ttm", "dividend_yield_ttm"):
+        assert name not in factor_registry.REGISTRY
+        assert "historical-vintage/known_at" in (
+            DISABLED_RESEARCH_SPECS[name]["disabled_reason"]
+        )

@@ -30,7 +30,7 @@ FACTOR = Factor(
 
 RESEARCH_SPEC = {
     "thesis": (
-        "직전 월의 최대 일별 총수익률이 낮은 종목은 최대 일수익률이 높은 종목보다 이후 "
+        "직전 월의 최대 일별 분할조정 가격수익률이 낮은 종목은 최대 일수익률이 높은 종목보다 이후 "
         "총수익률 순위가 높을 것이다."
     ),
     "mechanism": (
@@ -46,7 +46,7 @@ RESEARCH_SPEC = {
         "한 달의 단일 최대 일수익에만 반응한다."
     ),
     "data_notes": (
-        "인증된 Silver total_return_close의 월중 일별 수익률 최대값이다. 기존 "
+        "Silver 분할조정 가격 adj_close의 월중 일별 가격수익률 최대값이다. 기존 "
         "max_monthly_return_12m은 12개월 최대 월수익률 proxy이므로 보존하고 이 정의와 구분한다. "
         "월중 최소 10개 유효 관측이 필요하다."
     ),

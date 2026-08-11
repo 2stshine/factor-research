@@ -52,7 +52,8 @@ RESEARCH_SPEC = {
         "사용하므로 완전한 중복은 아닐 것으로 예상한다."
     ),
     "data_notes": (
-        "배당재투자 지수인 return_close가 아니라 가격 기준점에 맞는 Silver adj_close를 사용한다. "
+        "최신 정정 배당을 포함한 ex-post label은 후보 입력에서 차단하고, 가격 기준점에 맞는 Silver "
+        "adj_close를 사용한다. "
         "최근 252거래일 중 최소 200개 가격관측이 있어야 정의한다."
     ),
 }

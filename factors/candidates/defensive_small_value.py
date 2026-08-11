@@ -12,7 +12,7 @@ def compute(frame):
     ordered = frame.sort_values(["asset_id", "ym"])
     market_cap = ordered["market_cap"].where(ordered["market_cap"] > 0)
     book_to_price = ordered["total_equity"] / market_cap
-    monthly_return = ordered.groupby("asset_id")["return_close"].pct_change()
+    monthly_return = ordered.groupby("asset_id")["adj_close"].pct_change()
     volatility = (
         monthly_return.groupby(ordered["asset_id"])
         .rolling(LOOKBACK_MONTHS, min_periods=LOOKBACK_MONTHS)
@@ -64,7 +64,7 @@ RESEARCH_SPEC = {
         "양의 관계를 예상한다. 세 축 결합으로 단일 팩터와 완전히 같지는 않을 것으로 예상한다."
     ),
     "data_notes": (
-        "Silver PIT total_equity, 월말 market_cap 및 total_return_close를 사용한다. 각 구성요소는 월별 "
+        "Silver PIT total_equity, 월말 market_cap 및 분할조정 가격 adj_close를 사용한다. 각 구성요소는 월별 "
         "횡단면 순위이며 최초 12개월은 변동성 계산 때문에 의도적으로 결측이다."
     ),
 }

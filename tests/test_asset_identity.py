@@ -18,6 +18,81 @@ from engine.panel import (
 from scripts import run as run_script
 
 
+def _return_evidence(run_id: str = "q") -> dict:
+    evidence = {
+        "validation_status": "VERIFIED",
+        "contract_release": silver.TOTAL_RETURN_CONTRACT_RELEASE,
+        "methodology_version": silver.TOTAL_RETURN_METHOD,
+        "dividend_treatment": silver.TOTAL_RETURN_DIVIDEND_TREATMENT,
+        "quality_run_id": run_id,
+        "coverage_start": "2024-01-31",
+        "coverage_end": "2024-02-29",
+        "certified_scope_start": "2015-01-01",
+        "certified_markets": ["KOSPI", "KOSDAQ"],
+        "price_row_count": 2,
+        "asset_count": 1,
+        "action_snapshot_run_id": "action-run",
+        "action_snapshot_schema_version": (
+            silver.TOTAL_RETURN_ACTION_SNAPSHOT_SCHEMA
+        ),
+        "action_snapshot_manifest_sha256": "a" * 64,
+        "action_snapshot_body_digest": "b" * 64,
+        "pit_scope_contract": silver.TOTAL_RETURN_PIT_SCOPE_CONTRACT,
+        "pit_input_action_count": 1,
+        "pit_included_action_count": 1,
+        "pit_excluded_action_count": 0,
+        "source_receipt_row_count": 1,
+        "source_receipt_row_digest": "d" * 64,
+        "terminal_economic_receipt_count": 1,
+        "terminal_economic_receipt_digest": "e" * 64,
+        "published_action_count": 1,
+        "published_action_row_digest": "f" * 64,
+        "published_action_scope_contract": (
+            "issuer_cash_ex_plus_manifest_scale_support_v1"
+        ),
+        "included_cash_action_parity_count": 1,
+        "included_cash_action_parity_digest": "1" * 64,
+        "cash_scale_source_contract": (
+            silver.TOTAL_RETURN_CASH_SCALE_SOURCE_CONTRACT
+        ),
+        "cash_scale_source_evidence_count": 0,
+        "cash_scale_source_evidence_digest": "3" * 64,
+        "cash_scale_source_manifest_sha256": "5" * 64,
+        "cash_scale_source_manifest_digest": "6" * 64,
+        "cash_scale_support_action_count": 0,
+        "cash_scale_support_action_digest": "7" * 64,
+        "cash_scale_support_manifest_digest": "8" * 64,
+        "cash_scale_support_semantic_group_count": 0,
+        "disclosure_observation_contract": (
+            silver.TOTAL_RETURN_DISCLOSURE_OBSERVATION_CONTRACT
+        ),
+        "disclosure_mutable_conflict_digest": "2" * 64,
+        "research_role": dict(silver.TOTAL_RETURN_RESEARCH_ROLE),
+        "resolution_version": silver.TOTAL_RETURN_RESOLUTION_VERSION,
+        "cash_action_count": 1,
+        "canonical_event_count": 1,
+        "applied_event_count": 1,
+        "excluded_event_count": 0,
+        "cash_scale_resolution_contract": (
+            silver.TOTAL_RETURN_CASH_SCALE_RESOLUTION_CONTRACT
+        ),
+        "cash_scale_resolution_row_count": 1,
+        "cash_scale_resolution_row_digest": "4" * 64,
+        "cash_scale_stable_event_count": 1,
+        "cash_scale_changed_event_count": 0,
+        "cash_scale_evidence_match_count": 0,
+        "cash_scale_adjusted_cash_parity_count": 1,
+        "cash_scale_first_listing_exclusion_count": 0,
+        "cash_scale_explicit_exclusion_count": 0,
+        "cash_scale_adj_close_decimal_places": 4,
+        "cash_scale_cash_in_adj_close": False,
+        "asset_identity_contract": silver.TOTAL_RETURN_ASSET_IDENTITY_CONTRACT,
+        "asset_identity_digest": "c" * 64,
+    }
+    evidence["evidence_sha256"] = silver.total_return_evidence_sha256(evidence)
+    return evidence
+
+
 def _identity_rows() -> pd.DataFrame:
     return pd.DataFrame({
         "asset_id": [1, 2, 1, 2],
@@ -26,6 +101,19 @@ def _identity_rows() -> pd.DataFrame:
             "2024-01-31", "2024-01-31", "2024-02-29", "2024-02-29",
         ],
     })
+
+
+def _cache_panel(rows: pd.DataFrame, *, bind: bool = True) -> Panel:
+    frame = rows.copy()
+    frame["adj_close"] = 100.0
+    frame["total_return_close"] = 100.0
+    panel = Panel(
+        frame, pd.Series(dtype="datetime64[ns]"),
+        meta=silver.return_role_contract(),
+    )
+    if bind:
+        bind_asset_identity(panel)
+    return panel
 
 
 def _silver_rows() -> pd.DataFrame:
@@ -49,6 +137,7 @@ def _silver_rows() -> pd.DataFrame:
         "first_seen": ["2023-01-02", "2023-01-02"],
         "dataset_start": ["2020-01-02", "2020-01-02"],
         "quality_run_id": ["q", "q"],
+        "total_return_quality_run_id": ["q", "q"],
         "amihud_illiquidity_1m": [1e-9, 1e-9],
         "amihud_observations_1m": [20, 20],
         "daily_volatility_252d": [.01, .01],
@@ -62,7 +151,9 @@ def _silver_rows() -> pd.DataFrame:
         "status": "CERTIFIED",
         "methodology_version": silver.TOTAL_RETURN_METHOD,
         "quality_run_id": "q",
+        "validation_evidence": _return_evidence(),
     }
+    frame.attrs["return_roles"] = silver.return_role_contract()
     return frame
 
 
@@ -275,16 +366,15 @@ def test_panel_activation_archives_previous_cache_and_is_atomic(
     monkeypatch.setattr(run_script, "PANEL_ARCHIVE", archive)
     cache.mkdir()
 
-    previous = Panel(_identity_rows(), pd.Series(dtype="datetime64[ns]"))
-    bind_asset_identity(previous)
+    previous = _cache_panel(_identity_rows())
     with active.open("wb") as handle:
         pickle.dump(previous, handle)
     previous_bytes = active.read_bytes()
 
     changed_rows = _identity_rows().copy()
     changed_rows["asset_id"] = changed_rows["asset_id"] + 10
-    current = Panel(changed_rows, pd.Series(dtype="datetime64[ns]"))
-    current_identity = bind_asset_identity(current)
+    current = _cache_panel(changed_rows)
+    current_identity = verify_asset_identity(current)
     active_path, previous_archive = run_script._activate_panel_cache(current)
 
     assert active_path == active
@@ -300,7 +390,7 @@ def test_panel_activation_archives_previous_cache_and_is_atomic(
     assert versioned.read_bytes() == active.read_bytes()
 
     active_bytes = active.read_bytes()
-    invalid = Panel(changed_rows, pd.Series(dtype="datetime64[ns]"), {})
+    invalid = _cache_panel(changed_rows, bind=False)
     with pytest.raises(RuntimeError, match="메타데이터가 없습니다"):
         run_script._activate_panel_cache(invalid)
     assert active.read_bytes() == active_bytes
@@ -312,13 +402,11 @@ def test_same_identity_can_archive_different_panel_contents(monkeypatch, tmp_pat
     monkeypatch.setattr(run_script, "PANEL_CACHE", cache / "panel.pkl")
     monkeypatch.setattr(run_script, "PANEL_ARCHIVE", cache / "panels")
 
-    first = Panel(_identity_rows(), pd.Series(dtype="datetime64[ns]"))
-    bind_asset_identity(first)
+    first = _cache_panel(_identity_rows())
     first.monthly["fundamental"] = 1.0
     run_script._activate_panel_cache(first)
 
-    second = Panel(_identity_rows(), pd.Series(dtype="datetime64[ns]"))
-    bind_asset_identity(second)
+    second = _cache_panel(_identity_rows())
     second.monthly["fundamental"] = 2.0
     run_script._activate_panel_cache(second)
 

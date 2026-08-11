@@ -13,6 +13,7 @@ from engine import dividends, epochs, fundamentals
 from engine.factors import Factor, Registry
 from engine.gate import RESEARCH_START, Result, RULESET_VERSION
 from engine.panel import Panel
+from engine import research_policy
 
 
 def _jsonable(value):
@@ -57,6 +58,7 @@ def factor_relationships(
     registry: Registry,
 ) -> list[dict]:
     """Median monthly investable-universe signal correlation with local factors."""
+    research_policy.assert_research_input_frame(df)
     target = f"f_{factor.name}"
     if target not in df:
         return []
@@ -66,11 +68,20 @@ def factor_relationships(
         other_col = f"f_{other.name}"
         if other.name == factor.name:
             continue
+        try:
+            research_policy.assert_allowed_lookback(
+                name=other.name, source=other.source, params=other.params,
+            )
+        except ValueError:
+            continue
         if other_col in df:
             other_values = df[other_col]
         elif set(other.needs).issubset(df.columns):
             try:
-                computed = other.compute(df) * other.predicted_sign
+                computed = (
+                    research_policy.compute_factor(other, df)
+                    * other.predicted_sign
+                )
             except Exception:
                 continue
             if not isinstance(computed, pd.Series) or not computed.index.equals(df.index):
@@ -176,16 +187,17 @@ def write_context(
     if len(active_campaigns) > 1:
         raise ValueError("동시에 진행 중인 current-protocol campaign이 둘 이상입니다")
     context_campaign = active_campaigns[0] if active_campaigns else None
-    df = panel.monthly
+    raw_df = panel.monthly
     visible_cutoff = pd.Timestamp(context_cutoff).normalize() if context_cutoff else None
     if context_campaign is not None:
         visible_cutoff = pd.Timestamp(
             context_campaign["discovery"]["data_cutoff"]
         ).normalize()
     if visible_cutoff is not None:
-        df = df[
-            pd.to_datetime(df["trade_date"]).dt.normalize().le(visible_cutoff)
+        raw_df = raw_df[
+            pd.to_datetime(raw_df["trade_date"]).dt.normalize().le(visible_cutoff)
         ].copy()
+    df = research_policy.research_input_frame(raw_df)
     if context_campaign is not None:
         discovery_signal_end = pd.Period(
             context_campaign["discovery"]["signal_end"], freq="M",
@@ -195,7 +207,7 @@ def write_context(
     else:
         discovery_signal_end = df["ym"].max()
     base_inputs = {
-        "return_close", "market_cap", "adv20", "trading_value", "shares", "market",
+        "market_cap", "adv20", "trading_value", "shares", "market",
         "adj_close", "amihud_illiquidity_1m", "amihud_observations_1m",
         "daily_volatility_252d", "daily_return_observations_252d",
         "max_daily_return_1m", "max_daily_return_observations_1m",
@@ -209,6 +221,8 @@ def write_context(
         )
         & set(df.columns)
     )
+    raw_period_start = panel.meta.get("parent_panel_start", raw_df["ym"].min())
+    raw_period_end = panel.meta.get("parent_panel_end", raw_df["ym"].max())
     lines = [
         "# Factor research context",
         "",
@@ -217,12 +231,26 @@ def write_context(
         "## Frozen research state",
         "",
         f"- Silver source: `{panel.meta.get('source')}`",
+        f"- Raw Silver period inside context boundary: `{raw_period_start}` ~ `{raw_period_end}`",
         f"- Visible Silver data period: `{df['ym'].min()}` ~ `{df['ym'].max()}`",
+        f"- Research input floor: `{research_policy.RESEARCH_INPUT_START}`",
+        f"- Maximum factor lookback: `{research_policy.MAX_FACTOR_LOOKBACK_MONTHS}` months",
         f"- Discovery signal evaluation period: `{RESEARCH_START}` ~ `{discovery_signal_end}`",
         f"- Discovery return-support cutoff: `{visible_cutoff.date() if visible_cutoff is not None else '-'}`",
         f"- Rows/months/assets: `{len(df):,}` / `{df['ym'].nunique()}` / `{df['asset_id'].nunique():,}`",
-        f"- Return field: `{panel.meta.get('return_field')}`",
-        f"- Return methodology: `{panel.meta.get('return_methodology')}`",
+        (
+            "- Historical feature return: "
+            f"`{panel.meta.get('feature_price_field')}` / "
+            f"`{panel.meta.get('feature_return_methodology')}`"
+        ),
+        (
+            "- Forward-label return: "
+            f"`{panel.meta.get('label_return_field')}` / "
+            f"`{panel.meta.get('label_return_methodology')}` / "
+            f"`{panel.meta.get('label_return_usage')}` / "
+            f"revision=`{panel.meta.get('label_revision_semantics')}` / "
+            f"candidate_access=`{panel.meta.get('label_candidate_access')}`"
+        ),
         f"- Gate ruleset: `{RULESET_VERSION}`",
         f"- Research protocol: `{epochs.PROTOCOL_VERSION}`",
         f"- Recorded autonomous cycles: `{len(history)}`",
