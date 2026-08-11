@@ -5,17 +5,17 @@
 ## Frozen research state
 
 - Silver source: `RDS public Silver`
-- Visible Silver data period: `2015-01` ~ `2026-08`
-- Discovery signal evaluation period: `2018-03` ~ `2026-08`
-- Discovery return-support cutoff: `-`
-- Rows/months/assets: `334,354` / `140` / `3,301`
+- Visible Silver data period: `2015-01` ~ `2023-05`
+- Discovery signal evaluation period: `2018-03` ~ `2023-04`
+- Discovery return-support cutoff: `2023-05-31`
+- Rows/months/assets: `228,067` / `101` / `2,912`
 - Return field: `total_return_close`
 - Return methodology: `krx_gross_dividend_reinvested_v1`
 - Gate ruleset: `fr-3.10.1`
 - Research protocol: `epoch-1.5`
-- Recorded autonomous cycles: `51`
-- Active sealed campaign: `-`
-- Strategy context cutoff: `-`
+- Recorded autonomous cycles: `53`
+- Active sealed campaign: `campaign-20260811-001`; OOS rows and post-cutoff outcomes are hidden from strategy context
+- Strategy context cutoff: `2023-05-31`
 
 ## Sealed-OOS campaigns
 
@@ -26,6 +26,7 @@
 | `campaign-20260807-002` | SUPERSEDED_BOUNDARY_POLICY | `2026-07-31` | NOT_USED | `-` | 3 | 3 | `research/campaigns/campaign-20260807-002/epochs/epoch-003/reflection.md` |
 | `campaign-20260808-001` | REVEALED | `2023-05-31` | REVEALED | `2023-06` | 1 | 5 | `research/campaigns/campaign-20260808-001/epochs/epoch-001/reflection.md` |
 | `campaign-20260809-001` | REVEALED | `2023-05-31` | REVEALED | `2023-06` | 1 | 2 | `research/campaigns/campaign-20260809-001/epochs/epoch-001/reflection.md` |
+| `campaign-20260811-001` | AWAITING_IMPLEMENTATION | `2023-05-31` | SEALED | `2023-06` | 1 | 1 | `research/campaigns/campaign-20260811-001/epochs/epoch-001/reflection.md` |
 
 ## Available strategy inputs
 
@@ -33,41 +34,41 @@
 |---|---:|---:|
 | `adj_close` | 100.0% | 100.0% |
 | `adv20` | 100.0% | 100.0% |
-| `amihud_illiquidity_1m` | 97.4% | 95.8% |
+| `amihud_illiquidity_1m` | 97.8% | 97.0% |
 | `amihud_observations_1m` | 100.0% | 100.0% |
-| `capital_stock` | 76.5% | 95.4% |
-| `comprehensive_income` | 26.1% | 94.8% |
-| `comprehensive_income_ttm` | 16.2% | 89.8% |
-| `current_assets` | 81.9% | 93.3% |
-| `current_liabilities` | 81.9% | 93.2% |
+| `capital_stock` | 68.4% | 89.5% |
+| `comprehensive_income` | 0.1% | 0.1% |
+| `comprehensive_income_ttm` | 0.0% | 0.0% |
+| `current_assets` | 77.2% | 89.7% |
+| `current_liabilities` | 77.2% | 89.7% |
 | `daily_return_observations_252d` | 100.0% | 100.0% |
-| `daily_volatility_252d` | 99.9% | 100.0% |
+| `daily_volatility_252d` | 99.9% | 99.9% |
 | `dividend_cash_ttm` | 100.0% | 100.0% |
 | `dividend_event_count_ttm` | 100.0% | 100.0% |
 | `market` | 100.0% | 100.0% |
 | `market_cap` | 100.0% | 100.0% |
 | `max_daily_return_1m` | 100.0% | 100.0% |
 | `max_daily_return_observations_1m` | 100.0% | 100.0% |
-| `net_income` | 81.4% | 95.3% |
-| `net_income_ttm` | 70.7% | 90.6% |
-| `net_income_yoy_change` | 68.0% | 90.8% |
-| `noncurrent_assets` | 81.7% | 92.9% |
-| `noncurrent_liabilities` | 81.8% | 93.2% |
-| `operating_income` | 81.4% | 95.3% |
-| `operating_income_ttm` | 70.7% | 90.7% |
-| `pretax_income` | 81.4% | 95.3% |
-| `pretax_income_ttm` | 70.7% | 90.7% |
+| `net_income` | 75.6% | 89.6% |
+| `net_income_ttm` | 63.0% | 84.8% |
+| `net_income_yoy_change` | 60.0% | 84.7% |
+| `noncurrent_assets` | 77.1% | 89.7% |
+| `noncurrent_liabilities` | 77.1% | 89.7% |
+| `operating_income` | 75.6% | 89.6% |
+| `operating_income_ttm` | 63.0% | 84.8% |
+| `pretax_income` | 75.6% | 89.6% |
+| `pretax_income_ttm` | 62.9% | 84.8% |
 | `price_high_252d` | 100.0% | 100.0% |
 | `price_high_observations_252d` | 100.0% | 100.0% |
-| `retained_earnings` | 82.1% | 95.5% |
+| `retained_earnings` | 76.6% | 89.6% |
 | `return_close` | 100.0% | 100.0% |
-| `revenue` | 80.5% | 93.3% |
-| `revenue_ttm` | 69.3% | 87.9% |
+| `revenue` | 75.3% | 88.9% |
+| `revenue_ttm` | 62.1% | 83.6% |
 | `shares` | 100.0% | 100.0% |
-| `sue_score` | 59.2% | 86.0% |
-| `total_assets` | 82.6% | 95.5% |
-| `total_equity` | 82.6% | 95.5% |
-| `total_liabilities` | 82.6% | 95.5% |
+| `sue_score` | 49.1% | 80.9% |
+| `total_assets` | 77.3% | 89.7% |
+| `total_equity` | 77.3% | 89.7% |
+| `total_liabilities` | 77.3% | 89.7% |
 | `trading_value` | 100.0% | 100.0% |
 
 ## Registered factors
@@ -101,10 +102,12 @@
 | `equity_growth_12m` | other | `equity_growth` | `7c69893c5073ff70` | total_equity |
 | `high_12m_proximity` | momentum | `price_anchoring` | `5bc5c56e28ba5b4f` | - |
 | `high_52w_price_proximity` | momentum | `price_anchoring` | `559d74ab903459ce` | - |
+| `intermediate_momentum_12_7` | momentum | `intermediate_momentum` | `492fa873c5763b79` | - |
 | `liability_growth_12m` | other | `liability_growth` | `048bced1c445efe6` | total_liabilities |
 | `long_term_reversal_36_12` | momentum | `long_term_reversal` | `b0a25a07020a622f` | - |
 | `low_vol_12m` | other | `low_volatility` | `ae41d1ec7120cde0` | - |
 | `market_beta_36m` | other | `market_beta` | `5d0c823050915663` | - |
+| `market_leverage` | other | `market_leverage` | `34e619cb846843cc` | total_liabilities |
 | `max_daily_return_1m` | other | `lottery_demand` | `e29c3da27f06a3ba` | - |
 | `max_monthly_return_12m` | other | `lottery_demand` | `c0ea1874070bbd0b` | - |
 | `net_equity_issuance_12m` | other | `net_equity_issuance` | `19650b7013627426` | - |
@@ -141,27 +144,25 @@
 
 | cycle | factor | family | ruleset | verdict | failed checks | strongest relation | report |
 |---|---|---|---|---|---|---|---|
-| `cycle-0022-operating_roa_volatility_36m` | `operating_roa_volatility_36m` | `profitability_stability` | `fr-3.2.0` | REJECT | 월별 커버리지 하위10% | defensive_value (0.37) | `research/runs/cycle-0022-operating_roa_volatility_36m/report.md` |
-| `cycle-0023-annual_seasonality_5y` | `annual_seasonality_5y` | `return_seasonality` | `fr-3.2.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 투자가능 Rank ICIR 최소요건, 투자가능 IC HAC 유의성 | long_term_reversal_36_12 (-0.14) | `research/runs/cycle-0023-annual_seasonality_5y/report.md` |
-| `cycle-0024-retained_earnings_to_assets` | `retained_earnings_to_assets` | `internal_financing` | `fr-3.2.0` | PROVISIONAL | 섹터 중립화 가능 | quality_stability (0.61) | `research/runs/cycle-0024-retained_earnings_to_assets/report.md` |
-| `cycle-0025-current_ratio` | `current_ratio` | `short_term_solvency` | `fr-3.2.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 투자가능 Rank ICIR 최소요건, 투자가능 IC HAC 유의성 | qual_lev (0.80) | `research/runs/cycle-0025-current_ratio/report.md` |
-| `cycle-0026-nonoperating_burden_to_assets` | `nonoperating_burden_to_assets` | `nonoperating_burden` | `fr-3.2.0` | REJECT | 전체 IC 최소요건 | net_profit_margin (0.29) | `research/runs/cycle-0026-nonoperating_burden_to_assets/report.md` |
-| `cycle-0027-max_monthly_return_12m` | `max_monthly_return_12m` | `lottery_demand` | `fr-3.2.0` | PROVISIONAL | 섹터 중립화 가능 | low_vol_12m (0.92) | `research/runs/cycle-0027-max_monthly_return_12m/report.md` |
-| `cycle-0028-trading_turnover_20d` | `trading_turnover_20d` | `trading_activity` | `fr-3.5.0` | PROVISIONAL | - | low_vol_12m (0.58) | `research/runs/cycle-0028-trading_turnover_20d/report.md` |
-| `cycle-0029-working_capital_accruals_12m` | `working_capital_accruals_12m` | `working_capital_accruals` | `fr-3.5.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | net_roa (-0.35) | `research/runs/cycle-0029-working_capital_accruals_12m/report.md` |
-| `cycle-0030-earnings_change_to_assets` | `earnings_change_to_assets` | `quarterly_earnings_change` | `fr-3.5.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건 | sue (0.91) | `research/runs/cycle-0030-earnings_change_to_assets/report.md` |
-| `cycle-0031-market_beta_36m` | `market_beta_36m` | `market_beta` | `fr-3.5.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 투자가능 Rank ICIR 최소요건, 다중검정 FDR | low_vol_12m (0.33) | `research/runs/cycle-0031-market_beta_36m/report.md` |
-| `cycle-0032-paid_in_capital_ratio` | `paid_in_capital_ratio` | `equity_composition` | `fr-3.5.0` | PROVISIONAL | - | retained_earnings_to_assets (0.58) | `research/runs/cycle-0032-paid_in_capital_ratio/report.md` |
-| `cycle-0033-current_liability_concentration` | `current_liability_concentration` | `liability_maturity_structure` | `fr-3.5.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건 | asset_turnover (-0.18) | `research/runs/cycle-0033-current_liability_concentration/report.md` |
-| `cycle-0034-net_working_capital_to_assets` | `net_working_capital_to_assets` | `working_capital_buffer` | `fr-3.9.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건 | current_ratio (0.95) | `research/runs/cycle-0034-net_working_capital_to_assets/report.md` |
-| `cycle-0035-operating_return_on_capital_employed` | `operating_return_on_capital_employed` | `capital_employment_efficiency` | `fr-3.9.0` | PROVISIONAL | - | operating_roa (0.98) | `research/runs/cycle-0035-operating_return_on_capital_employed/report.md` |
-| `cycle-0036-operating_margin_change_12m` | `operating_margin_change_12m` | `operating_margin_expansion` | `fr-3.9.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건 | operating_roa_change_12m (0.88) | `research/runs/cycle-0036-operating_margin_change_12m/report.md` |
-| `cycle-0037-posttax_income_conversion` | `posttax_income_conversion` | `tax_conversion_efficiency` | `fr-3.9.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | nonoperating_burden_to_assets (0.42) | `research/runs/cycle-0037-posttax_income_conversion/report.md` |
-| `cycle-0038-noncurrent_asset_encumbrance` | `noncurrent_asset_encumbrance` | `long_term_asset_encumbrance` | `fr-3.9.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | current_liability_concentration (-0.75) | `research/runs/cycle-0038-noncurrent_asset_encumbrance/report.md` |
-| `cycle-0039-turnover_volatility_12m` | `turnover_volatility_12m` | `trading_activity_instability` | `fr-3.9.0` | PROVISIONAL | - | size (-0.48) | `research/runs/cycle-0039-turnover_volatility_12m/report.md` |
-| `cycle-0040-equity_growth_12m` | `equity_growth_12m` | `equity_growth` | `fr-3.9.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | asset_growth_12m (0.60) | `research/runs/cycle-0040-equity_growth_12m/report.md` |
-| `cycle-0041-positive_return_share_12m` | `positive_return_share_12m` | `return_consistency` | `fr-3.9.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | mom_12_1 (0.60) | `research/runs/cycle-0041-positive_return_share_12m/report.md` |
-| `cycle-0042-return_kurtosis_24m` | `return_kurtosis_24m` | `return_tail_concentration` | `fr-3.9.0` | PROVISIONAL | - | return_skewness_24m (0.68) | `research/runs/cycle-0042-return_kurtosis_24m/report.md` |
+| `cycle-0024-retained_earnings_to_assets` | `retained_earnings_to_assets` | `internal_financing` | `fr-3.2.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0025-current_ratio` | `current_ratio` | `short_term_solvency` | `fr-3.2.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0026-nonoperating_burden_to_assets` | `nonoperating_burden_to_assets` | `nonoperating_burden` | `fr-3.2.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0027-max_monthly_return_12m` | `max_monthly_return_12m` | `lottery_demand` | `fr-3.2.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0028-trading_turnover_20d` | `trading_turnover_20d` | `trading_activity` | `fr-3.5.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0029-working_capital_accruals_12m` | `working_capital_accruals_12m` | `working_capital_accruals` | `fr-3.5.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0030-earnings_change_to_assets` | `earnings_change_to_assets` | `quarterly_earnings_change` | `fr-3.5.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0031-market_beta_36m` | `market_beta_36m` | `market_beta` | `fr-3.5.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0032-paid_in_capital_ratio` | `paid_in_capital_ratio` | `equity_composition` | `fr-3.5.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0033-current_liability_concentration` | `current_liability_concentration` | `liability_maturity_structure` | `fr-3.5.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0034-net_working_capital_to_assets` | `net_working_capital_to_assets` | `working_capital_buffer` | `fr-3.9.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0035-operating_return_on_capital_employed` | `operating_return_on_capital_employed` | `capital_employment_efficiency` | `fr-3.9.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0036-operating_margin_change_12m` | `operating_margin_change_12m` | `operating_margin_expansion` | `fr-3.9.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0037-posttax_income_conversion` | `posttax_income_conversion` | `tax_conversion_efficiency` | `fr-3.9.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0038-noncurrent_asset_encumbrance` | `noncurrent_asset_encumbrance` | `long_term_asset_encumbrance` | `fr-3.9.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0039-turnover_volatility_12m` | `turnover_volatility_12m` | `trading_activity_instability` | `fr-3.9.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0040-equity_growth_12m` | `equity_growth_12m` | `equity_growth` | `fr-3.9.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0041-positive_return_share_12m` | `positive_return_share_12m` | `return_consistency` | `fr-3.9.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
+| `cycle-0042-return_kurtosis_24m` | `return_kurtosis_24m` | `return_tail_concentration` | `fr-3.9.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
 | `cycle-0043-amihud_illiquidity_1m` | `amihud_illiquidity_1m` | `liquidity` | `fr-3.10.1` | PROVISIONAL | 시장구분·유동성·비의도 규모 노출 제거 후 IC·유지율 | size (0.75) | `research/runs/cycle-0043-amihud_illiquidity_1m/report.md` |
 | `cycle-0044-dividend_yield_ttm` | `dividend_yield_ttm` | `dividend_yield` | `fr-3.10.1` | PROVISIONAL | - | net_equity_issuance_12m (0.78) | `research/runs/cycle-0044-dividend_yield_ttm/report.md` |
 | `cycle-0045-high_52w_price_proximity` | `high_52w_price_proximity` | `price_anchoring` | `fr-3.10.1` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 투자가능 Rank ICIR 최소요건, 다중검정 FDR | high_12m_proximity (0.93) | `research/runs/cycle-0045-high_52w_price_proximity/report.md` |
@@ -171,5 +172,7 @@
 | `cycle-0049-operating_income_to_liabilities` | `operating_income_to_liabilities` | `operating_obligation_coverage` | `fr-3.10.1` | PROVISIONAL | - | operating_roa (0.94) | `research/runs/cycle-0049-operating_income_to_liabilities/report.md` |
 | `cycle-0050-noncurrent_asset_share` | `noncurrent_asset_share` | `asset_rigidity` | `fr-3.10.1` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 투자가능 Rank ICIR 최소요건, 다중검정 FDR | net_working_capital_to_assets (0.70) | `research/runs/cycle-0050-noncurrent_asset_share/report.md` |
 | `cycle-0051-dividend_event_frequency_ttm` | `dividend_event_frequency_ttm` | `payout_frequency` | `fr-3.10.1` | PROVISIONAL | - | dividend_yield_ttm (0.92) | `research/runs/cycle-0051-dividend_event_frequency_ttm/report.md` |
+| `cycle-0052-intermediate_momentum_12_7` | `intermediate_momentum_12_7` | `intermediate_momentum` | `fr-3.10.1` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 투자가능 Rank ICIR 최소요건, 다중검정 FDR | mom_12_1 (0.69) | `research/runs/cycle-0052-intermediate_momentum_12_7/report.md` |
+| `cycle-0053-market_leverage` | `market_leverage` | `market_leverage` | `fr-3.10.1` | PROVISIONAL | - | value_sp (0.81) | `research/runs/cycle-0053-market_leverage/report.md` |
 
-> 위 표는 최근 30건만 담는다. 오래된 21건은 생략됐다. 전문은 `research/history.jsonl`.
+> 위 표는 최근 30건만 담는다. 오래된 23건은 생략됐다. 전문은 `research/history.jsonl`.
