@@ -19,12 +19,25 @@ uv run python scripts/research.py campaign-start --campaign campaign-001 --epoch
 환경변수: `SILVER_DB_URL`(필수), `CACHE_DIR`(기본 `.cache`).
 RDS가 SSM 터널 뒤에 있으면 Silver build·평가·SQL parity 전에 터널을 연다.
 
+build는 월말 `(trade_date, asset_id, ticker)`를
+`krx_month_end_asset_ticker_v1`로 해시해 패널에 묶는다. 기존 활성 캐시는
+`.cache/panels/<identity>/<file-sha256>/`에 보존한 뒤 새 캐시를 원자적으로 교체한다.
+`campaign-start`, discovery 평가, Gold SQL parity, OOS 공개는 동일한 read-only
+`REPEATABLE READ` snapshot에서 같은 cutoff의 live RDS identity를 먼저 대조한다. OOS의 비활성
+종목 판정에 쓰는 closure월도 별도 digest로 묶으며, 종목 ID가 재배정되거나 PIT ticker가
+누락·중복되면 팩터 계산 전에 중단한다.
+
+```bash
+uv run python scripts/research.py identity-audit  # 활성 캐시 ↔ live RDS 읽기 전용 대조
+```
+
 `scripts/run.py gate`와 `publish`는 전체 패널이 봉인 OOS를 우회해 노출하지 않도록
 `epoch-1.5`에서 비활성화했다. 평가는 아래 campaign workflow로만 실행한다.
 
 모든 팩터의 공통 평가 시작일은 고정한다. campaign은 현재 Silver에서 45일 비활성 판정과
-closure까지 끝난 최신 36 signal개월을 hidden OOS로 먼저 떼고, 그 앞부분만 discovery로
+완전히 종료된 closure월까지 확인된 최신 36 signal개월을 hidden OOS로 먼저 떼고, 그 앞부분만 discovery로
 동결한다. 따라서 기본 실행은 미래 데이터를 기다리지 않고 지금 IS와 OOS를 모두 판단할 수 있다.
+현재 진행 중인 부분 closure월은 campaign 경계와 identity 계약에 포함하지 않는다.
 명시적 `prospective_holdout`은 장기 추적이 필요할 때만 사용한다.
 
 ## 자율 연구 campaign/epoch
@@ -222,6 +235,8 @@ REGISTRY.add(Factor(
 
 - 수익률은 Silver의 인증된 KRX gross 배당재투자 `total_return_close`만 사용한다. 계약이
   `CERTIFIED`가 아니거나 결측·비양수 값이 있으면 build를 중단한다
+- 패널의 asset identity digest가 캐시 내용 또는 live RDS와 다르면 연구·Gold 비교·OOS 공개를
+  중단한다. 이 사유로 무효화된 campaign의 과거 결과는 덮어쓰지 않고 `OOS=NOT_USED`로 보존한다
 - 과거 PIT 업종 이력이 없어 섹터 중립성은 현재 ruleset의 검증 범위가 아니다
 - 비용 모델의 시장충격은 아직 AUM·참여율 함수가 아닌 보수적 추정치다
 - 모든 고유 정의의 시행횟수는 `.cache/trials.sqlite3`에, 봉인 OOS 상태는

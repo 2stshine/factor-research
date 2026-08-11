@@ -230,6 +230,7 @@ def _monthly_panel(start: str, end: str) -> Panel:
     months = pd.period_range(start, end, freq="M")
     frame = pd.DataFrame({
         "asset_id": 1,
+        "Code": "000001",
         "ym": months,
         "trade_date": months.to_timestamp(how="end").normalize(),
         "return_close": np.arange(len(months), dtype=float) + 100.0,
@@ -246,6 +247,10 @@ def _start_campaign(
     min_oos_months: int = 36,
     planned_epoch_count: int = 1,
 ):
+    closure_cutoff = str(
+        (pd.Timestamp(snapshot_cutoff).to_period("M") + 1)
+        .to_timestamp(how="end").normalize().date()
+    )
     return epochs.start_campaign(
         root,
         campaign_id,
@@ -253,6 +258,10 @@ def _start_campaign(
         snapshot_cutoff=snapshot_cutoff,
         snapshot_digest="a" * 64,
         discovery_snapshot_digest="b" * 64,
+        snapshot_asset_identity_digest="c" * 64,
+        discovery_asset_identity_digest="d" * 64,
+        closure_asset_identity_digest="e" * 64,
+        closure_asset_identity_cutoff=closure_cutoff,
         min_oos_months=min_oos_months,
         planned_epoch_count=planned_epoch_count,
     )
@@ -373,6 +382,7 @@ def test_confirmation_scope_discards_months_after_fixed_oos_label():
     )
     assert scoped.monthly["ym"].max() == pd.Period("2024-01", freq="M")
     assert scoped.meta["confirmation_closure_month"] == "2024-02"
+    assert scoped.meta["closure_asset_identity_cutoff"] == "2024-02-29"
     assert scoped.meta["return_methodology"] == RETURN_META["return_methodology"]
     assert scoped.meta["return_contract_status"] == "CERTIFIED"
     assert "f_leaked_full_sample" not in scoped.monthly
@@ -406,6 +416,7 @@ def test_discovery_snapshot_digest_is_checked_before_database_or_factor_evaluati
             data_cutoff="2020-12-31",
             oos_start="2021-01",
             discovery_snapshot_digest="0" * 64,
+            discovery_asset_identity_digest="1" * 64,
         )
 
 
@@ -447,9 +458,15 @@ def test_campaign_snapshot_boundary_handles_partial_and_lagged_silver():
     window = research_script._campaign_snapshot_boundary(
         panel, as_of_date="2026-09-15",
     )
-    assert window.snapshot_cutoff == "2026-08-31"
-    assert window.discovery_data_cutoff == "2023-07-31"
-    assert str(window.oos_signal_start) == "2023-08"
+    assert window.snapshot_cutoff == "2026-07-31"
+    assert window.discovery_data_cutoff == "2023-06-30"
+    assert str(window.oos_signal_start) == "2023-07"
+
+    late_current_month = research_script._campaign_snapshot_boundary(
+        panel, as_of_date="2026-08-20",
+    )
+    assert late_current_month.snapshot_cutoff == "2026-06-30"
+    assert late_current_month.closure_month == pd.Period("2026-07", freq="M")
 
 
 def test_prospective_campaign_boundary_reserves_only_future_signals():
@@ -492,6 +509,8 @@ def test_prospective_campaign_stays_pristine_and_historical_reuse_is_labeled(
         snapshot_cutoff="2026-07-31",
         snapshot_digest="a" * 64,
         discovery_snapshot_digest="b" * 64,
+        snapshot_asset_identity_digest="c" * 64,
+        discovery_asset_identity_digest="d" * 64,
         mode=PROSPECTIVE_HOLDOUT_MODE,
         oos_start="2026-09",
     )
@@ -507,9 +526,9 @@ def test_prospective_campaign_stays_pristine_and_historical_reuse_is_labeled(
 def test_campaign_snapshot_boundary_rejects_truncated_prior_month():
     panel = _monthly_panel("2015-01", "2026-08")
     panel.monthly.loc[
-        panel.monthly["ym"].eq(pd.Period("2026-08", freq="M")),
+        panel.monthly["ym"].eq(pd.Period("2026-07", freq="M")),
         "trade_date",
-    ] = pd.Timestamp("2026-08-10")
+    ] = pd.Timestamp("2026-07-10")
 
     with pytest.raises(ValueError, match="월말까지 적재"):
         research_script._campaign_snapshot_boundary(
@@ -543,6 +562,7 @@ def test_scoped_panel_recomputes_terminal_labels_without_future_reappearance():
     months = pd.period_range("2020-12", "2024-03", freq="M")
     rows = [{
         "asset_id": 1,
+        "Code": "000001",
         "trade_date": month.to_timestamp(how="end").normalize(),
         "ym": month,
         "return_close": 100.0 + index,
@@ -550,6 +570,7 @@ def test_scoped_panel_recomputes_terminal_labels_without_future_reappearance():
     for index, month in enumerate(pd.PeriodIndex(["2023-12", "2024-03"], freq="M")):
         rows.append({
             "asset_id": 2,
+            "Code": "000002",
             "trade_date": month.to_timestamp(how="end").normalize(),
             "ym": month,
             "return_close": 100.0 + index,

@@ -20,6 +20,52 @@ SUPPORTED_MARKETS = ("KOSPI", "KOSDAQ")
 INACTIVE_DAYS = 45
 
 
+def asset_identity_evidence(
+    frame: pd.DataFrame, *, cutoff=None,
+) -> dict:
+    """Canonical identity evidence for an exact full or scoped panel frame."""
+    return silver.asset_identity_evidence(frame, cutoff=cutoff)
+
+
+def bind_asset_identity(panel: "Panel", *, cutoff=None) -> dict:
+    """Recompute and bind identity evidence after a panel is scoped."""
+    evidence = asset_identity_evidence(panel.monthly, cutoff=cutoff)
+    panel.meta.update(evidence)
+    return evidence
+
+
+def verify_asset_identity(panel: "Panel", *, cutoff=None) -> dict:
+    """Verify cached metadata against the panel's canonical identity rows."""
+    missing = [
+        key for key in silver.ASSET_IDENTITY_META_KEYS
+        if key not in panel.meta
+    ]
+    if missing:
+        raise RuntimeError(
+            f"패널 asset identity 계약 메타데이터가 없습니다: {missing}"
+        )
+    evidence = asset_identity_evidence(panel.monthly, cutoff=cutoff)
+    mismatches = {
+        key: {"bound": panel.meta[key], "actual": evidence[key]}
+        for key in silver.ASSET_IDENTITY_META_KEYS
+        if str(panel.meta[key]) != str(evidence[key])
+    }
+    if mismatches:
+        raise RuntimeError(
+            "패널 asset identity 계약이 현재 캐시 내용과 다릅니다: "
+            f"{mismatches}"
+        )
+    return evidence
+
+
+def verify_live_asset_identity(conn, panel: "Panel", *, cutoff=None) -> dict:
+    """Verify the scoped panel and compare it to live RDS in one connection."""
+    expected = verify_asset_identity(panel, cutoff=cutoff)
+    return silver.verify_live_asset_identity(
+        conn, expected, cutoff=expected["asset_identity_cutoff"],
+    )
+
+
 @dataclass
 class Panel:
     """Month-end PIT panel shared by factor computation and every gate."""
@@ -114,9 +160,22 @@ def from_silver_frame(prices: pd.DataFrame, *, verbose: bool = True) -> Panel:
     if missing:
         raise ValueError(f"Silver 가격 스냅샷 필수 컬럼 누락: {sorted(missing)}")
 
+    identity = asset_identity_evidence(prices)
+    loaded_identity = prices.attrs.get("asset_identity")
+    if loaded_identity is not None:
+        mismatches = {
+            key: {"loaded": loaded_identity.get(key), "actual": identity[key]}
+            for key in silver.ASSET_IDENTITY_META_KEYS
+            if str(loaded_identity.get(key)) != str(identity[key])
+        }
+        if mismatches:
+            raise RuntimeError(
+                "Silver 가격 스냅샷의 asset identity evidence가 실제 행과 "
+                f"다릅니다: {mismatches}"
+            )
+
     d = prices.copy()
     d["asset_id"] = pd.to_numeric(d["asset_id"], errors="raise").astype("int64")
-    d["Code"] = d["Code"].astype(str)
     for column in ("trade_date", "first_seen", "dataset_start", "listed_from", "listed_to"):
         if column in d:
             d[column] = pd.to_datetime(d[column], errors="coerce")
@@ -173,6 +232,7 @@ def from_silver_frame(prices: pd.DataFrame, *, verbose: bool = True) -> Panel:
         "return_methodology": return_contract["methodology_version"],
         "return_contract_status": return_contract["status"],
         "return_contract_run_id": return_contract.get("quality_run_id"),
+        **identity,
     }
     if verbose:
         snap = d[d["ym"] == d["ym"].max()]

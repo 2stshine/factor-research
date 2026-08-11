@@ -31,6 +31,7 @@ campaign-finalize
   └─ 해당 후보 없음                         → CLOSED_NO_QUALIFIED
 AWAITING_IMPLEMENTATION → 전 후보 SQL·hash·parity PASS → READY_FOR_CONFIRMATION
 READY_FOR_CONFIRMATION → 사용자 요청·readiness PASS → REVEALED(종료)
+입력 identity 불일치 → CLOSED_INVALIDATED_INPUT_IDENTITY / OOS NOT_USED
 ```
 
 - `OPEN`: 후보 생성과 discovery만 허용한다.
@@ -39,13 +40,15 @@ READY_FOR_CONFIRMATION → 사용자 요청·readiness PASS → REVEALED(종료)
 - `READY_FOR_CONFIRMATION`: 전 대상의 definition/SQL hash와 Python/SQL parity까지 확정됐다.
 - `CLOSED_NO_QUALIFIED`: 자동 기준을 통과한 후보 없이 종료됐다.
 - `REVEALED`: 봉인 OOS를 한 번 공개한 terminal 상태다.
+- `CLOSED_INVALIDATED_INPUT_IDENTITY`: cache와 live Silver의 `asset_id↔ticker`가 달라 기존 계산 입력을 인증할 수 없어 종료한 상태다. 기존 산출물은 보존하고 OOS는 쓰지 않는다.
 
 ## 시작
 
 부분월은 쓰지 않는다. 기본 `trailing_historical_holdout`은 현재 Silver 안에서 마지막 signal월의
-45일 비활성 판정과 마지막 수익률월 다음 closure월까지 이미 관측된 가장 최근 36개 signal월을
+45일 비활성 판정과 마지막 수익률월 다음 **완전히 종료된** closure월까지 이미 관측된 가장 최근 36개 signal월을
 먼저 hidden OOS로 고정한다. 후보 Agent에는 그 직전 수익률 지원월까지만 보여준다. 미래 36개월을
 기다리는 `prospective_holdout`은 사용자가 장기 추적을 명시할 때만 선택한다.
+현재 달의 진행 중인 closure 자료는 값이 들어와 있어도 campaign 경계와 identity digest에서 제외한다.
 
 예를 들어 관측일이 `2026-08-07`이고 Silver가 그날까지 들어왔다면 `2026-06` 수익률월까지가
 현재 즉시 판정 가능한 최신 경계다. `2026-06` signal은 45일 판정이 `2026-08-14` 뒤에 끝나므로
@@ -76,6 +79,11 @@ uv run python scripts/research.py epoch-start \
 후보 파일을 모두 작성한 뒤 결과를 보기 전에 한 번에 사전등록한다. manifest에는 이름, family,
 definition hash, `snapshot_cutoff`, discovery·embargo·OOS 경계와 ruleset을 저장한다. 소스가
 바뀌거나 목록에 없는 후보를 평가하면 중단한다.
+
+snapshot과 discovery에는 같은 범위의 월말 `(trade_date, asset_id, ticker)` identity digest를,
+historical OOS에는 비활성 종목 판정에 쓰는 closure월 identity digest도 동결한다. campaign
+시작·평가·Gold SQL parity·reveal은 동일한 read-only `REPEATABLE READ` snapshot의 live RDS와
+대조하며, 불일치나 PIT ticker 누락·중복은 결과를 만들기 전에 hard fail한다.
 
 ## Discovery와 성찰
 

@@ -5,16 +5,16 @@
 ## Frozen research state
 
 - Silver source: `RDS public Silver`
-- Visible Silver data period: `2015-01` ~ `2023-05`
+- Visible Silver data period: `1995-05` ~ `2023-05`
 - Discovery signal evaluation period: `2018-03` ~ `2023-04`
 - Discovery return-support cutoff: `2023-05-31`
-- Rows/months/assets: `228,067` / `101` / `2,912`
+- Rows/months/assets: `627,610` / `337` / `6,286`
 - Return field: `total_return_close`
 - Return methodology: `krx_gross_dividend_reinvested_v1`
 - Gate ruleset: `fr-3.10.1`
 - Research protocol: `epoch-1.5`
 - Recorded autonomous cycles: `53`
-- Active sealed campaign: `campaign-20260811-001`; OOS rows and post-cutoff outcomes are hidden from strategy context
+- Active sealed campaign: `-`
 - Strategy context cutoff: `2023-05-31`
 
 ## Sealed-OOS campaigns
@@ -26,7 +26,7 @@
 | `campaign-20260807-002` | SUPERSEDED_BOUNDARY_POLICY | `2026-07-31` | NOT_USED | `-` | 3 | 3 | `research/campaigns/campaign-20260807-002/epochs/epoch-003/reflection.md` |
 | `campaign-20260808-001` | REVEALED | `2023-05-31` | REVEALED | `2023-06` | 1 | 5 | `research/campaigns/campaign-20260808-001/epochs/epoch-001/reflection.md` |
 | `campaign-20260809-001` | REVEALED | `2023-05-31` | REVEALED | `2023-06` | 1 | 2 | `research/campaigns/campaign-20260809-001/epochs/epoch-001/reflection.md` |
-| `campaign-20260811-001` | AWAITING_IMPLEMENTATION | `2023-05-31` | SEALED | `2023-06` | 1 | 1 | `research/campaigns/campaign-20260811-001/epochs/epoch-001/reflection.md` |
+| `campaign-20260811-001` | CLOSED_INVALIDATED_INPUT_IDENTITY | `2023-05-31` | NOT_USED | `-` | 1 | 1 | `research/campaigns/campaign-20260811-001/epochs/epoch-001/reflection.md` |
 
 ## Available strategy inputs
 
@@ -36,39 +36,39 @@
 | `adv20` | 100.0% | 100.0% |
 | `amihud_illiquidity_1m` | 97.8% | 97.0% |
 | `amihud_observations_1m` | 100.0% | 100.0% |
-| `capital_stock` | 68.4% | 89.5% |
-| `comprehensive_income` | 0.1% | 0.1% |
+| `capital_stock` | 24.9% | 89.5% |
+| `comprehensive_income` | 0.0% | 0.1% |
 | `comprehensive_income_ttm` | 0.0% | 0.0% |
-| `current_assets` | 77.2% | 89.7% |
-| `current_liabilities` | 77.2% | 89.7% |
+| `current_assets` | 28.1% | 89.7% |
+| `current_liabilities` | 28.0% | 89.7% |
 | `daily_return_observations_252d` | 100.0% | 100.0% |
 | `daily_volatility_252d` | 99.9% | 99.9% |
-| `dividend_cash_ttm` | 100.0% | 100.0% |
-| `dividend_event_count_ttm` | 100.0% | 100.0% |
+| `dividend_cash_ttm` | 36.3% | 100.0% |
+| `dividend_event_count_ttm` | 36.3% | 100.0% |
 | `market` | 100.0% | 100.0% |
 | `market_cap` | 100.0% | 100.0% |
 | `max_daily_return_1m` | 100.0% | 100.0% |
 | `max_daily_return_observations_1m` | 100.0% | 100.0% |
-| `net_income` | 75.6% | 89.6% |
-| `net_income_ttm` | 63.0% | 84.8% |
-| `net_income_yoy_change` | 60.0% | 84.7% |
-| `noncurrent_assets` | 77.1% | 89.7% |
-| `noncurrent_liabilities` | 77.1% | 89.7% |
-| `operating_income` | 75.6% | 89.6% |
-| `operating_income_ttm` | 63.0% | 84.8% |
-| `pretax_income` | 75.6% | 89.6% |
-| `pretax_income_ttm` | 62.9% | 84.8% |
+| `net_income` | 27.5% | 89.6% |
+| `net_income_ttm` | 22.9% | 84.8% |
+| `net_income_yoy_change` | 21.8% | 84.7% |
+| `noncurrent_assets` | 28.0% | 89.7% |
+| `noncurrent_liabilities` | 28.0% | 89.7% |
+| `operating_income` | 27.5% | 89.6% |
+| `operating_income_ttm` | 22.9% | 84.8% |
+| `pretax_income` | 27.5% | 89.6% |
+| `pretax_income_ttm` | 22.9% | 84.8% |
 | `price_high_252d` | 100.0% | 100.0% |
 | `price_high_observations_252d` | 100.0% | 100.0% |
-| `retained_earnings` | 76.6% | 89.6% |
+| `retained_earnings` | 27.8% | 89.6% |
 | `return_close` | 100.0% | 100.0% |
-| `revenue` | 75.3% | 88.9% |
-| `revenue_ttm` | 62.1% | 83.6% |
+| `revenue` | 27.4% | 88.9% |
+| `revenue_ttm` | 22.6% | 83.6% |
 | `shares` | 100.0% | 100.0% |
-| `sue_score` | 49.1% | 80.9% |
-| `total_assets` | 77.3% | 89.7% |
-| `total_equity` | 77.3% | 89.7% |
-| `total_liabilities` | 77.3% | 89.7% |
+| `sue_score` | 17.8% | 80.9% |
+| `total_assets` | 28.1% | 89.7% |
+| `total_equity` | 28.1% | 89.7% |
+| `total_liabilities` | 28.1% | 89.7% |
 | `trading_value` | 100.0% | 100.0% |
 
 ## Registered factors
