@@ -4,7 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,6 +34,11 @@ from engine.gate import (
 
 
 PROTOCOL_VERSION = "epoch-1.5"
+IDENTITY_INVALIDATION_SCHEMA_VERSION = "input-identity-invalidation-1"
+INVALIDATED_INPUT_IDENTITY_STATUS = "CLOSED_INVALIDATED_INPUT_IDENTITY"
+_NONTERMINAL_CAMPAIGN_STATUSES = frozenset({
+    "OPEN", "AWAITING_IMPLEMENTATION", "READY_FOR_CONFIRMATION",
+})
 _ID = re.compile(r"^[a-z][a-z0-9-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -76,6 +83,36 @@ def _write(path: Path, payload: dict) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def _write_new(path: Path, payload: dict) -> None:
+    """Atomically publish one complete append-only artifact.
+
+    The final path is never opened for writing. A fully flushed same-filesystem
+    temporary file is hard-linked into the final name, so an interrupted body
+    write can leave only an ignorable transport file, never partial JSON at the
+    append-only path. ``link`` also fails atomically when the final name exists.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        descriptor, name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+        )
+        temporary = Path(name)
+        with os.fdopen(descriptor, "wb") as handle:
+            body = (
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+            ).encode("utf-8")
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, path)
+    except FileExistsError as exc:
+        raise ValueError(f"append-only artifact가 이미 존재합니다: {path}") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _family_digest(definition_hashes: list[str]) -> str:
@@ -189,6 +226,10 @@ def start_campaign(
     snapshot_cutoff: str,
     snapshot_digest: str,
     discovery_snapshot_digest: str,
+    snapshot_asset_identity_digest: str,
+    discovery_asset_identity_digest: str,
+    closure_asset_identity_digest: str | None = None,
+    closure_asset_identity_cutoff: str | None = None,
     min_oos_months: int = TH["min_oos_months"],
     mode: str = HISTORICAL_HOLDOUT_MODE,
     oos_start: str | pd.Period | None = None,
@@ -211,6 +252,12 @@ def start_campaign(
     ):
         if not _SHA256.fullmatch(str(digest)):
             raise ValueError(f"{label}는 64자리 소문자 SHA-256이어야 합니다")
+    for label, digest in (
+        ("snapshot_asset_identity_digest", snapshot_asset_identity_digest),
+        ("discovery_asset_identity_digest", discovery_asset_identity_digest),
+    ):
+        if not _SHA256.fullmatch(str(digest)):
+            raise ValueError(f"{label}는 64자리 소문자 SHA-256이어야 합니다")
     if mode == HISTORICAL_HOLDOUT_MODE:
         window = CampaignWindow.from_completed_snapshot(
             discovery_data_cutoff=discovery_data_cutoff,
@@ -228,6 +275,35 @@ def start_campaign(
         )
     else:
         raise ValueError(f"지원하지 않는 OOS mode입니다: {mode!r}")
+    closure_identity_values = (
+        closure_asset_identity_digest,
+        closure_asset_identity_cutoff,
+    )
+    if mode == HISTORICAL_HOLDOUT_MODE:
+        if any(value is None for value in closure_identity_values):
+            raise ValueError(
+                "historical campaign에는 closure asset identity digest와 cutoff가 필요합니다"
+            )
+        if not _SHA256.fullmatch(str(closure_asset_identity_digest)):
+            raise ValueError(
+                "closure_asset_identity_digest는 64자리 소문자 SHA-256이어야 합니다"
+            )
+        try:
+            closure_cutoff = pd.Timestamp(closure_asset_identity_cutoff)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("closure asset identity cutoff 날짜가 잘못되었습니다") from exc
+        if (
+            pd.isna(closure_cutoff)
+            or closure_cutoff.to_period("M") != window.closure_month
+        ):
+            raise ValueError(
+                "closure asset identity cutoff는 campaign closure month 안이어야 합니다: "
+                f"cutoff={closure_asset_identity_cutoff}, month={window.closure_month}"
+            )
+    elif any(value is not None for value in closure_identity_values):
+        raise ValueError(
+            "prospective campaign은 미래 closure identity를 사전 동결할 수 없습니다"
+        )
     prior_exposures = _overlapping_exposure_ids(root, window)
     # A prospective window must still be globally pristine.  Historical mode
     # is the practical backtest split: definitions are frozen before their own
@@ -241,6 +317,7 @@ def start_campaign(
         existing = _read(candidate)
         if existing.get("status") in {
             "CLOSED_NO_QUALIFIED", "REVEALED", "SUPERSEDED_BOUNDARY_POLICY",
+            INVALIDATED_INPUT_IDENTITY_STATUS,
         }:
             continue
         if existing.get("oos", {}).get("status") in {"NOT_USED", "REVEALED"}:
@@ -262,18 +339,30 @@ def start_campaign(
             "active campaign과 봉인 OOS 기간이 겹칩니다. 새 OOS 시작을 기존 기간 뒤로 미루세요: "
             f"{conflicts}"
         )
+    snapshot = {
+        **window.snapshot_manifest(),
+        "source": "RDS public Silver",
+        "input_digest": snapshot_digest,
+        "discovery_input_digest": discovery_snapshot_digest,
+    }
+    snapshot["asset_identity_digest"] = snapshot_asset_identity_digest
+    snapshot["discovery_asset_identity_digest"] = (
+        discovery_asset_identity_digest
+    )
+    if closure_asset_identity_digest is not None:
+        snapshot["closure_asset_identity_digest"] = (
+            closure_asset_identity_digest
+        )
+        snapshot["closure_asset_identity_cutoff"] = (
+            closure_asset_identity_cutoff
+        )
     payload = {
         "protocol_version": PROTOCOL_VERSION,
         "campaign_id": campaign_id,
         "status": "OPEN",
         "created_at": _now(),
         "ruleset_version": RULESET_VERSION,
-        "snapshot": {
-            **window.snapshot_manifest(),
-            "source": "RDS public Silver",
-            "input_digest": snapshot_digest,
-            "discovery_input_digest": discovery_snapshot_digest,
-        },
+        "snapshot": snapshot,
         "discovery": window.discovery_manifest(),
         "oos": {
             **window.oos_manifest(),
@@ -308,6 +397,134 @@ def migrate_open_campaign(
         "epoch-1.5 holdout은 기존 campaign으로 migration할 수 없습니다. "
         "기존 증거는 legacy/retrospective로 보존하고 새 campaign을 시작하세요."
     )
+
+
+def invalidate_input_identity(
+    root: str | Path,
+    campaign_id: str,
+    *,
+    migration_id: str,
+    before_identity_digest: str,
+    after_identity_digest: str,
+    reason: str,
+) -> Path:
+    """Close a campaign whose cached asset identity no longer matches Silver.
+
+    This is a terminal, append-only evidence transition.  It deliberately does
+    not reinterpret or delete any discovery, epoch, qualification, or
+    implementation artifact produced before the identity mismatch was found.
+    """
+    campaign_id = _validate_id(campaign_id, "campaign id")
+    migration_id = _validate_id(migration_id, "migration id")
+    identity_digests = (
+        ("before_identity_digest", before_identity_digest),
+        ("after_identity_digest", after_identity_digest),
+    )
+    for label, digest in identity_digests:
+        if not _SHA256.fullmatch(str(digest)):
+            raise ValueError(f"{label}는 64자리 소문자 SHA-256이어야 합니다")
+    if before_identity_digest == after_identity_digest:
+        raise ValueError("입력 identity가 같으므로 campaign을 무효화할 수 없습니다")
+    reason = str(reason).strip()
+    if not reason:
+        raise ValueError("identity 무효화 reason은 비어 있을 수 없습니다")
+
+    campaign = load_campaign(root, campaign_id)
+    _assert_current_state(campaign)
+    prior_campaign_status = campaign.get("status")
+    prior_oos_status = campaign.get("oos", {}).get("status")
+    if prior_campaign_status not in _NONTERMINAL_CAMPAIGN_STATUSES:
+        raise ValueError(
+            "비종료 campaign만 입력 identity 무효화할 수 있습니다: "
+            f"{prior_campaign_status}"
+        )
+    if prior_oos_status != "SEALED":
+        raise ValueError(
+            "OOS가 SEALED인 campaign만 입력 identity 무효화할 수 있습니다: "
+            f"{prior_oos_status}"
+        )
+    validate_manifest(campaign, expected_oos_months=TH["min_oos_months"])
+    if campaign.get("input_identity_invalidation") is not None:
+        raise ValueError("campaign에 이미 입력 identity 무효화 기록이 있습니다")
+    bound_identity_digest = campaign.get("snapshot", {}).get(
+        "asset_identity_digest"
+    )
+    if (
+        bound_identity_digest is not None
+        and bound_identity_digest != before_identity_digest
+    ):
+        raise ValueError(
+            "before identity digest가 campaign snapshot 계약과 다릅니다"
+        )
+
+    campaign_dir = _campaign_dir(root, campaign_id)
+    manifest_path = _campaign_path(root, campaign_id)
+    manifest_temporary = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
+    path = campaign_dir / "identity-invalidations" / f"{migration_id}.json"
+    journal_temporary_prefix = f".{path.name}."
+
+    existing_artifacts = {}
+    for artifact in sorted(campaign_dir.rglob("*")):
+        if (
+            not artifact.is_file()
+            or artifact == manifest_path
+            # `_write()` may leave this exact file behind if the process dies
+            # after writing but before atomic replace. It is transport state,
+            # not a pre-existing research artifact, so a retry must ignore it.
+            or artifact == manifest_temporary
+            or (
+                artifact.parent == path.parent
+                and artifact.name.startswith(journal_temporary_prefix)
+                and artifact.name.endswith(".tmp")
+            )
+            or artifact == path
+        ):
+            continue
+        relative = str(artifact.relative_to(campaign_dir))
+        existing_artifacts[relative] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+    immutable_payload = {
+        "schema_version": IDENTITY_INVALIDATION_SCHEMA_VERSION,
+        "protocol_version": campaign["protocol_version"],
+        "ruleset_version": campaign["ruleset_version"],
+        "campaign_id": campaign_id,
+        "migration_id": migration_id,
+        "prior_campaign_status": prior_campaign_status,
+        "prior_oos_status": prior_oos_status,
+        "new_campaign_status": INVALIDATED_INPUT_IDENTITY_STATUS,
+        "new_oos_status": "NOT_USED",
+        "before_identity_digest": before_identity_digest,
+        "after_identity_digest": after_identity_digest,
+        "reason": reason,
+        "prior_manifest_digest": _payload_digest(campaign),
+        "preserved_campaign_artifacts": existing_artifacts,
+    }
+    if path.exists():
+        # A prior attempt may have durably written the journal and crashed
+        # before the manifest transition. Resume only when every immutable
+        # field authenticates the exact same pre-transition state.
+        payload = _read(path)
+        mismatches = {
+            key: {"expected": value, "actual": payload.get(key)}
+            for key, value in immutable_payload.items()
+            if payload.get(key) != value
+        }
+        if mismatches or not payload.get("invalidated_at"):
+            raise ValueError(
+                "append-only artifact가 이미 존재하며 현재 요청과 다릅니다: "
+                f"{path}; mismatches={mismatches}"
+            )
+    else:
+        payload = {**immutable_payload, "invalidated_at": _now()}
+        _write_new(path, payload)
+
+    campaign["status"] = INVALIDATED_INPUT_IDENTITY_STATUS
+    campaign["oos"]["status"] = "NOT_USED"
+    campaign["invalidated_at"] = payload["invalidated_at"]
+    campaign["input_identity_invalidation"] = str(path)
+    campaign["input_identity_invalidation_digest"] = _payload_digest(payload)
+    _write(manifest_path, campaign)
+    return path
 
 
 def start_epoch(

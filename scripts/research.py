@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -12,7 +13,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from engine import epochs, panel as P, research
+from engine import epochs, panel as P, research, silver
 from engine.boundaries import (
     HISTORICAL_HOLDOUT_MODE,
     PROSPECTIVE_HOLDOUT_MODE,
@@ -23,18 +24,67 @@ from factors.candidate_loader import RESEARCH_SPECS
 from scripts import run
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 def cmd_context(_args) -> None:
     run.load_registry()
     panel = run._load()
     try:
         next_window = _campaign_snapshot_boundary(panel)
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
     path = research.write_context(
         panel, F.REGISTRY,
         context_cutoff=next_window.discovery_data_cutoff,
     )
     print(f"연구 컨텍스트 갱신: {path}")
+
+
+def cmd_identity_audit(_args) -> None:
+    """Compare the active cache identity with current RDS without evaluating factors."""
+    panel = run._load()
+    expected = P.verify_asset_identity(panel)
+    try:
+        with silver.connect(read_only=True) as conn:
+            actual = P.verify_live_asset_identity(conn, panel)
+    except (ValueError, RuntimeError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps({
+        "status": "MATCH",
+        "cache": expected,
+        "rds": actual,
+        "gold_write": False,
+    }, ensure_ascii=False, indent=2))
+
+
+def cmd_campaign_invalidate_input(args) -> None:
+    """Apply one reviewed, append-only input-identity migration artifact."""
+    migration_path = (
+        REPO_ROOT / "research" / "data-migrations" / args.migration
+        / "manifest.json"
+    )
+    if not migration_path.is_file():
+        raise SystemExit(f"입력 identity migration manifest가 없습니다: {migration_path}")
+    migration = json.loads(migration_path.read_text(encoding="utf-8"))
+    if migration.get("migration_id") != args.migration:
+        raise SystemExit("migration id와 manifest 내용이 다릅니다")
+    if args.campaign not in migration.get("affected_campaigns", []):
+        raise SystemExit(f"migration 대상 campaign이 아닙니다: {args.campaign}")
+    try:
+        path = epochs.invalidate_input_identity(
+            "research", args.campaign,
+            migration_id=args.migration,
+            before_identity_digest=migration["before"]["asset_identity_digest"],
+            after_identity_digest=migration["after"]["asset_identity_digest"],
+            reason=migration["reason"],
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"campaign 입력 identity 무효화 기록: {path}")
+    print("campaign 상태: CLOSED_INVALIDATED_INPUT_IDENTITY / OOS NOT_USED")
+    print("기존 discovery·epoch·parity 시도 산출물: 보존")
+    print("Gold write: 없음")
 
 
 def _campaign_snapshot_boundary(
@@ -61,7 +111,9 @@ def _campaign_snapshot_boundary(
             signal_end.to_timestamp(how="end").normalize()
             + pd.Timedelta(days=P.INACTIVE_DAYS)
         )
-        closure_ready = current_month >= completed_month + 1
+        # The month after the final return month supplies terminal-membership
+        # evidence. Never freeze that closure month while it is still partial.
+        closure_ready = current_month >= completed_month + 2
         if observed_as_of > inactive_ready_after and closure_ready:
             break
         completed_month -= 1
@@ -200,12 +252,50 @@ def cmd_campaign_start(args) -> None:
         data_cutoff=window.discovery_data_cutoff,
         oos_start=window.oos_signal_start,
     )
+    snapshot_identity = P.verify_asset_identity(snapshot_panel)
+    discovery_identity = P.verify_asset_identity(discovery_panel)
+    closure_identity = (
+        run._closure_observation_identity(
+            panel, closure_month=window.closure_month,
+        )
+        if args.mode == HISTORICAL_HOLDOUT_MODE
+        else None
+    )
+    try:
+        with silver.connect(read_only=True) as conn:
+            P.verify_live_asset_identity(
+                conn, snapshot_panel, cutoff=window.snapshot_cutoff,
+            )
+            P.verify_live_asset_identity(
+                conn, discovery_panel, cutoff=window.discovery_data_cutoff,
+            )
+            if closure_identity is not None:
+                silver.verify_live_asset_identity(
+                    conn, closure_identity,
+                    cutoff=closure_identity["asset_identity_cutoff"],
+                )
+    except (ValueError, RuntimeError) as exc:
+        raise SystemExit(str(exc)) from exc
     path = epochs.start_campaign(
         "research", args.campaign,
         discovery_data_cutoff=window.discovery_data_cutoff,
         snapshot_cutoff=window.snapshot_cutoff,
         snapshot_digest=P.snapshot_digest(snapshot_panel),
         discovery_snapshot_digest=P.snapshot_digest(discovery_panel),
+        snapshot_asset_identity_digest=(
+            snapshot_identity["asset_identity_digest"]
+        ),
+        discovery_asset_identity_digest=(
+            discovery_identity["asset_identity_digest"]
+        ),
+        closure_asset_identity_digest=(
+            closure_identity["asset_identity_digest"]
+            if closure_identity is not None else None
+        ),
+        closure_asset_identity_cutoff=(
+            closure_identity["asset_identity_cutoff"]
+            if closure_identity is not None else None
+        ),
         mode=args.mode,
         oos_start=window.oos_signal_start,
         planned_epoch_count=args.epochs,
@@ -283,8 +373,11 @@ def cmd_evaluate(args) -> None:
             discovery_snapshot_digest=(
                 campaign["snapshot"]["discovery_input_digest"]
             ),
+            discovery_asset_identity_digest=(
+                campaign["snapshot"].get("discovery_asset_identity_digest")
+            ),
         )
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
     factor, result = targets[0], results[0]
     relationships = research.factor_relationships(panel, df, factor, F.REGISTRY)
@@ -354,7 +447,7 @@ def cmd_campaign_verify_implementations(args) -> None:
         factors.append(factor)
     try:
         evidence = run.verify_implementations(campaign, factors)
-    except (ValueError, OSError) as exc:
+    except (ValueError, RuntimeError, OSError) as exc:
         raise SystemExit(str(exc)) from exc
     try:
         attempt = epochs.record_implementation_attempt(
@@ -411,6 +504,15 @@ def cmd_campaign_reveal(args) -> None:
             panel, snapshot_cutoff=campaign["snapshot"]["data_cutoff"],
         )
         snapshot_digest = P.snapshot_digest(snapshot)
+        snapshot_identity = P.verify_asset_identity(snapshot)[
+            "asset_identity_digest"
+        ]
+        if snapshot_identity != campaign["snapshot"].get(
+            "asset_identity_digest"
+        ):
+            raise ValueError(
+                "campaign 생성 당시 snapshot asset identity를 재현하지 못했습니다"
+            )
         campaign = epochs.assert_reveal_ready(
             "research", args.campaign, panel_as_of,
             snapshot_digest=snapshot_digest,
@@ -438,6 +540,16 @@ def cmd_campaign_reveal(args) -> None:
         discovery_snapshot_digest=(
             campaign["snapshot"]["discovery_input_digest"]
         ),
+        discovery_asset_identity_digest=(
+            campaign["snapshot"].get("discovery_asset_identity_digest")
+        ),
+        snapshot_asset_identity_digest=(
+            campaign["snapshot"].get("asset_identity_digest")
+        ),
+        closure_asset_identity_digest=(
+            campaign["snapshot"].get("closure_asset_identity_digest")
+        ),
+        confirmation_mode=campaign["oos"]["mode"],
     )
     confirmations = []
     for factor, result in zip(factors, results, strict=True):
@@ -469,6 +581,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("context", help="다음 루프가 읽을 현재 연구 상태 생성")
+    commands.add_parser(
+        "identity-audit",
+        help="현재 패널 asset identity와 live RDS를 읽기 전용 대조",
+    )
+    campaign_invalidate = commands.add_parser(
+        "campaign-invalidate-input",
+        help="검증된 asset identity migration으로 기존 campaign을 종료",
+    )
+    campaign_invalidate.add_argument("--campaign", required=True)
+    campaign_invalidate.add_argument("--migration", required=True)
     campaign_start = commands.add_parser("campaign-start", help="봉인 OOS campaign 시작")
     campaign_start.add_argument("--campaign", required=True)
     campaign_start.add_argument(
@@ -510,6 +632,8 @@ def main() -> None:
     args = parser.parse_args()
     {
         "context": cmd_context,
+        "identity-audit": cmd_identity_audit,
+        "campaign-invalidate-input": cmd_campaign_invalidate_input,
         "campaign-start": cmd_campaign_start,
         "epoch-start": cmd_epoch_start,
         "evaluate": cmd_evaluate,

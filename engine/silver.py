@@ -6,8 +6,10 @@ snapshots.  Every source row must belong to a CERTIFIED data-quality run.
 """
 from __future__ import annotations
 
-import os
+import hashlib
 import json
+import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,15 @@ from dotenv import load_dotenv
 
 
 TOTAL_RETURN_METHOD = "krx_gross_dividend_reinvested_v1"
+ASSET_IDENTITY_CONTRACT = "krx_month_end_asset_ticker_v1"
+ASSET_IDENTITY_META_KEYS = (
+    "asset_identity_contract",
+    "asset_identity_digest",
+    "asset_identity_row_count",
+    "asset_identity_asset_count",
+    "asset_identity_month_count",
+    "asset_identity_cutoff",
+)
 
 
 TOTAL_RETURN_CONTRACT_SQL = """
@@ -48,6 +59,7 @@ WITH certified AS (
         p.shares,
         p.market,
         p.quality_run_id,
+        i.ticker_match_count,
         lag(p.total_return_close) OVER (
             PARTITION BY p.asset_id ORDER BY p.trade_date
         ) AS prior_total_return_close,
@@ -64,15 +76,14 @@ WITH certified AS (
     JOIN public.dq_run q
       ON q.run_id = p.quality_run_id AND q.status = 'CERTIFIED'
     JOIN LATERAL (
-        SELECT ai.identifier
+        SELECT min(ai.identifier) AS identifier,
+               count(*) AS ticker_match_count
         FROM public.asset_identifier ai
         WHERE ai.asset_id = p.asset_id
           AND ai.source = 'KRX'
           AND ai.identifier_type = 'ticker'
           AND ai.valid_from <= p.trade_date
           AND (ai.valid_to IS NULL OR ai.valid_to >= p.trade_date)
-        ORDER BY ai.valid_from DESC
-        LIMIT 1
     ) i ON true
     WHERE p.source = 'KRX'
       AND a.exchange = 'KRX'
@@ -134,13 +145,55 @@ WITH certified AS (
 SELECT asset_id, "Code", "Name", instrument_type, listed_from, listed_to,
        trade_date, close, adj_close, total_return_close, trading_value,
        market_cap, shares, market, adv20, age_days, first_seen, dataset_start,
-       quality_run_id, amihud_illiquidity_1m, amihud_observations_1m,
+       quality_run_id, ticker_match_count,
+       amihud_illiquidity_1m, amihud_observations_1m,
        daily_volatility_252d, daily_return_observations_252d,
        max_daily_return_1m, max_daily_return_observations_1m,
        price_high_252d, price_high_observations_252d
 FROM monthly
 WHERE month_rank = 1
 ORDER BY asset_id, trade_date
+"""
+
+
+ASSET_IDENTITY_SQL = """
+WITH monthly AS (
+    SELECT p.asset_id,
+           p.trade_date,
+           row_number() OVER (
+               PARTITION BY p.asset_id, date_trunc('month', p.trade_date)
+               ORDER BY p.trade_date DESC
+           ) AS month_rank
+    FROM public.price_daily p
+    JOIN public.asset a ON a.asset_id = p.asset_id
+    JOIN public.dq_run q
+      ON q.run_id = p.quality_run_id AND q.status = 'CERTIFIED'
+    WHERE p.source = 'KRX'
+      AND a.exchange = 'KRX'
+      AND a.asset_type = 'stock'
+      AND p.market IN ('KOSPI', 'KOSDAQ')
+      AND (%s::date IS NULL OR p.trade_date <= %s::date)
+), month_end AS (
+    SELECT asset_id, trade_date
+    FROM monthly
+    WHERE month_rank = 1
+), identified AS (
+    SELECT m.asset_id,
+           m.trade_date,
+           min(ai.identifier) AS "Code",
+           count(ai.identifier) AS ticker_match_count
+    FROM month_end m
+    LEFT JOIN public.asset_identifier ai
+      ON ai.asset_id = m.asset_id
+     AND ai.source = 'KRX'
+     AND ai.identifier_type = 'ticker'
+     AND ai.valid_from <= m.trade_date
+     AND (ai.valid_to IS NULL OR ai.valid_to >= m.trade_date)
+    GROUP BY m.asset_id, m.trade_date
+)
+SELECT asset_id, "Code", trade_date, ticker_match_count
+FROM identified
+ORDER BY trade_date, asset_id, "Code"
 """
 
 
@@ -310,6 +363,10 @@ def connect(*, read_only: bool = True):
         keepalives_count=3,
         tcp_user_timeout=60_000,
     )
+    if read_only:
+        # Identity validation and every dependent query must observe one RDS
+        # snapshot even if Silver is rebuilt concurrently.
+        conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
     conn.read_only = read_only
     return conn
 
@@ -325,6 +382,198 @@ def read_frame(conn, sql: str, params: Any = None, *, chunk_size: int = 50_000) 
     if not frames:
         return pd.DataFrame(columns=columns)
     return pd.concat(frames, ignore_index=True)
+
+
+def _identity_cutoff(value: Any) -> pd.Timestamp:
+    try:
+        cutoff = pd.Timestamp(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"asset identity cutoff 날짜가 잘못되었습니다: {value!r}") from exc
+    if pd.isna(cutoff):
+        raise ValueError("asset identity cutoff은 비어 있을 수 없습니다")
+    if cutoff.tzinfo is not None:
+        cutoff = cutoff.tz_convert("UTC").tz_localize(None)
+    return cutoff.normalize()
+
+
+def asset_identity_evidence(
+    frame: pd.DataFrame, *, cutoff: Any | None = None,
+) -> dict[str, Any]:
+    """Return the canonical PIT month-end ``asset_id``/ticker identity digest.
+
+    The digest hashes only JSON rows of ``[date ISO, asset_id integer, Code
+    exact text]`` in deterministic order.  No numeric conversion, padding, or
+    trimming is permitted for ``Code`` because those transformations can hide
+    an asset remap.
+    """
+    required = {"asset_id", "Code", "trade_date"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(
+            f"asset identity 필수 컬럼 누락: {sorted(missing)}"
+        )
+
+    scoped = frame.loc[:, ["asset_id", "Code", "trade_date"]].copy()
+    if scoped.empty:
+        raise RuntimeError("asset identity 월말 스냅샷 행이 없습니다")
+    dates = pd.to_datetime(scoped["trade_date"], errors="coerce")
+    if dates.isna().any():
+        raise RuntimeError(
+            "asset identity trade_date가 비었거나 날짜가 아닙니다: "
+            f"{int(dates.isna().sum()):,}행"
+        )
+    if getattr(dates.dt, "tz", None) is not None:
+        dates = dates.dt.tz_convert("UTC").dt.tz_localize(None)
+    scoped["trade_date"] = dates.dt.normalize()
+
+    requested_cutoff = (
+        _identity_cutoff(cutoff)
+        if cutoff is not None
+        else scoped["trade_date"].max()
+    )
+    scoped = scoped.loc[scoped["trade_date"] <= requested_cutoff].copy()
+    if scoped.empty:
+        raise RuntimeError(
+            "asset identity cutoff 이내의 월말 스냅샷 행이 없습니다: "
+            f"cutoff={requested_cutoff.date().isoformat()}"
+        )
+
+    raw_codes = scoped["Code"]
+    bad_code = raw_codes.map(
+        lambda value: (
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or "\x00" in value
+        )
+    )
+    if bad_code.any():
+        sample = raw_codes.loc[bad_code].head(3).tolist()
+        raise RuntimeError(
+            "asset identity Code는 공백 없는 정확한 문자열이어야 합니다; "
+            f"숫자 변환·zero-padding은 허용하지 않습니다: sample={sample!r}"
+        )
+
+    numeric_ids = pd.to_numeric(scoped["asset_id"], errors="coerce")
+    finite_ids = numeric_ids.map(
+        lambda value: False if pd.isna(value) else math.isfinite(float(value))
+    )
+    bad_id = (
+        numeric_ids.isna()
+        | ~finite_ids
+        | numeric_ids.mod(1).ne(0)
+        | numeric_ids.lt(0)
+    )
+    if bad_id.any():
+        sample = scoped.loc[bad_id, "asset_id"].head(3).tolist()
+        raise RuntimeError(
+            "asset identity asset_id는 0 이상의 정수여야 합니다: "
+            f"sample={sample!r}"
+        )
+    scoped["asset_id"] = numeric_ids.astype("int64")
+    scoped["ym"] = scoped["trade_date"].dt.to_period("M")
+
+    duplicated_asset = scoped.duplicated(["asset_id", "ym"], keep=False)
+    if duplicated_asset.any():
+        sample = scoped.loc[
+            duplicated_asset, ["asset_id", "trade_date", "Code"]
+        ].head(4).to_dict("records")
+        raise RuntimeError(
+            "asset identity (asset_id, month)가 중복되었습니다: "
+            f"sample={sample}"
+        )
+    duplicated_code = scoped.duplicated(["Code", "ym"], keep=False)
+    if duplicated_code.any():
+        sample = scoped.loc[
+            duplicated_code, ["asset_id", "trade_date", "Code"]
+        ].head(4).to_dict("records")
+        raise RuntimeError(
+            "asset identity (Code, month)가 중복되었습니다: "
+            f"sample={sample}"
+        )
+
+    scoped = scoped.sort_values(
+        ["trade_date", "asset_id", "Code"], kind="mergesort"
+    )
+    digest = hashlib.sha256()
+    for row in scoped.itertuples(index=False):
+        digest.update(json.dumps(
+            [row.trade_date.date().isoformat(), int(row.asset_id), row.Code],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8"))
+        digest.update(b"\n")
+
+    return {
+        "asset_identity_contract": ASSET_IDENTITY_CONTRACT,
+        "asset_identity_digest": digest.hexdigest(),
+        "asset_identity_row_count": int(len(scoped)),
+        "asset_identity_asset_count": int(scoped["asset_id"].nunique()),
+        "asset_identity_month_count": int(scoped["ym"].nunique()),
+        "asset_identity_cutoff": requested_cutoff.date().isoformat(),
+    }
+
+
+def _check_ticker_match_counts(frame: pd.DataFrame) -> None:
+    if "ticker_match_count" not in frame.columns:
+        return
+    counts = pd.to_numeric(frame["ticker_match_count"], errors="coerce")
+    invalid = counts.ne(1) | counts.isna()
+    if invalid.any():
+        columns = [
+            column for column in
+            ("asset_id", "trade_date", "Code", "ticker_match_count")
+            if column in frame.columns
+        ]
+        sample = frame.loc[invalid, columns].head(5).to_dict("records")
+        raise RuntimeError(
+            "Silver PIT ticker는 각 (asset_id, trade_date)에 정확히 하나여야 "
+            f"합니다. 누락 또는 유효기간 중첩: sample={sample}"
+        )
+
+
+def load_asset_identity_snapshot(
+    conn, *, cutoff: Any | None = None,
+) -> pd.DataFrame:
+    """Load and validate the live RDS month-end PIT identity at ``cutoff``."""
+    normalized = _identity_cutoff(cutoff) if cutoff is not None else None
+    parameter = None if normalized is None else normalized.date().isoformat()
+    frame = read_frame(conn, ASSET_IDENTITY_SQL, (parameter, parameter))
+    _check_ticker_match_counts(frame)
+    evidence = asset_identity_evidence(frame, cutoff=normalized)
+    frame.attrs["asset_identity"] = evidence
+    return frame
+
+
+def verify_live_asset_identity(
+    conn, expected: dict[str, Any], *, cutoff: Any | None = None,
+) -> dict[str, Any]:
+    """Fail closed when live RDS identity differs from bound panel evidence."""
+    missing = [key for key in ASSET_IDENTITY_META_KEYS if key not in expected]
+    if missing:
+        raise RuntimeError(
+            f"예상 asset identity 계약 메타데이터가 없습니다: {missing}"
+        )
+    expected_cutoff = _identity_cutoff(expected["asset_identity_cutoff"])
+    if cutoff is not None and _identity_cutoff(cutoff) != expected_cutoff:
+        raise RuntimeError(
+            "asset identity 검증 cutoff와 패널 계약 cutoff가 다릅니다: "
+            f"requested={_identity_cutoff(cutoff).date().isoformat()}, "
+            f"bound={expected_cutoff.date().isoformat()}"
+        )
+    live = load_asset_identity_snapshot(conn, cutoff=expected_cutoff)
+    actual = live.attrs["asset_identity"]
+    mismatches = {
+        key: {"expected": expected[key], "actual": actual[key]}
+        for key in ASSET_IDENTITY_META_KEYS
+        if str(expected[key]) != str(actual[key])
+    }
+    if mismatches:
+        raise RuntimeError(
+            "현재 RDS의 asset_id↔ticker PIT identity가 패널 계약과 "
+            f"다릅니다: {mismatches}"
+        )
+    return actual
 
 
 def load_price_snapshot(conn) -> pd.DataFrame:
@@ -352,6 +601,8 @@ def load_price_snapshot(conn) -> pd.DataFrame:
             f"status={row['status']}, method={row['methodology_version']}"
         )
     prices = read_frame(conn, PRICE_SNAPSHOT_SQL)
+    _check_ticker_match_counts(prices)
+    prices.attrs["asset_identity"] = asset_identity_evidence(prices)
     prices.attrs["return_contract"] = {
         key: (None if pd.isna(value) else str(value))
         for key, value in row.to_dict().items()

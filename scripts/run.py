@@ -13,7 +13,9 @@ import hashlib
 import json
 import os
 import pickle
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -23,10 +25,76 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from engine import factors as F
 from engine import dividends, epochs, fundamentals, gate, implementation, null, panel as P, publish, silver, trials
-from engine.boundaries import CampaignWindow, validate_manifest
+from engine.boundaries import (
+    HISTORICAL_HOLDOUT_MODE,
+    PROSPECTIVE_HOLDOUT_MODE,
+    CampaignWindow,
+    validate_manifest,
+)
 
 CACHE = Path(os.environ.get("CACHE_DIR", ".cache"))
 TRIAL_DB = CACHE / "trials.sqlite3"
+PANEL_CACHE = CACHE / "panel.pkl"
+PANEL_ARCHIVE = CACHE / "panels"
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        while chunk := fh.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _archive_panel(path: Path, *, key: str | None = None) -> Path:
+    """Keep an immutable copy before an active panel cache is replaced."""
+    file_digest = _file_sha256(path)
+    destination = (
+        PANEL_ARCHIVE / key / file_digest / "panel.pkl"
+        if key is not None
+        else PANEL_ARCHIVE / f"legacy-file-{file_digest}" / "panel.pkl"
+    )
+    if destination.exists():
+        if _file_sha256(destination) != file_digest:
+            raise RuntimeError(f"패널 archive key 충돌: {destination}")
+        return destination
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".pkl.tmp")
+    shutil.copyfile(path, temporary)
+    temporary.replace(destination)
+    return destination
+
+
+def _activate_panel_cache(panel: P.Panel) -> tuple[Path, Path | None]:
+    """Validate, archive, and atomically activate one fully-built panel."""
+    CACHE.mkdir(parents=True, exist_ok=True)
+    evidence = P.verify_asset_identity(panel)
+    temporary_path: Path | None = None
+    previous_archive: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=".panel-", suffix=".pkl", dir=CACHE,
+            delete=False,
+        ) as fh:
+            pickle.dump(panel, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+            temporary_path = Path(fh.name)
+        with temporary_path.open("rb") as fh:
+            persisted = pickle.load(fh)
+        P.verify_asset_identity(persisted)
+        # Persist the content-addressed version before changing the active file.
+        _archive_panel(
+            temporary_path, key=evidence["asset_identity_digest"],
+        )
+        if PANEL_CACHE.exists():
+            previous_archive = _archive_panel(PANEL_CACHE)
+        temporary_path.replace(PANEL_CACHE)
+        temporary_path = None
+        return PANEL_CACHE, previous_archive
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _implementation_contract(
@@ -115,13 +183,15 @@ def cmd_build(args):
         df[f"fwd_{tag}"] = P.forward_returns(pan, terminal=term)   # 인덱스 정렬 (위치대입 금지)
     df = F.compute_all(F.REGISTRY, df)
     pan.monthly = df
-    with open(CACHE / "panel.pkl", "wb") as fh:
-        pickle.dump(pan, fh)
-    print(f"\n캐시 저장: {CACHE/'panel.pkl'}  ({len(df):,}행 × {len(F.REGISTRY)}팩터)")
+    active, previous_archive = _activate_panel_cache(pan)
+    if previous_archive is not None:
+        print(f"\n기존 캐시 보존: {previous_archive}")
+    print(f"캐시 저장: {active}  ({len(df):,}행 × {len(F.REGISTRY)}팩터)")
+    print(f"asset identity: {pan.meta['asset_identity_digest']}")
 
 
 def _load():
-    with open(CACHE / "panel.pkl", "rb") as fh:
+    with PANEL_CACHE.open("rb") as fh:
         panel = pickle.load(fh)
     required = {
         "asset_id", "return_close", "total_return_close", "quality_run_id",
@@ -136,6 +206,13 @@ def _load():
         and panel.meta.get("return_methodology") == silver.TOTAL_RETURN_METHOD
         and panel.meta.get("return_contract_status") == "CERTIFIED"
     )
+    try:
+        P.verify_asset_identity(panel)
+    except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+        raise SystemExit(
+            "캐시의 asset identity 계약이 없거나 현재 내용과 일치하지 않습니다. "
+            "`uv run python scripts/run.py build`로 현재 RDS에서 다시 만드세요."
+        ) from exc
     if (
         panel.meta.get("source") != "RDS public Silver"
         or not required.issubset(panel.monthly.columns)
@@ -223,14 +300,80 @@ def _rebuild_scoped_panel(
     # metadata such as last_day/n_dead that lies beyond the frozen cutoff.
     meta = {
         key: pan.meta.get(key)
-        for key in ("source", "return_field")
+        for key in (
+            "source",
+            "return_field",
+            "return_methodology",
+            "return_contract_status",
+            "return_contract_run_id",
+            "dividend_feature_contract",
+        )
         if key in pan.meta
     }
     meta.update(meta_updates)
     output = P.Panel(monthly=scoped, dead=dead, meta=meta)
+    P.bind_asset_identity(output)
     for tag, terminal in (("opt", 0.0), ("mid", -0.50), ("pess", -1.00)):
         output.monthly[f"fwd_{tag}"] = P.forward_returns(output, terminal=terminal)
     return output
+
+
+def _closure_observation_identity(
+    pan: P.Panel, *, closure_month: pd.Period | str,
+) -> dict:
+    """Bind every observation used to decide terminal membership at OOS."""
+    month = pd.Period(closure_month, freq="M")
+    observed = pan.monthly[pan.monthly["ym"].le(month)].copy()
+    if observed.empty or observed["ym"].max() != month:
+        raise ValueError(f"OOS closure month {month} 관측이 패널에 없습니다")
+    return P.asset_identity_evidence(observed)
+
+
+def _bind_closure_asset_identity(meta: dict, evidence: dict) -> None:
+    for key in silver.ASSET_IDENTITY_META_KEYS:
+        meta[f"closure_{key}"] = evidence[key]
+
+
+def _closure_asset_identity(panel: P.Panel) -> dict:
+    evidence = {}
+    for key in silver.ASSET_IDENTITY_META_KEYS:
+        meta_key = f"closure_{key}"
+        if meta_key not in panel.meta:
+            raise RuntimeError(
+                f"confirmation closure identity 메타데이터가 없습니다: {meta_key}"
+            )
+        evidence[key] = panel.meta[meta_key]
+    return evidence
+
+
+def _verify_confirmation_live_identity(conn, panel: P.Panel) -> None:
+    """Verify both return rows and closure rows in one DB snapshot."""
+    P.verify_live_asset_identity(conn, panel)
+    closure = _closure_asset_identity(panel)
+    silver.verify_live_asset_identity(
+        conn, closure, cutoff=closure["asset_identity_cutoff"],
+    )
+
+
+def _assert_confirmation_asset_identity(
+    panel: P.Panel,
+    *,
+    mode: str,
+    historical_snapshot_identity_digest: str | None,
+) -> dict:
+    """Authenticate confirmation rows under the campaign's boundary mode."""
+    actual = P.verify_asset_identity(panel)
+    if mode == HISTORICAL_HOLDOUT_MODE:
+        if actual["asset_identity_digest"] != historical_snapshot_identity_digest:
+            raise ValueError(
+                "campaign 생성 당시 confirmation asset identity를 재현하지 못했습니다"
+            )
+    elif mode != PROSPECTIVE_HOLDOUT_MODE:
+        raise ValueError(f"지원하지 않는 confirmation mode입니다: {mode!r}")
+    # Prospective confirmation rows did not exist at campaign start. The
+    # original snapshot is verified separately; future rows are cache↔live
+    # checked in one repeatable-read transaction at reveal.
+    return actual
 
 
 def _scope_snapshot_panel(pan: P.Panel, *, snapshot_cutoff: str) -> P.Panel:
@@ -313,6 +456,9 @@ def _scope_confirmation_panel(
     if observed.empty or observed["ym"].max() != closure_month:
         raise ValueError(f"OOS 확정 월 {closure_month} 관측이 snapshot에 없습니다")
     closure_as_of = pd.Timestamp(observed["trade_date"].max()).normalize()
+    closure_identity = P.asset_identity_evidence(
+        observed, cutoff=closure_as_of,
+    )
     inactive_ready_after = (
         signal_end.to_timestamp(how="end").normalize()
         + pd.Timedelta(days=P.INACTIVE_DAYS)
@@ -335,7 +481,14 @@ def _scope_confirmation_panel(
     dead = last_seen[last_seen < closure_as_of - pd.Timedelta(days=P.INACTIVE_DAYS)]
     meta = {
         key: pan.meta.get(key)
-        for key in ("source", "return_field")
+        for key in (
+            "source",
+            "return_field",
+            "return_methodology",
+            "return_contract_status",
+            "return_contract_run_id",
+            "dividend_feature_contract",
+        )
         if key in pan.meta
     }
     meta.update({
@@ -344,7 +497,9 @@ def _scope_confirmation_panel(
         "confirmation_closure_month": str(closure_month),
         "confirmation_closure_as_of": str(closure_as_of.date()),
     })
+    _bind_closure_asset_identity(meta, closure_identity)
     output = P.Panel(monthly=scoped, dead=dead, meta=meta)
+    P.bind_asset_identity(output)
     for tag, terminal in (("opt", 0.0), ("mid", -0.50), ("pess", -1.00)):
         output.monthly[f"fwd_{tag}"] = P.forward_returns(output, terminal=terminal)
     return output
@@ -365,6 +520,14 @@ def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict
     expected_digest = campaign["snapshot"]["discovery_input_digest"]
     if snapshot_digest != expected_digest:
         raise ValueError("campaign 생성 당시 discovery Silver snapshot을 재현하지 못했습니다")
+    identity = P.verify_asset_identity(discovery_panel)
+    expected_identity = campaign["snapshot"].get(
+        "discovery_asset_identity_digest"
+    )
+    if identity["asset_identity_digest"] != expected_identity:
+        raise ValueError(
+            "campaign 생성 당시 discovery asset identity를 재현하지 못했습니다"
+        )
 
     start = gate.RESEARCH_START
     end = window.discovery_signal_end
@@ -376,50 +539,59 @@ def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict
     )
     evidence_by_name: dict[str, dict] = {}
     prepared: list[tuple[F.Factor, dict, Path, dict, pd.DataFrame]] = []
-    for factor in factors:
-        binding: dict | None = None
-        try:
-            _reference, spec, sql_path, binding = _implementation_contract(factor)
-        except Exception as exc:
-            evidence_by_name[factor.name] = implementation.failure_evidence(
-                factor,
-                discovery_signal_start=start,
-                discovery_signal_end=end,
-                discovery_snapshot_digest=snapshot_digest,
-                stage="contract",
-                error=exc,
-                binding=binding,
+    try:
+        with silver.connect(read_only=True) as conn:
+            # This check and every parity query share one read-only transaction.
+            # A re-keyed RDS therefore fails before candidate or Gold SQL runs.
+            P.verify_live_asset_identity(
+                conn, discovery_panel,
+                cutoff=window.discovery_data_cutoff,
             )
-            continue
-        try:
-            raw = factor.compute(frame.copy())
-            if not isinstance(raw, pd.Series) or not raw.index.equals(frame.index):
-                raise ValueError(f"Python factor가 입력 index의 Series를 반환하지 않습니다: {factor.name}")
-            raw = pd.to_numeric(raw, errors="coerce")
-            finite = pd.Series(
-                pd.notna(raw) & (raw.abs() != float("inf")), index=raw.index,
-            )
-            valid = in_scope & finite
-            python_frame = frame.loc[valid, ["asset_id", "trade_date"]].rename(
-                columns={"trade_date": "as_of_date"},
-            )
-            python_frame["value"] = raw.loc[valid].astype(float).to_numpy()
-        except Exception as exc:
-            evidence_by_name[factor.name] = implementation.failure_evidence(
-                factor,
-                discovery_signal_start=start,
-                discovery_signal_end=end,
-                discovery_snapshot_digest=snapshot_digest,
-                stage="python_compute",
-                error=exc,
-                binding=binding,
-            )
-            continue
-        prepared.append((factor, spec, sql_path, binding, python_frame))
+            for factor in factors:
+                binding: dict | None = None
+                try:
+                    _reference, spec, sql_path, binding = _implementation_contract(factor)
+                except Exception as exc:
+                    evidence_by_name[factor.name] = implementation.failure_evidence(
+                        factor,
+                        discovery_signal_start=start,
+                        discovery_signal_end=end,
+                        discovery_snapshot_digest=snapshot_digest,
+                        stage="contract",
+                        error=exc,
+                        binding=binding,
+                    )
+                    continue
+                try:
+                    raw = factor.compute(frame.copy())
+                    if not isinstance(raw, pd.Series) or not raw.index.equals(frame.index):
+                        raise ValueError(
+                            "Python factor가 입력 index의 Series를 반환하지 않습니다: "
+                            f"{factor.name}"
+                        )
+                    raw = pd.to_numeric(raw, errors="coerce")
+                    finite = pd.Series(
+                        pd.notna(raw) & (raw.abs() != float("inf")), index=raw.index,
+                    )
+                    valid = in_scope & finite
+                    python_frame = frame.loc[
+                        valid, ["asset_id", "trade_date"]
+                    ].rename(columns={"trade_date": "as_of_date"})
+                    python_frame["value"] = raw.loc[valid].astype(float).to_numpy()
+                except Exception as exc:
+                    evidence_by_name[factor.name] = implementation.failure_evidence(
+                        factor,
+                        discovery_signal_start=start,
+                        discovery_signal_end=end,
+                        discovery_snapshot_digest=snapshot_digest,
+                        stage="python_compute",
+                        error=exc,
+                        binding=binding,
+                    )
+                    continue
+                prepared.append((factor, spec, sql_path, binding, python_frame))
 
-    if prepared:
-        try:
-            with silver.connect(read_only=True) as conn:
+            if prepared:
                 for factor, spec, sql_path, binding, python_frame in prepared:
                     try:
                         with conn.cursor() as cursor:
@@ -460,18 +632,22 @@ def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict
                             error=exc,
                             binding=binding,
                         )
-        except Exception as exc:
-            for factor, _spec, _sql_path, binding, _python_frame in prepared:
-                if factor.name not in evidence_by_name:
-                    evidence_by_name[factor.name] = implementation.failure_evidence(
-                        factor,
-                        discovery_signal_start=start,
-                        discovery_signal_end=end,
-                        discovery_snapshot_digest=snapshot_digest,
-                        stage="database_connect",
-                        error=exc,
-                        binding=binding,
-                    )
+    except (ValueError, RuntimeError):
+        raise
+    except Exception as exc:
+        for factor, _spec, _sql_path, binding, _python_frame in prepared:
+            if factor.name not in evidence_by_name:
+                evidence_by_name[factor.name] = implementation.failure_evidence(
+                    factor,
+                    discovery_signal_start=start,
+                    discovery_signal_end=end,
+                    discovery_snapshot_digest=snapshot_digest,
+                    stage="database_connect",
+                    error=exc,
+                    binding=binding,
+                )
+        if not prepared:
+            raise
     return [evidence_by_name[factor.name] for factor in factors]
 
 
@@ -537,15 +713,21 @@ def _evaluate(
     calibration_scope: dict | None = None,
     frozen_discovery: dict[str, dict] | None = None,
     discovery_snapshot_digest: str | None = None,
+    discovery_asset_identity_digest: str | None = None,
+    snapshot_asset_identity_digest: str | None = None,
+    closure_asset_identity_digest: str | None = None,
+    confirmation_mode: str | None = None,
 ):
     if phase == "discovery" and (
         data_cutoff is None
         or oos_start is None
         or discovery_snapshot_digest is None
+        or discovery_asset_identity_digest is None
     ):
         raise ValueError(
             "epoch-1.5 discovery는 campaign의 동결 cutoff·OOS 시작월·discovery "
-            "snapshot digest가 필수입니다. scripts/research.py campaign workflow를 "
+            "snapshot digest와 asset identity digest가 필수입니다. "
+            "scripts/research.py campaign workflow를 "
             "사용하세요."
         )
     load_registry()
@@ -562,6 +744,13 @@ def _evaluate(
         if P.snapshot_digest(pan) != discovery_snapshot_digest:
             raise ValueError(
                 "campaign 생성 당시 discovery Silver snapshot을 재현하지 못했습니다"
+            )
+        if (
+            P.verify_asset_identity(pan)["asset_identity_digest"]
+            != discovery_asset_identity_digest
+        ):
+            raise ValueError(
+                "campaign 생성 당시 discovery asset identity를 재현하지 못했습니다"
             )
     elif phase == "full" and oos_end is not None:
         if data_cutoff is None or frozen_oos is None:
@@ -585,6 +774,29 @@ def _evaluate(
                 raise ValueError(
                     "campaign 생성 당시 discovery Silver snapshot을 재현하지 못했습니다"
                 )
+            if (
+                discovery_asset_identity_digest is None
+                or P.verify_asset_identity(development_pan)["asset_identity_digest"]
+                != discovery_asset_identity_digest
+            ):
+                raise ValueError(
+                    "campaign 생성 당시 discovery asset identity를 재현하지 못했습니다"
+                )
+        if confirmation_mode is None:
+            raise ValueError("봉인 confirmation에는 campaign mode가 필요합니다")
+        _assert_confirmation_asset_identity(
+            pan,
+            mode=confirmation_mode,
+            historical_snapshot_identity_digest=snapshot_asset_identity_digest,
+        )
+        if (
+            closure_asset_identity_digest is not None
+            and _closure_asset_identity(pan)["asset_identity_digest"]
+            != closure_asset_identity_digest
+        ):
+            raise ValueError(
+                "campaign 생성 당시 closure asset identity를 재현하지 못했습니다"
+            )
     else:
         pan = base_pan
     df = pan.monthly
@@ -595,6 +807,13 @@ def _evaluate(
     development_df = development_pan.monthly if development_pan is not None else None
     ledger = trials.TrialLedger(TRIAL_DB)
     with silver.connect(read_only=True) as conn:
+        if phase == "full" and oos_end is not None:
+            _verify_confirmation_live_identity(conn, pan)
+        else:
+            P.verify_live_asset_identity(
+                conn, pan,
+                cutoff=str(pd.Timestamp(df["trade_date"].max()).date()),
+            )
         approved = _approved_signals(conn, df)
         development_approved = (
             _approved_signals(conn, development_df)
@@ -766,6 +985,9 @@ def cmd_null(args):
     snapshot = _scope_snapshot_panel(
         pan, snapshot_cutoff=campaign["snapshot"]["data_cutoff"],
     )
+    snapshot_identity = P.verify_asset_identity(snapshot)["asset_identity_digest"]
+    if snapshot_identity != campaign["snapshot"].get("asset_identity_digest"):
+        raise SystemExit("campaign 생성 당시 snapshot asset identity를 재현하지 못했습니다")
     epochs.assert_reveal_ready(
         "research", args.campaign, pan.monthly["trade_date"].max(),
         snapshot_digest=P.snapshot_digest(snapshot),
@@ -777,8 +999,18 @@ def cmd_null(args):
         oos_start=campaign["oos"]["start"],
         oos_end=campaign["oos"]["signal_end"],
     )
+    expected_closure_identity = campaign["snapshot"].get(
+        "closure_asset_identity_digest"
+    )
+    if (
+        campaign["oos"].get("mode") == "trailing_historical_holdout"
+        and _closure_asset_identity(pan)["asset_identity_digest"]
+        != expected_closure_identity
+    ):
+        raise SystemExit("campaign 생성 당시 closure asset identity를 재현하지 못했습니다")
     ledger = trials.TrialLedger(TRIAL_DB)
     with silver.connect(read_only=True) as conn:
+        _verify_confirmation_live_identity(conn, pan)
         gold_trials = silver.load_gold_trial_history(conn)
         approved = _approved_signals(conn, pan.monthly)
     summary = ledger.summary(external=[

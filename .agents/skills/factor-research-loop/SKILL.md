@@ -22,7 +22,7 @@ Agent는 가설을 만들고 상태에 맞는 다음 행동을 선택한다. 판
 
 ## 불변조건
 
-1. 인증된 Silver PIT만 사용한다. Bronze는 금지하고 Gold는 기존 신호 비교용으로만 읽는다. 주식 수익률은 `price_return_contract`가 `krx_gross_dividend_reinvested_v1/CERTIFIED`로 증명한 `total_return_close`만 허용한다.
+1. 인증된 Silver PIT만 사용한다. Bronze는 금지하고 Gold는 기존 신호 비교용으로만 읽는다. 주식 수익률은 `price_return_contract`가 `krx_gross_dividend_reinvested_v1/CERTIFIED`로 증명한 `total_return_close`만 허용한다. 패널과 OOS closure 관측의 월말 `(trade_date, asset_id, ticker)` identity digest를 cache·campaign·live RDS의 같은 DB snapshot에서 대조하고 불일치하면 팩터 계산 전에 중단한다.
 2. 후보 하나는 단일 경제 신호여야 한다. 해석 가능한 비율은 허용하지만 rank·z-score·팩터 점수 합성과 `f_<name>` 재사용은 금지한다.
 3. 결과 전에 가설·정의·방향·파라미터·반증 조건·definition hash를 동결한다. 유효한 결과 뒤 같은 후보를 수정하거나 재평가하지 않는다.
 4. gate·임계값·유니버스·미래수익 레이블·비용모형·campaign cutoff/OOS 경계를 결과에 맞춰 바꾸지 않는다.
@@ -37,7 +37,7 @@ Agent는 가설을 만들고 상태에 맞는 다음 행동을 선택한다. 판
 
 ## 실행
 
-1. `pyproject.toml`과 작업 트리를 확인하고 사용자 변경을 보존한다. 캐시가 없거나 낡았을 때만 Silver에서 다시 build한다.
+1. `pyproject.toml`과 작업 트리를 확인하고 사용자 변경을 보존한다. 캐시가 없거나 identity 계약이 낡았을 때만 Silver에서 다시 build한 뒤 `identity-audit`을 통과시킨다.
 2. campaign manifest와 OOS 공개 원장을 먼저 확인한다. 현재 protocol의 비종료 campaign이 없으면 최신 reveal-ready 과거 36개월 OOS를 먼저 고정하고 그 직전 수익률 지원월까지만 discovery로 동결한다. 그 뒤 `uv run python scripts/research.py context`를 실행해 cutoff 뒤 데이터·결과가 가려진 `latest.md`, manifest와 최신 reflection을 읽는다.
 3. 전략 계약에 맞는 서로 다른 단일 신호 후보를 모두 작성한 뒤, 결과를 보기 전에 한 epoch으로 사전등록한다.
 4. 테스트를 통과시킨 뒤 사전등록 후보를 각각 한 번 evaluate한다. 연결·캐시·구현 오류만 **결과가 생기기 전 동일 hash**로 재시도한다.
