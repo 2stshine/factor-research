@@ -76,6 +76,20 @@ MAP = {
     "equity_growth_12m":             ("AssetGrowth", "low", "be_gr1a", "high", None),
     "positive_return_share_12m":     (None, "low", None, "low", None),
     "return_kurtosis_24m":           ("ReturnSkew", "low", "rmax1_21d", "low", "return_skewness_24m"),
+    # cycle-0043~0053
+    "amihud_illiquidity_1m":         ("Illiquidity", "low", "ami_126d", "low", None),
+    "dividend_yield_ttm":            ("DivYield", "low", "div12m_me", "high", None),
+    "high_52w_price_proximity":      ("High52", "high", "prc_highprc_252d", "high", "high_12m_proximity"),
+    "max_daily_return_1m":           ("MaxRet", "high", "rmax1_21d", "high", "max_monthly_return_12m"),
+    "net_equity_issuance_price_adjusted_12m":
+                                        ("ShareIss1Y", "high", "chcsho_12m", "high", "net_equity_issuance_12m"),
+    "realized_volatility_252d":      ("RealizedVol", "low", "rvol_21d", "low", "low_vol_12m"),
+    "operating_income_to_liabilities":
+                                        ("OperProf", "low", "op_at", "low", "operating_roa"),
+    "noncurrent_asset_share":        ("tang", "low", "tangibility", "low", None),
+    "dividend_event_frequency_ttm":  ("DivSeason", "low", None, "low", None),
+    "intermediate_momentum_12_7":    ("IntMom", "high", "ret_12_7", "high", None),
+    "market_leverage":               ("Leverage", "high", "debt_me", "high", None),
 }
 
 # OSAP 의 GScholarCites 는 스크래핑 값이라 일부가 실제와 크게 어긋난다.
@@ -93,6 +107,20 @@ NOTES = {
         "JKP cowc_gr1a 는 변화량이라 부적합. 완충력 메커니즘 기준 z_score 계열로 근사",
     "operating_margin_change_12m":
         "OSAP 무대응. 변화 축이므로 부모(operating_roa_change_12m)와 같은 Profit Growth 로 정렬",
+    "amihud_illiquidity_1m":
+        "OSAP·JKP 대응은 같지만 공개 특성의 12개월 창과 달리 최근 1개월 가격충격을 사용",
+    "dividend_yield_ttm":
+        "OSAP DivYield는 소형주·최근 배당 기반 정의라 근사이고 JKP div12m_me가 더 가까움",
+    "net_equity_issuance_price_adjusted_12m":
+        "기존 12개월 순발행 정의에서 배당 포함 수익 대신 가격수익을 사용한 변형",
+    "realized_volatility_252d":
+        "공개 RealizedVol의 1개월 CAPM 잔차 변동성과 달리 252거래일 원수익률 변동성을 사용",
+    "operating_income_to_liabilities":
+        "영업수익성 계열이지만 총자산 대신 총부채를 분모로 사용",
+    "noncurrent_asset_share":
+        "OSAP tang·JKP tangibility의 자산구성 메커니즘 근사이며 가중 유동성 산식은 다름",
+    "dividend_event_frequency_ttm":
+        "OSAP DivSeason은 배당 시점 규칙이고 우리는 최근 12개월 실시 횟수라 근사",
 }
 
 # needs 는 재무 컬럼만 선언한다(SKILL.md). 가격·거래 컬럼은 compute 본문에서 읽는다.
