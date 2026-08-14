@@ -72,14 +72,14 @@ _add(
     name="mom_12_1", category="momentum", predicted_sign=1, params={"lookback": 12, "skip": 1},
     hypothesis="과거 승자가 계속 이긴다(Jegadeesh-Titman 1993). "
                "⚠️ 한국 실측은 t=−1.34 로 **부호가 반대** — 미국식 템플릿이 그대로 안 통한다.",
-    compute=lambda d: (d.groupby("asset_id")["return_close"].shift(1)
-                       / d.groupby("asset_id")["return_close"].shift(12) - 1),
+    compute=lambda d: (d.groupby("asset_id")["adj_close"].shift(1)
+                       / d.groupby("asset_id")["adj_close"].shift(12) - 1),
 )
 _add(
     name="rev_1m", category="momentum", predicted_sign=-1,
     hypothesis="1개월 단기 반전 — 유동성 공급 보상(Lehmann 1990). "
                "⚠️ IC t=4.05 로 강하지만 롱온리 순알파 −7.64%. IC 는 숏레그·마이크로캡이 만든 것.",
-    compute=lambda d: d["return_close"] / d.groupby("asset_id")["return_close"].shift(1) - 1,
+    compute=lambda d: d["adj_close"] / d.groupby("asset_id")["adj_close"].shift(1) - 1,
 )
 
 # ------------------------------------------------------------------- size

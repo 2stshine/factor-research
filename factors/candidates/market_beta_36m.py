@@ -15,11 +15,11 @@ GAP_POLICY = "calendar_window_no_fill"
 def compute(frame):
     ordered = frame.sort_values(["asset_id", "ym"], kind="mergesort").copy()
     asset = ordered["asset_id"]
-    prior_close = ordered["return_close"].groupby(asset).shift(1)
+    prior_close = ordered["adj_close"].groupby(asset).shift(1)
     prior_ym = ordered["ym"].groupby(asset).shift(1)
     prior_market = ordered["market"].groupby(asset).shift(1)
     prior_market_cap = ordered["market_cap"].groupby(asset).shift(1)
-    asset_return = (ordered["return_close"] / prior_close - 1).where(
+    asset_return = (ordered["adj_close"] / prior_close - 1).where(
         ordered["ym"].eq(prior_ym + 1) & (prior_close > 0)
     )
     weight = prior_market_cap.where(prior_market_cap > 0)
@@ -87,7 +87,7 @@ RESEARCH_SPEC = {
         "제한적일 것으로 예상한다."
     ),
     "data_notes": (
-        "Silver total_return_close로 연속 월 수익률을 만들고, 전월 PIT 시장구분과 전월 시가총액으로 "
+        "Silver PIT 분할조정 가격 adj_close로 연속 월 가격수익률을 만들고, 전월 PIT 시장구분과 전월 시가총액으로 "
         "각 월 KOSPI·KOSDAQ 수익률을 구성한다. 공식 지수수익률이 아니며 자기 종목 포함, "
         "비동시거래와 시장 이전의 영향을 받는다. 36개월 달력창에서 최소 24개 동일월 쌍이 있을 "
         "때만 계산하고 결측을 채우거나 내부 표본선택·중립화를 하지 않는다."

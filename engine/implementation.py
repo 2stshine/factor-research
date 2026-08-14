@@ -20,11 +20,12 @@ from engine.factors import Factor
 from engine.publish import VALUE_CONTRACT_ID
 
 
-PARITY_SCHEMA_VERSION = "implementation-parity-v1"
+PARITY_SCHEMA_VERSION = "implementation-parity-v2"
 DEFAULT_ATOL = 1e-12
 DEFAULT_RTOL = 1e-10
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REQUIRED_QUERY_PARAMETERS = ("start_month", "end_month")
+_LABEL_ONLY_SQL_FIELDS = frozenset({"total_return_close", "return_close"})
 _MUTATING_SQL = re.compile(
     r"\b(?:insert|update|delete|merge|create|alter|drop|truncate|grant|revoke|"
     r"copy|call|do|vacuum|analyze|refresh|reindex|cluster|comment)\b",
@@ -37,6 +38,13 @@ _ALLOWED_SILVER_RELATIONS = frozenset({
     "public.dividend_event_resolution",
     "public.dq_run",
     "public.fundamental",
+    "public.factor_price_feature_daily",
+    "public.price_daily",
+    "public.price_return_contract",
+})
+_FEATURE_FORBIDDEN_RELATIONS = frozenset({
+    "public.corporate_action",
+    "public.dividend_event_resolution",
     "public.price_daily",
     "public.price_return_contract",
 })
@@ -44,6 +52,11 @@ _CTE_NAME = re.compile(r"(?:\bwith|,)\s*([a-z_][a-z0-9_]*)\s+as\s*\(", re.I)
 _RELATION = re.compile(
     r"\b(?:from|join)\s+([a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?)",
     re.I,
+)
+_DYNAMIC_FIELD_SQL = re.compile(
+    r"(?:\bto_jsonb?\s*\(|\brow_to_json\s*\(|\bjsonb?_[a-z0-9_]+\s*\(|"
+    r"->>?|#>>?)",
+    re.IGNORECASE,
 )
 
 
@@ -71,11 +84,16 @@ def manifest_entry_digest(spec: Mapping[str, Any]) -> str:
     return _payload_digest(dict(spec))
 
 
+def _sql_without_comments(sql: str) -> str:
+    """Remove comments while retaining literals for field-name auditing."""
+    without_block_comments = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
+    return re.sub(r"--[^\r\n]*", " ", without_block_comments)
+
+
 def _sql_code_only(sql: str) -> str:
     """Remove comments and quoted literals before structural SQL checks."""
-    without_block_comments = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
-    without_line_comments = re.sub(r"--[^\r\n]*", " ", without_block_comments)
-    without_strings = re.sub(r"'(?:''|[^'])*'", "''", without_line_comments)
+    without_comments = _sql_without_comments(sql)
+    without_strings = re.sub(r"'(?:''|[^'])*'", "''", without_comments)
     return re.sub(r'"(?:""|[^"])*"', '""', without_strings)
 
 
@@ -120,6 +138,43 @@ def validate_query_only_sql(sql: str) -> None:
         raise ValueError(
             "Gold SQL은 인증 Silver relation만 읽을 수 있습니다: "
             f"{invalid_relations}"
+        )
+
+
+def validate_feature_sql(sql: str) -> None:
+    """Validate a Gold factor query and reject evaluator-only label fields."""
+    validate_query_only_sql(sql)
+    # Scan string literals too.  PostgreSQL can access a column dynamically,
+    # for example ``to_jsonb(p)->>'total_return_close'``; stripping that
+    # literal before this check would make the label-only contract bypassable.
+    code = _sql_without_comments(sql)
+    dynamic = _DYNAMIC_FIELD_SQL.search(code)
+    if dynamic:
+        raise ValueError(
+            "Gold feature SQL은 row 직렬화·동적 필드 접근을 사용할 수 "
+            f"없습니다: {dynamic.group(0)!r}"
+        )
+    exposed = sorted(
+        field
+        for field in _LABEL_ONLY_SQL_FIELDS
+        if re.search(rf"\b{re.escape(field)}\b", code, flags=re.IGNORECASE)
+    )
+    if exposed:
+        raise ValueError(
+            "Gold feature SQL이 ex-post forward label 전용 필드를 읽습니다: "
+            f"{exposed}"
+        )
+    cte_names = {name.lower() for name in _CTE_NAME.findall(code)}
+    relations = {
+        name.lower() for name in _RELATION.findall(code)
+        if name.lower() not in cte_names
+    }
+    forbidden_relations = sorted(relations & _FEATURE_FORBIDDEN_RELATIONS)
+    if forbidden_relations:
+        raise ValueError(
+            "Gold feature SQL은 label·latest-action 컬럼이 없는 인증 feature "
+            "view만 사용해야 합니다: "
+            f"{forbidden_relations}"
         )
 
 
@@ -260,6 +315,7 @@ def failure_evidence(
     discovery_signal_start: str | pd.Period,
     discovery_signal_end: str | pd.Period,
     discovery_snapshot_digest: str,
+    strategy_sha256: str,
     stage: str,
     error: Exception,
     binding: Mapping[str, Any] | None = None,
@@ -267,6 +323,8 @@ def failure_evidence(
     """Create digest-bound FAIL evidence when SQL parity cannot be attempted."""
     if not _SHA256_RE.fullmatch(discovery_snapshot_digest):
         raise ValueError("discovery snapshot digest는 64자리 소문자 hex여야 합니다")
+    if not _SHA256_RE.fullmatch(strategy_sha256):
+        raise ValueError("전략 파일 SHA-256은 64자리 소문자 hex여야 합니다")
     start = pd.Period(discovery_signal_start, freq="M")
     end = pd.Period(discovery_signal_end, freq="M")
     if start > end:
@@ -280,6 +338,7 @@ def failure_evidence(
         "factor": factor.name,
         "definition_hash": factor.definition_hash,
         "research_definition_hash": factor.definition_hash,
+        "strategy_sha256": strategy_sha256,
         "predicted_sign": factor.predicted_sign,
         "value_contract": values.get("value_contract", VALUE_CONTRACT_ID),
         "implementation_uri": values.get("implementation_uri"),
@@ -316,6 +375,7 @@ def compare_parity(
     discovery_signal_start: str | pd.Period,
     discovery_signal_end: str | pd.Period,
     discovery_snapshot_digest: str,
+    strategy_sha256: str,
     atol: float = DEFAULT_ATOL,
     rtol: float = DEFAULT_RTOL,
     allow_tolerance_equivalent_ranks: bool = False,
@@ -328,6 +388,8 @@ def compare_parity(
     """
     if not isinstance(manifest_spec, Mapping):
         raise TypeError("manifest spec은 mapping이어야 합니다")
+    if not _SHA256_RE.fullmatch(strategy_sha256):
+        raise ValueError("전략 파일 SHA-256은 64자리 소문자 hex여야 합니다")
     _validate_binding(
         factor,
         implementation_uri=implementation_uri,
@@ -529,6 +591,7 @@ def compare_parity(
         "factor": factor.name,
         "definition_hash": factor.definition_hash,
         "research_definition_hash": factor.definition_hash,
+        "strategy_sha256": strategy_sha256,
         "predicted_sign": factor.predicted_sign,
         "value_contract": VALUE_CONTRACT_ID,
         "implementation_uri": implementation_uri,

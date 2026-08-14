@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 import json
 import tempfile
 from pathlib import Path
@@ -17,6 +18,7 @@ from engine import gate
 from engine import implementation
 from engine import null as null_engine
 from engine import research
+from engine import silver
 from engine.boundaries import (
     PROSPECTIVE_HOLDOUT_MODE,
     CampaignWindow,
@@ -37,10 +39,86 @@ from scripts import research as research_script
 from scripts import run as run_script
 
 
+RETURN_EVIDENCE = {
+    "validation_status": "VERIFIED",
+    "contract_release": silver.TOTAL_RETURN_CONTRACT_RELEASE,
+    "methodology_version": silver.TOTAL_RETURN_METHOD,
+    "dividend_treatment": silver.TOTAL_RETURN_DIVIDEND_TREATMENT,
+    "quality_run_id": "q",
+    "coverage_start": "2015-01-02",
+    "coverage_end": "2035-12-31",
+    "certified_scope_start": "2015-01-01",
+    "certified_markets": ["KOSPI", "KOSDAQ"],
+    "price_row_count": 1,
+    "asset_count": 1,
+    "action_snapshot_run_id": "action-run",
+    "action_snapshot_schema_version": silver.TOTAL_RETURN_ACTION_SNAPSHOT_SCHEMA,
+    "action_snapshot_manifest_sha256": "a" * 64,
+    "action_snapshot_body_digest": "b" * 64,
+    "pit_scope_contract": silver.TOTAL_RETURN_PIT_SCOPE_CONTRACT,
+    "pit_input_action_count": 1,
+    "pit_included_action_count": 1,
+    "pit_excluded_action_count": 0,
+    "source_receipt_row_count": 1,
+    "source_receipt_row_digest": "d" * 64,
+    "terminal_economic_receipt_count": 1,
+    "terminal_economic_receipt_digest": "e" * 64,
+    "published_action_count": 1,
+    "published_action_row_digest": "f" * 64,
+    "published_action_scope_contract": (
+        "issuer_cash_ex_plus_manifest_scale_support_v1"
+    ),
+    "included_cash_action_parity_count": 1,
+    "included_cash_action_parity_digest": "1" * 64,
+    "cash_scale_source_contract": (
+        silver.TOTAL_RETURN_CASH_SCALE_SOURCE_CONTRACT
+    ),
+    "cash_scale_source_evidence_count": 0,
+    "cash_scale_source_evidence_digest": "3" * 64,
+    "cash_scale_source_manifest_sha256": "5" * 64,
+    "cash_scale_source_manifest_digest": "6" * 64,
+    "cash_scale_support_action_count": 0,
+    "cash_scale_support_action_digest": "7" * 64,
+    "cash_scale_support_manifest_digest": "8" * 64,
+    "cash_scale_support_semantic_group_count": 0,
+    "disclosure_observation_contract": (
+        silver.TOTAL_RETURN_DISCLOSURE_OBSERVATION_CONTRACT
+    ),
+    "disclosure_mutable_conflict_digest": "2" * 64,
+    "research_role": dict(silver.TOTAL_RETURN_RESEARCH_ROLE),
+    "resolution_version": silver.TOTAL_RETURN_RESOLUTION_VERSION,
+    "cash_action_count": 1,
+    "canonical_event_count": 1,
+    "applied_event_count": 1,
+    "excluded_event_count": 0,
+    "cash_scale_resolution_contract": (
+        silver.TOTAL_RETURN_CASH_SCALE_RESOLUTION_CONTRACT
+    ),
+    "cash_scale_resolution_row_count": 1,
+    "cash_scale_resolution_row_digest": "4" * 64,
+    "cash_scale_stable_event_count": 1,
+    "cash_scale_changed_event_count": 0,
+    "cash_scale_evidence_match_count": 0,
+    "cash_scale_adjusted_cash_parity_count": 1,
+    "cash_scale_first_listing_exclusion_count": 0,
+    "cash_scale_explicit_exclusion_count": 0,
+    "cash_scale_adj_close_decimal_places": 4,
+    "cash_scale_cash_in_adj_close": False,
+    "asset_identity_contract": silver.TOTAL_RETURN_ASSET_IDENTITY_CONTRACT,
+    "asset_identity_digest": "c" * 64,
+}
+RETURN_EVIDENCE["evidence_sha256"] = silver.total_return_evidence_sha256(
+    RETURN_EVIDENCE,
+)
+
+
 RETURN_META = {
-    "return_field": "total_return_close",
-    "return_methodology": "krx_gross_dividend_reinvested_v1",
-    "return_contract_status": "CERTIFIED",
+    **silver.return_role_contract(),
+    "label_return_contract_status": "CERTIFIED",
+    "return_contract_run_id": "q",
+    "return_contract_validation_status": "VERIFIED",
+    "return_contract_evidence_sha256": RETURN_EVIDENCE["evidence_sha256"],
+    "return_contract_validation_evidence": RETURN_EVIDENCE,
 }
 
 
@@ -204,9 +282,11 @@ def _silver_prices() -> pd.DataFrame:
                 "asset_id": asset_id, "Code": f"A{asset_id}", "Name": f"종목{asset_id}",
                 "instrument_type": "common_stock", "listed_from": None, "listed_to": None,
                 "trade_date": trade_date, "close": close, "adj_close": close,
-                "total_return_close": close, "trading_value": 1e9, "market_cap": 1e11,
+                "total_return_close": close if age == 1 else close + 2,
+                "trading_value": 1e9, "market_cap": 1e11,
                 "shares": 1000, "market": "KOSPI", "adv20": 1e9, "age_days": age,
                 "first_seen": dates[0], "dataset_start": dates[0], "quality_run_id": "q",
+                "total_return_quality_run_id": "q",
                 "amihud_illiquidity_1m": None if age == 1 else 1e-12,
                 "amihud_observations_1m": age - 1,
                 "daily_volatility_252d": None if age < 3 else .01,
@@ -218,11 +298,12 @@ def _silver_prices() -> pd.DataFrame:
             })
     frame = pd.DataFrame(rows)
     frame.attrs["return_contract"] = {
-        **RETURN_META,
-        "methodology_version": RETURN_META["return_methodology"],
-        "status": RETURN_META["return_contract_status"],
+        "methodology_version": silver.TOTAL_RETURN_METHOD,
+        "status": "CERTIFIED",
         "quality_run_id": "q",
+        "validation_evidence": dict(RETURN_EVIDENCE),
     }
+    frame.attrs["return_roles"] = silver.return_role_contract()
     return frame
 
 
@@ -233,9 +314,14 @@ def _monthly_panel(start: str, end: str) -> Panel:
         "Code": "000001",
         "ym": months,
         "trade_date": months.to_timestamp(how="end").normalize(),
-        "return_close": np.arange(len(months), dtype=float) + 100.0,
+        "adj_close": np.arange(len(months), dtype=float) + 100.0,
+        "total_return_close": np.arange(len(months), dtype=float) + 200.0,
+        "instrument_type": "common_stock",
     })
-    return Panel(frame, pd.Series(dtype="datetime64[ns]"))
+    return Panel(
+        frame, pd.Series(dtype="datetime64[ns]"),
+        meta={"source": "RDS public Silver", **RETURN_META},
+    )
 
 
 def _start_campaign(
@@ -267,6 +353,16 @@ def _start_campaign(
     )
 
 
+def _strategy_sha(factor: Factor) -> str:
+    return hashlib.sha256(
+        f"{factor.name}:{factor.definition_hash}".encode("utf-8")
+    ).hexdigest()
+
+
+def _strategy_digests(factors: list[Factor]) -> dict[str, str]:
+    return {factor.name: _strategy_sha(factor) for factor in factors}
+
+
 def _implementation_evidence(factor: Factor, campaign: dict) -> dict:
     months = pd.period_range(
         gate.RESEARCH_START,
@@ -296,18 +392,19 @@ def _implementation_evidence(factor: Factor, campaign: dict) -> dict:
         discovery_signal_start=gate.RESEARCH_START,
         discovery_signal_end=campaign["discovery"]["signal_end"],
         discovery_snapshot_digest=campaign["snapshot"]["discovery_input_digest"],
+        strategy_sha256=_strategy_sha(factor),
     )
 
 
 def _binding_from_evidence(row: dict) -> dict:
     keys = (
-        "factor", "definition_hash", "predicted_sign", "value_contract",
+        "factor", "definition_hash", "strategy_sha256", "predicted_sign", "value_contract",
         "implementation_uri", "implementation_sha256", "manifest_entry_digest",
     )
     return {key: row[key] for key in keys}
 
 
-def test_panel_uses_total_return_and_only_terminalizes_inactive_assets():
+def test_panel_labels_use_total_return_and_only_terminalize_inactive_assets():
     frame = _silver_prices()
     # Asset 2 disappears before the sample end and is treated as inactive.
     frame = frame[~((frame["asset_id"] == 2) & (frame["trade_date"] > pd.Timestamp("2024-01-31")))]
@@ -315,7 +412,9 @@ def test_panel_uses_total_return_and_only_terminalizes_inactive_assets():
     returns = forward_returns(panel, terminal=-1.0)
     asset1 = panel.monthly["asset_id"].eq(1)
     asset2 = panel.monthly["asset_id"].eq(2)
-    assert returns[asset1].dropna().iloc[0] == pytest.approx(.10)
+    # adj_close moves 10%, while the certified ex-post total-return label moves
+    # 12%; forward labels must use the latter and candidate features the former.
+    assert returns[asset1].dropna().iloc[0] == pytest.approx(.12)
     assert returns[asset2].iloc[0] == -1.0
 
 
@@ -342,7 +441,7 @@ def test_panel_snapshot_digest_binds_values_and_terminal_membership():
     panel = from_silver_frame(_silver_prices(), verbose=False)
     original = snapshot_digest(panel)
     changed_values = Panel(panel.monthly.copy(), panel.dead.copy(), dict(panel.meta))
-    changed_values.monthly.loc[0, "return_close"] += 1.0
+    changed_values.monthly.loc[0, "total_return_close"] += 1.0
     assert snapshot_digest(changed_values) != original
     changed_dead = Panel(panel.monthly.copy(), panel.dead.copy(), dict(panel.meta))
     changed_dead.dead.loc[999] = pd.Timestamp("2024-01-31")
@@ -358,8 +457,9 @@ def test_campaign_discovery_scope_honors_exact_cutoff_and_oos_boundary():
     assert scoped.monthly["ym"].max() == pd.Period("2024-02", freq="M")
     assert scoped.monthly["trade_date"].max() == pd.Timestamp("2024-02-29")
     assert "f_leaked_full_sample" not in scoped.monthly
-    assert scoped.meta["return_methodology"] == RETURN_META["return_methodology"]
-    assert scoped.meta["return_contract_status"] == "CERTIFIED"
+    assert scoped.meta["label_return_methodology"] == silver.TOTAL_RETURN_METHOD
+    assert scoped.meta["feature_price_field"] == "adj_close"
+    assert scoped.meta["label_return_contract_status"] == "CERTIFIED"
     with pytest.raises(ValueError, match="정확히 재현"):
         run_script._scope_discovery_panel(
             panel, data_cutoff="2024-02-15", oos_start="2024-03",
@@ -383,8 +483,9 @@ def test_confirmation_scope_discards_months_after_fixed_oos_label():
     assert scoped.monthly["ym"].max() == pd.Period("2024-01", freq="M")
     assert scoped.meta["confirmation_closure_month"] == "2024-02"
     assert scoped.meta["closure_asset_identity_cutoff"] == "2024-02-29"
-    assert scoped.meta["return_methodology"] == RETURN_META["return_methodology"]
-    assert scoped.meta["return_contract_status"] == "CERTIFIED"
+    assert scoped.meta["label_return_methodology"] == silver.TOTAL_RETURN_METHOD
+    assert scoped.meta["feature_price_field"] == "adj_close"
+    assert scoped.meta["label_return_contract_status"] == "CERTIFIED"
     assert "f_leaked_full_sample" not in scoped.monthly
 
 
@@ -565,7 +666,8 @@ def test_scoped_panel_recomputes_terminal_labels_without_future_reappearance():
         "Code": "000001",
         "trade_date": month.to_timestamp(how="end").normalize(),
         "ym": month,
-        "return_close": 100.0 + index,
+        "adj_close": 100.0 + index,
+        "total_return_close": 200.0 + index,
     } for index, month in enumerate(months)]
     for index, month in enumerate(pd.PeriodIndex(["2023-12", "2024-03"], freq="M")):
         rows.append({
@@ -573,9 +675,13 @@ def test_scoped_panel_recomputes_terminal_labels_without_future_reappearance():
             "Code": "000002",
             "trade_date": month.to_timestamp(how="end").normalize(),
             "ym": month,
-            "return_close": 100.0 + index,
+            "adj_close": 100.0 + index,
+            "total_return_close": 200.0 + index,
         })
-    panel = Panel(pd.DataFrame(rows), pd.Series(dtype="datetime64[ns]"))
+    panel = Panel(
+        pd.DataFrame(rows), pd.Series(dtype="datetime64[ns]"),
+        meta={"source": "RDS public Silver", **RETURN_META},
+    )
     scoped = run_script._scope_confirmation_panel(
         panel, data_cutoff="2020-12-31",
         oos_start="2021-01", oos_end="2023-12",
@@ -637,7 +743,7 @@ def test_composite_rank_signals_are_rejected_but_single_ratio_is_allowed():
 
 
 def test_return_hurdles_are_not_part_of_ruleset_v3():
-    assert gate.RULESET_VERSION == "fr-3.10.1"
+    assert gate.RULESET_VERSION == "fr-3.13.0"
     assert "net_alpha" not in gate.TH
     assert "net_ir" not in gate.TH
     assert "dsr_probability" not in gate.TH
@@ -672,10 +778,12 @@ def test_discovery_rank_ic_floor_is_three_percent(monkeypatch):
         "trade_date": months.to_timestamp(how="end").normalize(),
         "in_universe": True,
         "market_cap": 100.0,
-        "return_close": 100.0,
-        "adv20": 1.0,
-        "market": "KOSPI",
-        "f_candidate": 100.0,
+        "adj_close": 100.0,
+        "total_return_close": 100.0,
+            "adv20": 1.0,
+            "market": "KOSPI",
+            "instrument_type": "common_stock",
+            "f_candidate": 100.0,
         "fwd_opt": 0.0,
         "fwd_mid": 0.0,
         "fwd_pess": 0.0,
@@ -720,10 +828,12 @@ def test_neutralized_ic_requires_thirty_percent_of_investable_ic(monkeypatch):
         "trade_date": months.to_timestamp(how="end").normalize(),
         "in_universe": True,
         "market_cap": 100.0,
-        "return_close": 100.0,
-        "adv20": 1.0,
-        "market": "KOSPI",
-        "f_candidate": 100.0,
+        "adj_close": 100.0,
+        "total_return_close": 100.0,
+            "adv20": 1.0,
+            "market": "KOSPI",
+            "instrument_type": "common_stock",
+            "f_candidate": 100.0,
         "fwd_opt": 0.0,
         "fwd_mid": 0.0,
         "fwd_pess": 0.0,
@@ -776,10 +886,12 @@ def test_gold_signal_overlap_accepts_point_seven_and_rejects_above(monkeypatch):
             "trade_date": month.to_timestamp(how="end").normalize(),
             "in_universe": True,
             "market_cap": float(asset_id + 100),
-            "return_close": 100.0,
-            "adv20": float(asset_id + 1),
-            "market": "KOSPI",
-            "f_candidate": float(asset_id + 100),
+            "adj_close": 100.0,
+            "total_return_close": 100.0,
+                "adv20": float(asset_id + 1),
+                "market": "KOSPI",
+                "instrument_type": "common_stock",
+                "f_candidate": float(asset_id + 100),
             "fwd_opt": 0.0,
             "fwd_mid": 0.0,
             "fwd_pess": 0.0,
@@ -974,8 +1086,11 @@ def test_oos_requires_absolute_floor_and_half_of_discovery_ic(monkeypatch):
         "ym": months,
         "in_universe": True,
         "market_cap": 100.0,
-        "return_close": 100.0,
+        "adj_close": 100.0,
+        "total_return_close": 100.0,
         "adv20": 1.0,
+        "market": "KOSPI",
+        "instrument_type": "common_stock",
         "f_candidate": 100.0,
         "fwd_mid": 0.0,
     })
@@ -1049,8 +1164,11 @@ def test_oos_without_valid_discovery_ic_fails_closed(monkeypatch, discovery_ic):
         "ym": months,
         "in_universe": True,
         "market_cap": 100.0,
-        "return_close": 100.0,
+        "adj_close": 100.0,
+        "total_return_close": 100.0,
         "adv20": 1.0,
+        "market": "KOSPI",
+        "instrument_type": "common_stock",
         "f_candidate": 100.0,
         "fwd_mid": 0.0,
     })
@@ -1134,9 +1252,12 @@ def test_null_calibration_outputs_campaign_family_units(monkeypatch):
         "trade_date": months.to_timestamp(how="end").normalize(),
         "in_universe": True,
         "market_cap": 100.0,
-        "return_close": np.arange(len(months), dtype=float) + 100.0,
+        "adj_close": np.arange(len(months), dtype=float) + 100.0,
+        "total_return_close": np.arange(len(months), dtype=float) + 100.0,
     })
-    panel = Panel(frame, pd.Series(dtype="datetime64[ns]"))
+    panel = Panel(
+        frame, pd.Series(dtype="datetime64[ns]"), meta=dict(RETURN_META),
+    )
     output = null_engine.measure(
         panel, n=1, oos_start=pd.Period("2026-01", freq="M"),
         oos_end=pd.Period("2028-12", freq="M"),
@@ -1171,6 +1292,8 @@ def test_latest_context_exposes_unused_pit_inputs_but_not_research_outputs(tmp_p
         "asset_id": [1],
         "ym": [pd.Period("2026-01", freq="M")],
         "capital_stock": [100.0],
+        "market": ["KOSPI"],
+        "instrument_type": ["common_stock"],
         "fwd_mid": [0.1],
         "f_example": [0.2],
     })
@@ -1204,8 +1327,10 @@ def test_latest_context_withholds_post_cutoff_history_without_active_campaign(tm
     panel = Panel(
         monthly=pd.DataFrame({
             "asset_id": [1],
-            "ym": [pd.Period("2023-06", freq="M")],
-            "trade_date": [pd.Timestamp("2023-06-30")],
+                "ym": [pd.Period("2023-06", freq="M")],
+                "trade_date": [pd.Timestamp("2023-06-30")],
+                "market": ["KOSPI"],
+                "instrument_type": ["common_stock"],
         }),
         dead=pd.Series(dtype="datetime64[ns]"),
     )
@@ -1456,8 +1581,12 @@ def test_candidate_loader_requires_preregistered_research_spec():
         (root / "candidate.py").write_text(
             """
 from engine.factors import Factor
+
+def compute(frame):
+    return frame['market_cap']
+
 FACTOR = Factor(name='candidate_x', category='other', hypothesis='가설',
-                predicted_sign=1, compute=lambda d: d['market_cap'])
+                predicted_sign=1, compute=compute)
 RESEARCH_SPEC = {
     'thesis': '가설', 'mechanism': '메커니즘', 'falsification': '반증',
     'expected_relationship': '기존 팩터와 낮은 상관', 'data_notes': 'PIT 가격'
@@ -1513,14 +1642,23 @@ def test_epoch_lifecycle_auto_qualifies_candidates_and_seals_oos(tmp_path):
     assert campaign["oos"]["earliest_data_month"] == "2026-08"
     assert campaign["qualification_policy"] == QUALIFICATION_POLICY
 
-    epochs.start_epoch(tmp_path, "campaign-001", "epoch-001", [first, second])
-    epochs.assert_candidate_ready(tmp_path, "campaign-001", "epoch-001", first)
+    epochs.start_epoch(
+        tmp_path, "campaign-001", "epoch-001", [first, second],
+        strategy_digests=_strategy_digests([first, second]),
+    )
+    epochs.assert_candidate_ready(
+        tmp_path, "campaign-001", "epoch-001", first,
+        strategy_sha256=_strategy_sha(first),
+    )
     changed = Factor(
         name="candidate_a", family="family_a", category="other",
         hypothesis="바뀐 가설", predicted_sign=1, compute=lambda frame: frame["market_cap"],
     )
     with pytest.raises(ValueError, match="정의가 변경"):
-        epochs.assert_candidate_ready(tmp_path, "campaign-001", "epoch-001", changed)
+        epochs.assert_candidate_ready(
+            tmp_path, "campaign-001", "epoch-001", changed,
+            strategy_sha256=_strategy_sha(first),
+        )
 
     qualified = gate.Result(
         factor=first.name, definition_hash=first.definition_hash,
@@ -1536,12 +1674,14 @@ def test_epoch_lifecycle_auto_qualifies_candidates_and_seals_oos(tmp_path):
     )
     epochs.mark_evaluated(
         tmp_path, "campaign-001", "epoch-001", first, qualified,
+        strategy_sha256=_strategy_sha(first),
         report="research/runs/cycle-a/report.md", strongest_relationship=None,
     )
     with pytest.raises(ValueError, match="평가하지 않은"):
         epochs.close_epoch(tmp_path, "campaign-001", "epoch-001")
     epochs.mark_evaluated(
         tmp_path, "campaign-001", "epoch-001", second, rejected,
+        strategy_sha256=_strategy_sha(second),
         report="research/runs/cycle-b/report.md",
         strongest_relationship={"factor": "old", "abs_median_spearman": .91},
     )
@@ -1556,6 +1696,7 @@ def test_epoch_lifecycle_auto_qualifies_candidates_and_seals_oos(tmp_path):
     finalized = epochs.load_campaign(tmp_path, "campaign-001")
     assert finalized["status"] == "AWAITING_IMPLEMENTATION"
     assert [row["name"] for row in finalized["qualified_factors"]] == ["candidate_a"]
+    assert finalized["qualified_factors"][0]["strategy_sha256"] == _strategy_sha(first)
     fdr = json.loads(Path(finalized["discovery_multiple_testing"]).read_text())
     assert fdr["method"] == "Benjamini-Yekutieli"
     assert fdr["qualification_policy"] == QUALIFICATION_POLICY
@@ -1599,6 +1740,13 @@ def test_epoch_lifecycle_auto_qualifies_candidates_and_seals_oos(tmp_path):
             tmp_path, "campaign-001", "2026-08-15",
             snapshot_digest="a" * 64,
             current_bindings=changed_binding,
+        )
+    changed_strategy_binding = [dict(binding[0], strategy_sha256="f" * 64)]
+    with pytest.raises(ValueError, match="변경됐습니다"):
+        epochs.assert_reveal_ready(
+            tmp_path, "campaign-001", "2026-08-15",
+            snapshot_digest="a" * 64,
+            current_bindings=changed_strategy_binding,
         )
     with pytest.raises(ValueError, match="snapshot digest"):
         epochs.assert_reveal_ready(
@@ -1680,32 +1828,46 @@ def test_campaign_freezes_epoch_count_and_allows_only_one_open_epoch(tmp_path):
         hypothesis="가설 C", predicted_sign=1, params={"candidate": "c"},
         compute=lambda frame: frame["market_cap"],
     )
-    epochs.start_epoch(tmp_path, "campaign-001", "epoch-001", [first])
+    epochs.start_epoch(
+        tmp_path, "campaign-001", "epoch-001", [first],
+        strategy_digests=_strategy_digests([first]),
+    )
     with pytest.raises(ValueError, match="동시에 둘 이상의 epoch"):
-        epochs.start_epoch(tmp_path, "campaign-001", "epoch-002", [second])
+        epochs.start_epoch(
+            tmp_path, "campaign-001", "epoch-002", [second],
+            strategy_digests=_strategy_digests([second]),
+        )
     result = gate.Result(
         factor=first.name, definition_hash=first.definition_hash,
         verdict=gate.Verdict.REJECT,
     )
     epochs.mark_evaluated(
         tmp_path, "campaign-001", "epoch-001", first, result,
+        strategy_sha256=_strategy_sha(first),
         report="research/runs/a/report.md", strongest_relationship=None,
     )
     epochs.close_epoch(tmp_path, "campaign-001", "epoch-001")
     with pytest.raises(ValueError, match="사전 고정한 epoch 수"):
         epochs.finalize_campaign(tmp_path, "campaign-001")
-    epochs.start_epoch(tmp_path, "campaign-001", "epoch-002", [second])
+    epochs.start_epoch(
+        tmp_path, "campaign-001", "epoch-002", [second],
+        strategy_digests=_strategy_digests([second]),
+    )
     second_result = gate.Result(
         factor=second.name, definition_hash=second.definition_hash,
         verdict=gate.Verdict.REJECT,
     )
     epochs.mark_evaluated(
         tmp_path, "campaign-001", "epoch-002", second, second_result,
+        strategy_sha256=_strategy_sha(second),
         report="research/runs/b/report.md", strongest_relationship=None,
     )
     epochs.close_epoch(tmp_path, "campaign-001", "epoch-002")
     with pytest.raises(ValueError, match="사전 고정한 epoch 수"):
-        epochs.start_epoch(tmp_path, "campaign-001", "epoch-003", [third])
+        epochs.start_epoch(
+            tmp_path, "campaign-001", "epoch-003", [third],
+            strategy_digests=_strategy_digests([third]),
+        )
 
 
 def test_reverse_creation_order_cannot_overlap_signal_and_forward_return(tmp_path):
@@ -1725,7 +1887,10 @@ def test_campaign_can_close_without_qualified_factors_instead_of_optional_stoppi
         compute=lambda frame: frame["market_cap"],
     )
     _start_campaign(tmp_path)
-    epochs.start_epoch(tmp_path, "campaign-001", "epoch-001", [factor])
+    epochs.start_epoch(
+        tmp_path, "campaign-001", "epoch-001", [factor],
+        strategy_digests=_strategy_digests([factor]),
+    )
     rejected = gate.Result(
         factor=factor.name, definition_hash=factor.definition_hash,
         verdict=gate.Verdict.REJECT,
@@ -1733,6 +1898,7 @@ def test_campaign_can_close_without_qualified_factors_instead_of_optional_stoppi
     )
     epochs.mark_evaluated(
         tmp_path, "campaign-001", "epoch-001", factor, rejected,
+        strategy_sha256=_strategy_sha(factor),
         report="research/runs/candidate_a/report.md", strongest_relationship=None,
     )
     epochs.close_epoch(tmp_path, "campaign-001", "epoch-001")
@@ -1753,7 +1919,10 @@ def test_campaign_finalize_auto_qualifies_every_discovery_pass(tmp_path):
         for name in ("candidate_a", "candidate_b", "candidate_c")
     ]
     _start_campaign(tmp_path)
-    epochs.start_epoch(tmp_path, "campaign-001", "epoch-001", factors)
+    epochs.start_epoch(
+        tmp_path, "campaign-001", "epoch-001", factors,
+        strategy_digests=_strategy_digests(factors),
+    )
     for factor, pvalue in zip(factors, (.01, .02, .90), strict=True):
         result = gate.Result(
             factor=factor.name, definition_hash=factor.definition_hash,
@@ -1764,6 +1933,7 @@ def test_campaign_finalize_auto_qualifies_every_discovery_pass(tmp_path):
         )
         epochs.mark_evaluated(
             tmp_path, "campaign-001", "epoch-001", factor, result,
+            strategy_sha256=_strategy_sha(factor),
             report=f"research/runs/{factor.name}/report.md",
             strongest_relationship=None,
         )
@@ -1805,15 +1975,17 @@ def test_campaign_finalize_auto_qualifies_every_discovery_pass(tmp_path):
         monthly=pd.DataFrame({
             "asset_id": [1], "ym": [pd.Period("2023-06", freq="M")],
             "trade_date": [pd.Timestamp("2023-06-30")],
-            "return_close": [1.0], "market_cap": [100.0], "adv20": [10.0],
-            "trading_value": [10.0], "shares": [1.0], "market": ["KOSPI"],
+                "adj_close": [1.0], "total_return_close": [1.0],
+                "market_cap": [100.0], "adv20": [10.0],
+                "trading_value": [10.0], "shares": [1.0], "market": ["KOSPI"],
+                "instrument_type": ["common_stock"],
         }),
         dead=pd.Series(dtype="datetime64[ns]"),
         meta={"source": "RDS public Silver", **RETURN_META},
     )
     context = research.write_context(panel, Registry(), research_dir=tmp_path).read_text()
     assert "| `candidate_a` | `candidate_a` | `candidate_a` |" in context
-    assert "| `fr-3.10.1` | PROVISIONAL | - |" in context
+    assert "| `fr-3.13.0` | PROVISIONAL | - |" in context
     assert "old-full-sample" in context
     assert "WITHHELD_POST_CUTOFF" in context
     assert "research/runs/old/report.md" not in context
@@ -1833,7 +2005,10 @@ def test_campaign_fdr_is_identical_when_epoch_order_is_reversed(tmp_path):
             )
             factors[name] = factor
             epoch_id = f"epoch-{index:03d}"
-            epochs.start_epoch(root, "campaign-001", epoch_id, [factor])
+            epochs.start_epoch(
+                root, "campaign-001", epoch_id, [factor],
+                strategy_digests=_strategy_digests([factor]),
+            )
             result = gate.Result(
                 factor=name, definition_hash=factor.definition_hash,
                 verdict=gate.Verdict.PROVISIONAL,
@@ -1842,6 +2017,7 @@ def test_campaign_fdr_is_identical_when_epoch_order_is_reversed(tmp_path):
             )
             epochs.mark_evaluated(
                 root, "campaign-001", epoch_id, factor, result,
+                strategy_sha256=_strategy_sha(factor),
                 report=f"research/runs/{name}/report.md",
                 strongest_relationship=None,
             )
@@ -1860,17 +2036,21 @@ def test_campaign_fdr_is_identical_when_epoch_order_is_reversed(tmp_path):
     assert forward == reverse
 
 
-def test_old_protocol_campaign_is_read_only(tmp_path):
+def test_epoch_15_campaign_is_read_only_under_epoch_16(tmp_path):
     factor = Factor(
         name="candidate_a", category="other", hypothesis="가설", predicted_sign=1,
         compute=lambda frame: frame["market_cap"],
     )
     campaign_path = _start_campaign(tmp_path)
-    epochs.start_epoch(tmp_path, "campaign-001", "epoch-001", [factor])
+    epochs.start_epoch(
+        tmp_path, "campaign-001", "epoch-001", [factor],
+        strategy_digests=_strategy_digests([factor]),
+    )
     campaign = json.loads(campaign_path.read_text())
-    campaign["protocol_version"] = "epoch-1.0"
+    campaign["protocol_version"] = "epoch-1.5"
     campaign_path.write_text(json.dumps(campaign), encoding="utf-8")
     with pytest.raises(ValueError, match="protocol"):
         epochs.assert_candidate_ready(
             tmp_path, "campaign-001", "epoch-001", factor,
+            strategy_sha256=_strategy_sha(factor),
         )

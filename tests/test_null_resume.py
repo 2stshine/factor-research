@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from engine import gate
+from engine import gate, silver
 from engine import null as null_engine
 from engine.panel import Panel
 
@@ -21,10 +21,17 @@ def _confirmation_panel() -> Panel:
         ),
         "in_universe": True,
         "market_cap": np.tile([100.0, 200.0, 300.0], len(months)),
-        "return_close": np.arange(len(months) * 3, dtype=float) + 100.0,
+        "adj_close": np.arange(len(months) * 3, dtype=float) + 100.0,
+        "total_return_close": np.arange(
+            len(months) * 3, dtype=float,
+        ) + 100.0,
         "adv20": 1.0,
     })
-    return Panel(frame, pd.Series(dtype="datetime64[ns]"))
+    return Panel(
+        frame,
+        pd.Series(dtype="datetime64[ns]"),
+        meta=silver.return_role_contract(),
+    )
 
 
 def _stub_gate(monkeypatch, control):

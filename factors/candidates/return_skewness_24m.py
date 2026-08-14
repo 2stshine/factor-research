@@ -10,7 +10,7 @@ MIN_OBSERVATIONS = 18
 
 def compute(frame):
     ordered = frame.sort_values(["asset_id", "ym"])
-    monthly_return = ordered.groupby("asset_id")["return_close"].pct_change(fill_method=None)
+    monthly_return = ordered.groupby("asset_id")["adj_close"].pct_change(fill_method=None)
     skewness = monthly_return.groupby(ordered["asset_id"]).transform(
         lambda values: values.rolling(
             window=WINDOW_MONTHS,
@@ -38,7 +38,7 @@ FACTOR = Factor(
 
 RESEARCH_SPEC = {
     "thesis": (
-        "Silver PIT 총수익지수로 계산한 최근 24개월 월수익률 왜도가 낮은 종목은 양의 왜도가 큰 "
+        "Silver PIT 분할조정 가격으로 계산한 최근 24개월 월 가격수익률 왜도가 낮은 종목은 양의 왜도가 큰 "
         "종목보다 이후 수익률 순위가 높을 것이다."
     ),
     "mechanism": (
@@ -57,7 +57,7 @@ RESEARCH_SPEC = {
         "품질·가치 팩터와의 관계는 낮을 것으로 예상한다."
     ),
     "data_notes": (
-        "Silver total_return_close에 매핑된 return_close로 월수익률을 계산한다. 24개월 창에서 최소 "
+        "Silver PIT 분할조정 가격 adj_close로 월 가격수익률을 계산한다. 24개월 창에서 최소 "
         "18개 관측을 사전 고정하며, 이력이 부족하거나 수익률 분산이 없어 왜도가 정의되지 않는 "
         "관측은 결측으로 둔다. 일별 왜도가 아닌 월별 왜도라는 한계가 있다."
     ),

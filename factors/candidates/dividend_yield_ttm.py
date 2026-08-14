@@ -50,7 +50,8 @@ RESEARCH_SPEC = {
     ),
     "data_notes": (
         "현재 CERTIFIED total-return run에 결합된 canonical DART ISSUER 현금배당만 사용한다. "
-        "announcement_date 다음 날과 applied_trade_date 중 늦은 날부터 보이게 해 PIT를 지키며, "
+        "canonical latest terminal announcement_date 다음 날과 applied_trade_date 중 늦은 날부터 "
+        "보이게 해 PIT를 지키며, "
         "adjusted_cash_amount와 adj_close를 같은 분할조정 기준으로 나눈다. 세전 gross 배당이고 "
         "적용 가능한 사건이 없는 인증기간 월은 0이다."
     ),

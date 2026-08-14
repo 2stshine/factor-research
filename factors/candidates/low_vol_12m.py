@@ -9,7 +9,7 @@ LOOKBACK_MONTHS = 12
 
 def compute(frame):
     ordered = frame.sort_values(["asset_id", "ym"])
-    monthly_return = ordered.groupby("asset_id")["return_close"].pct_change()
+    monthly_return = ordered.groupby("asset_id")["adj_close"].pct_change()
     volatility = (
         monthly_return.groupby(ordered["asset_id"])
         .rolling(LOOKBACK_MONTHS, min_periods=LOOKBACK_MONTHS)
@@ -37,7 +37,7 @@ FACTOR = Factor(
 
 RESEARCH_SPEC = {
     "thesis": (
-        "월별 총수익률의 최근 12개월 변동성이 낮은 종목을 보유하면 고변동 종목 선호의 "
+        "월별 분할조정 가격수익률의 최근 12개월 변동성이 낮은 종목을 보유하면 고변동 종목 선호의 "
         "가격 왜곡이 교정되며 비용 후 양의 초과수익을 얻는다."
     ),
     "mechanism": (
@@ -53,7 +53,7 @@ RESEARCH_SPEC = {
         "사용하므로 기존 가치·수익성 팩터와의 상관은 낮을 것으로 예상한다."
     ),
     "data_notes": (
-        "Silver total_return_close로 만든 월별 수익률만 사용한다. 최초 12개월은 의도적으로 결측이며 "
+        "Silver PIT 분할조정 가격 adj_close로 만든 월 가격수익률만 사용한다. 최초 12개월은 의도적으로 결측이며 "
         "분모·재무 정정공시 의존성은 없다."
     ),
 }

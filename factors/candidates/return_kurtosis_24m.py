@@ -11,7 +11,7 @@ MIN_OBSERVATIONS = 18
 def compute(frame):
     ordered = frame.sort_values(["asset_id", "ym"])
     asset = ordered["asset_id"]
-    monthly_return = ordered.groupby("asset_id")["return_close"].pct_change(
+    monthly_return = ordered.groupby("asset_id")["adj_close"].pct_change(
         fill_method=None
     )
     kurtosis = monthly_return.groupby(asset).transform(
@@ -45,7 +45,7 @@ FACTOR = Factor(
 
 RESEARCH_SPEC = {
     "thesis": (
-        "Silver 총수익지수로 계산한 최근 24개월 월수익률 초과첨도가 낮은 종목은 높은 종목보다 "
+        "Silver 분할조정 가격으로 계산한 최근 24개월 월 가격수익률 초과첨도가 낮은 종목은 높은 종목보다 "
         "다음 달 총수익률 순위가 높을 것이다."
     ),
     "mechanism": (
@@ -61,7 +61,7 @@ RESEARCH_SPEC = {
         "방향이나 분산이 아니라 분포 양쪽 꼬리의 집중도를 측정한다."
     ),
     "data_notes": (
-        "Silver total_return_close로 월수익률을 계산한다. 연속 24개월 창에서 최소 18개 유효 "
+        "Silver PIT 분할조정 가격 adj_close로 월 가격수익률을 계산한다. 연속 24개월 창에서 최소 18개 유효 "
         "관측을 요구하며 분산이 없어 첨도가 정의되지 않으면 결측으로 둔다."
     ),
 }

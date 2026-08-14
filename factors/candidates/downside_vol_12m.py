@@ -11,7 +11,7 @@ LOOKBACK_MONTHS = 12
 
 def compute(frame):
     ordered = frame.sort_values(["asset_id", "ym"])
-    monthly_return = ordered.groupby("asset_id")["return_close"].pct_change()
+    monthly_return = ordered.groupby("asset_id")["adj_close"].pct_change()
     downside_squared = monthly_return.clip(upper=0).pow(2)
     downside_variance = (
         downside_squared.groupby(ordered["asset_id"])
@@ -40,7 +40,7 @@ FACTOR = Factor(
 
 RESEARCH_SPEC = {
     "thesis": (
-        "월별 총수익률의 최근 12개월 하방 준편차가 낮은 종목을 보유하면, 전체 변동성이 낮은 "
+        "월별 분할조정 가격수익률의 최근 12개월 하방 준편차가 낮은 종목을 보유하면, 전체 변동성이 낮은 "
         "종목을 고르는 것보다 상승 잠재력을 덜 훼손하면서 비용 후 양의 초과수익을 얻는다."
     ),
     "mechanism": (
@@ -58,7 +58,7 @@ RESEARCH_SPEC = {
         "것으로 예상한다. 가치·수익성 팩터와는 낮거나 중간 수준의 관계를 예상한다."
     ),
     "data_notes": (
-        "Silver total_return_close에서 계산한 월별 수익률의 음수 부분만 사용한다. 최초 12개월은 "
+        "Silver PIT 분할조정 가격 adj_close에서 계산한 월 가격수익률의 음수 부분만 사용한다. 최초 12개월은 "
         "의도적으로 결측이며 일별 꼬리위험이 아니라 월별 하방 준편차를 측정한다."
     ),
 }

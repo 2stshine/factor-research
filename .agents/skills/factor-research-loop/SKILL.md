@@ -22,8 +22,8 @@ Agent는 가설을 만들고 상태에 맞는 다음 행동을 선택한다. 판
 
 ## 불변조건
 
-1. 인증된 Silver PIT만 사용한다. Bronze는 금지하고 Gold는 기존 신호 비교용으로만 읽는다. 주식 수익률은 `price_return_contract`가 `krx_gross_dividend_reinvested_v1/CERTIFIED`로 증명한 `total_return_close`만 허용한다. 패널과 OOS closure 관측의 월말 `(trade_date, asset_id, ticker)` identity digest를 cache·campaign·live RDS의 같은 DB snapshot에서 대조하고 불일치하면 팩터 계산 전에 중단한다.
-2. 후보 하나는 단일 경제 신호여야 한다. 해석 가능한 비율은 허용하지만 rank·z-score·팩터 점수 합성과 `f_<name>` 재사용은 금지한다.
+1. 인증된 Silver PIT만 사용한다. Bronze는 금지하고 Gold는 기존 신호 비교용으로만 읽는다. **역사적 후보 feature**의 가격·수익률은 당시 알 수 있는 분할조정 가격 `adj_close`만 사용한다. 최신 정정 배당을 과거 전체에 재구성한 `krx_gross_dividend_reinvested_v3/CERTIFIED`의 `total_return_close`는 ex-post 실현값이므로 **다음 달 forward-return·IC label 전용**이다. Silver가 별도 historical-vintage/known-at 배당 계약을 인증하기 전에는 배당액·배당횟수 같은 직접 배당 feature를 등록하거나 계산하지 않는다. 역할·PIT metadata가 정확히 일치하지 않거나 후보 입력에 label이 보이면 계산 전에 중단한다. 패널과 OOS closure 관측의 월말 `(trade_date, asset_id, ticker)` identity digest를 cache·campaign·live RDS의 같은 DB snapshot에서 대조한다. 원시 cache의 1995년 이후 이력은 대사용으로 보존하되 후보 코드에는 live identity 확인 뒤 `2015-01` 이후 KOSPI·KOSDAQ 보통주 행만 보여주고, 공통 IC 평가는 `2018-03`부터 시작한다.
+2. 후보 하나는 단일 경제 신호여야 한다. 해석 가능한 비율은 허용하지만 rank·z-score·팩터 점수 합성과 `f_<name>` 재사용은 금지한다. 최대 룩백은 36개월이며 시계열 horizon을 `params`로 해석할 수 없거나 36개월을 넘으면 registry에 넣거나 계산하지 않는다. 후보 함수에는 원시 `close`·`total_return_close`·구형 `return_close`·`fwd_*` 정답과 기존 `f_*`를 주지 않는다. 모든 신호월의 authoritative 계산은 그 월의 횡단면과 후보가 선언한 직전 룩백만 따로 전달해 월별로 조립한다. 자산 전체-history GroupBy 축약은 정적으로 차단하고, 36개월 이하 명시적 rolling과 동월 횡단면 연산만 허용한다. 후보 파일은 제한된 import·무 I/O 계약과 사전등록 SHA-256을 지킨다. 기존 60개월 후보의 소스·보고서·시행 기록은 삭제하지 않는다.
 3. 결과 전에 가설·정의·방향·파라미터·반증 조건·definition hash를 동결한다. 유효한 결과 뒤 같은 후보를 수정하거나 재평가하지 않는다.
 4. gate·임계값·유니버스·미래수익 레이블·비용모형·campaign cutoff/OOS 경계를 결과에 맞춰 바꾸지 않는다.
 5. 없는 PIT 입력을 현재값이나 유사 proxy로 대신하지 않는다. 실패한 후보와 시행 기록도 삭제하거나 덮어쓰지 않는다.
@@ -37,9 +37,9 @@ Agent는 가설을 만들고 상태에 맞는 다음 행동을 선택한다. 판
 
 ## 실행
 
-1. `pyproject.toml`과 작업 트리를 확인하고 사용자 변경을 보존한다. 캐시가 없거나 identity 계약이 낡았을 때만 Silver에서 다시 build한 뒤 `identity-audit`을 통과시킨다.
+1. `pyproject.toml`과 작업 트리를 확인하고 사용자 변경을 보존한다. 캐시가 없거나 identity 계약이 낡았을 때만 Silver에서 다시 build한 뒤 `identity-audit`을 통과시킨다. build는 원시·PIT 입력만 캐시하고 팩터를 선계산하지 않는다.
 2. campaign manifest와 OOS 공개 원장을 먼저 확인한다. 현재 protocol의 비종료 campaign이 없으면 최신 reveal-ready 과거 36개월 OOS를 먼저 고정하고 그 직전 수익률 지원월까지만 discovery로 동결한다. 그 뒤 `uv run python scripts/research.py context`를 실행해 cutoff 뒤 데이터·결과가 가려진 `latest.md`, manifest와 최신 reflection을 읽는다.
-3. 전략 계약에 맞는 서로 다른 단일 신호 후보를 모두 작성한 뒤, 결과를 보기 전에 한 epoch으로 사전등록한다.
+3. 전략 계약에 맞는 서로 다른 단일 신호 후보를 모두 작성하고 룩백이 36개월 이하임을 확인한 뒤, 결과를 보기 전에 한 epoch으로 사전등록한다.
 4. 테스트를 통과시킨 뒤 사전등록 후보를 각각 한 번 evaluate한다. 연결·캐시·구현 오류만 **결과가 생기기 전 동일 hash**로 재시도한다.
 5. 모든 후보 평가 후 epoch을 닫아 구조적 교훈만 남긴다. 다음 epoch에는 family 중복·데이터 병목·무결성 교훈만 전달하고 성과 수치나 파라미터 수정안은 전달하지 않는다.
 6. 모든 epoch을 닫은 뒤 `campaign-finalize`로 전체 BY와 자동 확인 대상을 확정한다. 후보가 있으면 `AWAITING_IMPLEMENTATION`에서 전 대상의 Gold SQL·manifest binding·Python/SQL parity를 검증해 `READY_FOR_CONFIRMATION`으로 전환한다.

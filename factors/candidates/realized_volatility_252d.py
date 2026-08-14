@@ -34,7 +34,7 @@ FACTOR = Factor(
 
 RESEARCH_SPEC = {
     "thesis": (
-        "최근 252거래 관측의 일별 총수익률 표준편차가 낮은 종목은 높은 종목보다 이후 "
+        "최근 252거래 관측의 일별 분할조정 가격수익률 표준편차가 낮은 종목은 높은 종목보다 이후 "
         "총수익률 순위가 높을 것이다."
     ),
     "mechanism": (
@@ -50,7 +50,7 @@ RESEARCH_SPEC = {
         "사용하므로 월수익 표준편차보다 급격한 변동을 더 많이 반영한다."
     ),
     "data_notes": (
-        "인증된 Silver 일별 total_return_close로 계산한 표준편차이며 최소 126개 유효 수익률을 "
+        "Silver 일별 분할조정 가격 adj_close로 계산한 가격수익률 표준편차이며 최소 126개 유효 수익률을 "
         "요구한다. 시장요인을 회귀 제거한 idiosyncratic volatility는 아니다."
     ),
 }

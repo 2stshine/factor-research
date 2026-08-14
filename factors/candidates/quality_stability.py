@@ -15,7 +15,7 @@ def compute(frame):
     operating_roa = ordered["operating_income_ttm"] / assets
     asset_turnover = ordered["revenue_ttm"] / assets
     equity_ratio = ordered["total_equity"] / assets
-    monthly_return = ordered.groupby("asset_id")["return_close"].pct_change()
+    monthly_return = ordered.groupby("asset_id")["adj_close"].pct_change()
     volatility = (
         monthly_return.groupby(ordered["asset_id"])
         .rolling(LOOKBACK_MONTHS, min_periods=LOOKBACK_MONTHS)
@@ -80,7 +80,7 @@ RESEARCH_SPEC = {
         "관계를 예상한다."
     ),
     "data_notes": (
-        "Silver PIT operating_income_ttm, revenue_ttm, total_assets, total_equity와 total_return_close를 "
+        "Silver PIT operating_income_ttm, revenue_ttm, total_assets, total_equity와 분할조정 가격 adj_close를 "
         "사용한다. 회계항목이 없는 관측은 해당 회계축만 중립 순위 0.5로 두며, 최초 12개월은 가격 "
         "안정성 계산 때문에 의도적으로 결측이다."
     ),
