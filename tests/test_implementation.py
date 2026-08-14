@@ -24,7 +24,7 @@ def _factor() -> Factor:
 
 def _spec(factor: Factor) -> dict:
     return {
-        "sql": "pipeline/gold/factors/parity_factor.sql",
+        "sql": "implementations/gold/factors/parity_factor.sql",
         "predicted_sign": factor.predicted_sign,
         "research_definition_hash": factor.definition_hash,
         "value_contract": "raw_value_direction_adjusted_rank_v1",
@@ -148,7 +148,7 @@ def test_negative_sign_and_tie_rank_parity_passes():
         factor,
         python,
         sql,
-        implementation_uri="repo://TeamAlpha-data/pipeline/gold/factors/parity_factor.sql",
+        implementation_uri="repo://factor-research/implementations/gold/factors/parity_factor.sql",
         implementation_sha256="a" * 64,
         manifest_spec=_spec(factor),
         discovery_signal_start="2023-05",
@@ -177,7 +177,7 @@ def test_parity_mismatches_are_auditable_failures(mutation, reason):
         factor,
         python,
         mutation(sql),
-        implementation_uri="repo://TeamAlpha-data/pipeline/gold/factors/parity_factor.sql",
+        implementation_uri="repo://factor-research/implementations/gold/factors/parity_factor.sql",
         implementation_sha256="a" * 64,
         manifest_spec=_spec(factor),
         discovery_signal_start="2023-05",
@@ -204,7 +204,7 @@ def test_rank_contract_allows_only_tolerance_equivalent_reordering():
 
     tolerated = implementation.compare_parity(
         factor, python, sql,
-        implementation_uri="repo://TeamAlpha-data/pipeline/gold/factors/parity_factor.sql",
+        implementation_uri="repo://factor-research/implementations/gold/factors/parity_factor.sql",
         implementation_sha256="a" * 64, manifest_spec=spec,
         discovery_signal_start="2023-05", discovery_signal_end="2023-05",
         discovery_snapshot_digest="b" * 64,
@@ -213,7 +213,7 @@ def test_rank_contract_allows_only_tolerance_equivalent_reordering():
     )
     material = implementation.compare_parity(
         factor, python, sql,
-        implementation_uri="repo://TeamAlpha-data/pipeline/gold/factors/parity_factor.sql",
+        implementation_uri="repo://factor-research/implementations/gold/factors/parity_factor.sql",
         implementation_sha256="a" * 64, manifest_spec=spec,
         discovery_signal_start="2023-05", discovery_signal_end="2023-05",
         discovery_snapshot_digest="b" * 64,
@@ -240,7 +240,7 @@ def test_manifest_definition_hash_must_bind_python_definition():
             factor,
             python,
             sql,
-            implementation_uri="repo://TeamAlpha-data/pipeline/gold/factors/parity_factor.sql",
+            implementation_uri="repo://factor-research/implementations/gold/factors/parity_factor.sql",
             implementation_sha256="a" * 64,
             manifest_spec=spec,
             discovery_signal_start="2023-05",

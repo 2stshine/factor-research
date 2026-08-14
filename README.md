@@ -81,7 +81,8 @@ uv run python scripts/research.py campaign-reveal --campaign campaign-001
 전부를 자동 확인 대상으로 확정한다. 후보가 있으면 `AWAITING_IMPLEMENTATION`, 없으면
 `CLOSED_NO_QUALIFIED`가 된다.
 
-전 후보의 Gold manifest에 SQL URI·`research_definition_hash`를 묶고, 실제 SQL SHA256은 구현
+전 후보의 `implementations/gold/manifest.json`에 SQL URI·`research_definition_hash`를 묶고,
+팩터별 query-only SQL은 이 레포의 `implementations/gold/factors/`에서 함께 검토한다. 실제 SQL SHA256은 구현
 검증 artifact에 동결한다. 동결 snapshot의 discovery 구간에서 Python/SQL key·raw value·rank parity를 통과해야
 `READY_FOR_CONFIRMATION`이 된다. 이 SQL은 query-only로 검증하며 Gold write·발행은 하지 않는다.
 OOS reveal은 hash·parity·귀무 보정·discovery 재현을 먼저 확인하고 전 후보에 한 번만 수행한다.

@@ -377,7 +377,7 @@ def _implementation_evidence(factor: Factor, campaign: dict) -> dict:
     sql_frame = python_frame.copy()
     sql_frame["rank"] = 1
     spec = {
-        "sql": f"pipeline/gold/factors/{factor.name}.sql",
+        "sql": f"implementations/gold/factors/{factor.name}.sql",
         "predicted_sign": factor.predicted_sign,
         "research_definition_hash": factor.definition_hash,
         "value_contract": "raw_value_direction_adjusted_rank_v1",
@@ -386,7 +386,7 @@ def _implementation_evidence(factor: Factor, campaign: dict) -> dict:
         factor,
         python_frame,
         sql_frame,
-        implementation_uri=f"repo://TeamAlpha-data/{spec['sql']}",
+        implementation_uri=f"repo://factor-research/{spec['sql']}",
         implementation_sha256="c" * 64,
         manifest_spec=spec,
         discovery_signal_start=gate.RESEARCH_START,

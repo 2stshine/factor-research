@@ -1,8 +1,8 @@
-"""게이트 판정 → TeamAlpha-data 의 `gold.factor` 적재.
+"""게이트 판정과 승인 가능한 `gold.factor` metadata 계약.
 
 이 모듈이 리서치와 프로덕션의 **유일한 접점**이다.
-factor-research 는 판정만 하고, 승인된 팩터를 실제로 계산·적재하는 건
-TeamAlpha-data 의 `pipeline/gold/` 가 한다. 계약은 `gold.factor` 테이블이다.
+factor-research는 팩터별 query-only SQL과 parity 증거를 소유하지만 자동으로
+Gold를 쓰지 않는다. 별도 승인된 범용 게시 경로와의 계약은 `gold.factor` 테이블이다.
 
 팀 스키마가 강제하는 것(sql/gold_schema.sql):
   status='APPROVED'  → evaluation @> '{"passed": true}'
