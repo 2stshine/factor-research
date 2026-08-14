@@ -142,6 +142,43 @@ def _safe(value) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
+ACTIVE_CAMPAIGN_STATUSES = frozenset({
+    "OPEN", "AWAITING_IMPLEMENTATION", "READY_FOR_CONFIRMATION",
+})
+
+
+def is_active_campaign(campaign: dict) -> bool:
+    """Whether this campaign is the in-flight one under the current protocol."""
+    return (
+        campaign.get("protocol_version") == epochs.PROTOCOL_VERSION
+        and campaign.get("status") in ACTIVE_CAMPAIGN_STATUSES
+    )
+
+
+def exposed_after_cutoff(
+    row: dict,
+    *,
+    visible_cutoff,
+    active_campaign_id: str | None,
+) -> bool:
+    """Whether this trial's results sit behind the seal for the current context.
+
+    The single definition of the boundary. Anything that derives context from
+    the trial ledger must call this rather than restate the comparison, so the
+    boundary moves in one place.
+    """
+    belongs_to_active_campaign = bool(
+        active_campaign_id is not None
+        and row.get("campaign_id") == active_campaign_id
+    )
+    return bool(
+        visible_cutoff is not None
+        and not belongs_to_active_campaign
+        and row.get("data_cutoff")
+        and pd.Timestamp(row["data_cutoff"]).normalize() > visible_cutoff
+    )
+
+
 def write_context(
     panel: Panel,
     registry: Registry,
@@ -159,12 +196,7 @@ def write_context(
     active_campaigns = []
     for campaign_row in campaigns:
         campaign = epochs.load_campaign(root, campaign_row["campaign_id"])
-        if (
-            campaign.get("protocol_version") == epochs.PROTOCOL_VERSION
-            and campaign.get("status") in {
-                "OPEN", "AWAITING_IMPLEMENTATION", "READY_FOR_CONFIRMATION",
-            }
-        ):
+        if is_active_campaign(campaign):
             active_campaigns.append(campaign)
         for reference in campaign["epochs"]:
             epoch = epochs.load_epoch(root, campaign["campaign_id"], reference["epoch_id"])
@@ -286,17 +318,11 @@ def write_context(
             active_campaign_id = (
                 context_campaign["campaign_id"] if context_campaign else None
             )
-            belongs_to_active_campaign = bool(
-                active_campaign_id is not None
-                and row.get("campaign_id") == active_campaign_id
-            )
-            exposed_after_cutoff = bool(
-                visible_cutoff is not None
-                and not belongs_to_active_campaign
-                and row.get("data_cutoff")
-                and pd.Timestamp(row["data_cutoff"]).normalize() > visible_cutoff
-            )
-            if exposed_after_cutoff:
+            if exposed_after_cutoff(
+                row,
+                visible_cutoff=visible_cutoff,
+                active_campaign_id=active_campaign_id,
+            ):
                 lines.append(
                     f"| `{row['cycle_id']}` | `{row['factor']}` | "
                     f"`{row.get('family') or row['factor']}` | "
