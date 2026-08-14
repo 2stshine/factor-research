@@ -36,7 +36,7 @@ def _monthly_price_frame(*, missing_month=None):
         {
             "asset_id": ["A"] * len(months),
             "ym": months,
-            "return_close": prices.to_numpy(),
+            "adj_close": prices.to_numpy(),
         },
         index=np.arange(len(months))[::-1] + 10,
     )
@@ -65,7 +65,9 @@ def test_intermediate_momentum_is_order_and_index_safe():
     frame = pd.concat(
         [
             _monthly_price_frame().assign(asset_id="A"),
-            _monthly_price_frame().assign(asset_id="B", return_close=lambda d: d["return_close"] * 2),
+            _monthly_price_frame().assign(
+                asset_id="B", adj_close=lambda d: d["adj_close"] * 2,
+            ),
         ]
     )
     frame.index = np.arange(len(frame)) * 3 + 5

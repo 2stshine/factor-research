@@ -9,7 +9,7 @@ SKIP_MONTHS = 12
 
 
 def compute(frame):
-    grouped = frame.groupby("asset_id")["return_close"]
+    grouped = frame.groupby("asset_id")["adj_close"]
     old_price = grouped.shift(LOOKBACK_MONTHS)
     recent_boundary = grouped.shift(SKIP_MONTHS)
     past_return = recent_boundary / old_price - 1
@@ -34,7 +34,7 @@ FACTOR = Factor(
 
 RESEARCH_SPEC = {
     "thesis": (
-        "Silver PIT 총수익지수로 측정한 36~12개월 전 누적수익률이 낮은 종목은 높은 종목보다 "
+        "Silver PIT 분할조정 가격으로 측정한 36~12개월 전 누적 가격수익률이 낮은 종목은 높은 종목보다 "
         "이후 수익률 순위가 높을 것이다."
     ),
     "mechanism": (
@@ -53,7 +53,7 @@ RESEARCH_SPEC = {
         "회계 입력을 사용하지 않으므로 동일 신호는 아닐 것으로 예상한다."
     ),
     "data_notes": (
-        "Silver total_return_close에 매핑된 return_close만 사용한다. 36개월 이력이 없는 관측은 "
+        "Silver PIT 분할조정 가격 adj_close만 사용한다. 36개월 이력이 없는 관측은 "
         "결측이며, 12개월 skip은 사전 고정한다. 상장폐지 종착수익률 처리는 공통 게이트가 세 "
         "시나리오로 적용한다."
     ),

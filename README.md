@@ -27,14 +27,24 @@ build는 월말 `(trade_date, asset_id, ticker)`를
 종목 판정에 쓰는 closure월도 별도 digest로 묶으며, 종목 ID가 재배정되거나 PIT ticker가
 누락·중복되면 팩터 계산 전에 중단한다.
 
+원시 캐시는 Silver 원본 대사와 identity 감사를 위해 1995년부터의 이력을 보존할 수 있지만,
+후보 Python 코드에 전달되는 연구 입력은 항상 `2015-01` 이후의 별도 view다. build 단계에서는
+팩터를 선계산하지 않으며, 전체 cache/live identity가 일치한 뒤 이 view에서만 계산한다.
+후보 함수에는 `fwd_*` 미래수익 정답, 기존 `f_*` 신호, universe·lineage 메타데이터가
+전달되지 않는다. KOSPI/KOSDAQ 동시점 `market`은 시장수익 계산을 위해 유지한다.
+
 ```bash
 uv run python scripts/research.py identity-audit  # 활성 캐시 ↔ live RDS 읽기 전용 대조
 ```
 
 `scripts/run.py gate`와 `publish`는 전체 패널이 봉인 OOS를 우회해 노출하지 않도록
-`epoch-1.5`에서 비활성화했다. 평가는 아래 campaign workflow로만 실행한다.
+`epoch-1.6`에서 비활성화했다. 평가는 아래 campaign workflow로만 실행한다.
 
-모든 팩터의 공통 평가 시작일은 고정한다. campaign은 현재 Silver에서 45일 비활성 판정과
+모든 팩터의 공통 평가 시작일은 `2018-03`으로 고정한다. 허용하는 최대 룩백은 36개월이므로
+`2015-01~2018-02`는 공통 준비 구간이다. 60개월 정의는 새 연구 registry에 등록하지 않으며,
+기존 소스·보고서·시행 기록은 삭제하지 않는다. 모든 신호월은 후보가 선언한 직전 룩백과 해당 월
+횡단면만 전달해 따로 계산·조립하므로, 36개월보다 오래된 행이나 미래 행을 후보가 볼 수 없다. 자산별
+전체-history GroupBy 축약도 정적으로 거부한다. campaign은 현재 Silver에서 45일 비활성 판정과
 완전히 종료된 closure월까지 확인된 최신 36 signal개월을 hidden OOS로 먼저 떼고, 그 앞부분만 discovery로
 동결한다. 따라서 기본 실행은 미래 데이터를 기다리지 않고 지금 IS와 OOS를 모두 판단할 수 있다.
 현재 진행 중인 부분 closure월은 campaign 경계와 identity 계약에 포함하지 않는다.
@@ -93,7 +103,7 @@ signal 월말에서 45일이 지난 실제 Silver 관측일까지 확인한다.
 | NCAV 딥밸류 | 상장폐지 종착수익률이 데이터에 없음 — 시계열이 그냥 끝나 −100%가 기록 안 됨 |
 | Amihud 비유동성 | 체결 불가능한 가격 |
 | 거래정지 리셋 | 정지 구간의 가짜 0 수익률 |
-| 배당 갭 | `adj_close` 가 배당 미반영이라 고/저배당 스프레드가 공짜로 생김 |
+| 배당 정정 이력 | 최신 정정 배당으로 과거 총수익 feature를 다시 만들면 당시 몰랐던 정보가 샘 |
 
 순열검정·부트스트랩·홀드아웃은 전부 *같은 표본의 재표본*이다. 표본틀이 틀리면 넷이 동시에
 같은 방향으로 틀린다. NCAV 공격은 통계 검사 9개를 전부 통과했지만 SQL 한 줄
@@ -124,7 +134,7 @@ discovery 자동 확인 대상은 OOS가 봉인되어 있으므로 soft fail이 
 
 ```
 전체 유니버스 = KOSPI/KOSDAQ · 보통주 · SPAC/리츠 제외 · 상장 250거래일 경과
-                · 시가총액과 total_return_close가 정상인 종목
+                · 시가총액·분할조정 가격과 forward-label 총수익이 정상인 종목
 투자 가능 유니버스 = 전체 유니버스 중 ADV20(최근 20거래일 일평균 거래대금) > 0
 ```
 
@@ -137,7 +147,7 @@ discovery 자동 확인 대상은 OOS가 봉인되어 있으므로 soft fail이 
 강제 부여하고 세 시나리오 전부에서 부호가 유지되어야 한다. 안 하면 롱레그의 최악 실현값만
 표본에서 증발한다.
 
-## 현재 판정 기준: `fr-3.10.1`
+## 현재 판정 기준: `fr-3.13.0`
 
 판정은 IC 효과크기·시간 강건성·다중검정·표본 무결성·기존 Gold와의 비중복을 함께 본다.
 절대 포트폴리오 수익률과 비용 지표는 운용 진단이며 팩터 승격선이 아니다. 지표 정의, 모든
@@ -191,9 +201,11 @@ Silver에 과거 시점별 업종분류 이력이 없고 현재 업종을 과거
 
 **기업행위**는 액면분할·병합, 유상·무상증자, 합병·분할, 배당처럼 가격이나 주식수를 기계적으로
 바꾸는 사건이다. Silver에는 이미 `public.corporate_action` 테이블이 존재하지만 factor-research
-월말 패널은 인증된 현금배당 이력을 PIT 기준으로 붙여 `dividend_cash_ttm`을 만든다. 증자·감자,
-합병·분할, 자사주 매입·소각은 아직 월말 신호로 연결되지 않았으므로 가격조정 순발행 정의에도
-이 사건들의 효과가 일부 섞일 수 있다.
+월말 패널은 최신 정정 현금배당을 복구한 `total_return_close`를 다음 달 수익률 label로만 쓴다.
+현재 Silver는 과거 각 시점에 알려진 공시 vintage를 별도로 인증하지 않으므로
+`dividend_cash_ttm`·배당빈도 같은 직접 배당 신호는 비활성화한다. 증자·감자, 합병·분할,
+자사주 매입·소각도 아직 월말 신호로 연결되지 않았으므로 가격조정 순발행 정의에는 이 사건들의
+효과가 일부 섞일 수 있다.
 
 ## 한국시장에서 확인된 사실
 
@@ -229,14 +241,21 @@ REGISTRY.add(Factor(
 `asset_turnover`이며 gross profitability가 아니다.
 
 `hypothesis` 없이는 `Factor` 생성 자체가 예외를 던진다. 게이트가 소스의 숫자 리터럴을
-스캔해 **선언되지 않은 파라미터**도 잡는다.
+스캔해 **선언되지 않은 파라미터**도 잡는다. 시계열 후보는 `lookback_months`,
+`window_months`, `*_lag`처럼 룩백 단위를 `params`에 선언해야 하며, 엔진이 계산한 최대치가
+36개월을 넘거나 해석할 수 없으면 후보 코드 실행 전에 차단한다.
 
 ## 판정 안전장치와 남은 한계
 
-- 수익률은 Silver의 인증된 KRX gross 배당재투자 `total_return_close`만 사용한다. 계약이
-  `CERTIFIED`가 아니거나 결측·비양수 값이 있으면 build를 중단한다
+- 역사적 팩터 feature는 Silver `adj_close` 기반 분할조정 가격수익률만 사용한다. 최신 정정 배당을
+  반영한 `total_return_close`는 evaluator가 다음 달 forward-return·IC label을 만들 때만 사용하며,
+  후보 입력에서는 제거한다. 역할 metadata가 다르거나 label 계약이 `CERTIFIED`가 아니면 중단한다
+- 배당수익률·배당빈도 같은 직접 배당 feature는 Silver historical-vintage/known-at 계약이
+  별도로 인증될 때까지 registry 등록·계산을 중단한다. 로컬 metadata로 이를 자체 인증하지 않는다
 - 패널의 asset identity digest가 캐시 내용 또는 live RDS와 다르면 연구·Gold 비교·OOS 공개를
   중단한다. 이 사유로 무효화된 campaign의 과거 결과는 덮어쓰지 않고 `OOS=NOT_USED`로 보존한다
+- raw cache의 1995년 이후 행은 보존하되 factor view는 `2015-01`부터, 공통 IC 평가는
+  `2018-03`부터로 고정한다. 최대 36개월 룩백만 등록·계산할 수 있다
 - 과거 PIT 업종 이력이 없어 섹터 중립성은 현재 ruleset의 검증 범위가 아니다
 - 비용 모델의 시장충격은 아직 AUM·참여율 함수가 아닌 보수적 추정치다
 - 모든 고유 정의의 시행횟수는 `.cache/trials.sqlite3`에, 봉인 OOS 상태는
@@ -244,7 +263,7 @@ REGISTRY.add(Factor(
   연구자의 시행을 합산할 수 있다
 - 귀무 보정은 같은 Silver snapshot·ruleset·campaign family, Gold 신호 digest에 결박한다. 필요한
   생성 수와 오류율 기준은 [판정 기준](docs/factor-promotion-criteria.md)을 따른다
-- 현재 ruleset이 `fr-3.10.1`으로 변경됐으므로 이 버전의 귀무 보정을 새로 만들기 전에는
+- 현재 ruleset이 `fr-3.13.0`으로 변경됐으므로 이 버전의 귀무 보정을 새로 만들기 전에는
   안전장치상 `PROMOTE`가 나오지 않는다
-- `epoch-1.5`는 campaign 시작 때 분리한 36개월 OOS를 후보 family에 한 번만 공개하며, 구현 parity·campaign reveal·별도 사람 검토 전
+- `epoch-1.6`은 campaign 시작 때 분리한 36개월 OOS를 후보 family에 한 번만 공개하며, 구현 parity·campaign reveal·별도 사람 검토 전
   `publish --apply`를 차단한다

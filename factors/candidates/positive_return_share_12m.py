@@ -11,7 +11,7 @@ MIN_OBSERVATIONS = 12
 def compute(frame):
     ordered = frame.sort_values(["asset_id", "ym"])
     asset = ordered["asset_id"]
-    monthly_return = ordered.groupby("asset_id")["return_close"].pct_change(
+    monthly_return = ordered.groupby("asset_id")["adj_close"].pct_change(
         fill_method=None
     )
     positive = monthly_return.gt(0).where(monthly_return.notna()).astype(float)
@@ -46,7 +46,7 @@ FACTOR = Factor(
 
 RESEARCH_SPEC = {
     "thesis": (
-        "Silver 총수익지수로 계산한 최근 12개월 양의 월수익 비중이 높은 종목은 다음 달 "
+        "Silver 분할조정 가격으로 계산한 최근 12개월 양의 월 가격수익 비중이 높은 종목은 다음 달 "
         "총수익률 순위가 높을 것이다."
     ),
     "mechanism": (
@@ -62,7 +62,7 @@ RESEARCH_SPEC = {
         "거리가 아니라 상승한 월의 비중만 측정하므로 정의상 다르다."
     ),
     "data_notes": (
-        "Silver total_return_close에 매핑된 return_close로 월수익률을 계산한다. 정확히 연속된 "
+        "Silver PIT 분할조정 가격 adj_close로 월 가격수익률을 계산한다. 정확히 연속된 "
         "12개월 모두가 있을 때만 정의하며 최초 12개월은 결측이다."
     ),
 }

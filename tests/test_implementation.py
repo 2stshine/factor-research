@@ -7,6 +7,9 @@ from engine import implementation
 from engine.factors import Factor
 
 
+STRATEGY_SHA256 = "c" * 64
+
+
 def _factor() -> Factor:
     return Factor(
         name="parity_factor",
@@ -70,6 +73,74 @@ def test_query_only_contract_rejects_dml_and_requires_closed_month_range():
         )
 
 
+@pytest.mark.parametrize("label", ["total_return_close", "return_close"])
+def test_gold_feature_sql_cannot_read_ex_post_label_fields(label):
+    sql = (
+        f"SELECT asset_id, trade_date AS as_of_date, {label} AS value, "
+        "1 AS rank FROM public.price_daily "
+        "WHERE trade_date BETWEEN %(start_month)s AND %(end_month)s"
+    )
+    with pytest.raises(ValueError, match="forward label 전용"):
+        implementation.validate_feature_sql(sql)
+
+    implementation.validate_feature_sql(
+        "SELECT asset_id, trade_date AS as_of_date, adj_close AS value, "
+        "1 AS rank FROM public.factor_price_feature_daily "
+        "WHERE trade_date BETWEEN %(start_month)s AND %(end_month)s"
+    )
+
+    with pytest.raises(ValueError, match="인증 feature view"):
+        implementation.validate_feature_sql(
+            "SELECT asset_id, trade_date AS as_of_date, adj_close AS value, "
+            "1 AS rank FROM public.price_daily "
+            "WHERE trade_date BETWEEN %(start_month)s AND %(end_month)s"
+        )
+
+
+def test_gold_feature_sql_cannot_hide_label_field_in_json_key_literal():
+    sql = (
+        "SELECT p.asset_id, p.trade_date AS as_of_date, "
+        "(to_jsonb(p)->>'total_return_close')::numeric AS value, 1 AS rank "
+        "FROM public.price_daily p "
+        "WHERE p.trade_date BETWEEN %(start_month)s AND %(end_month)s"
+    )
+
+    with pytest.raises(ValueError, match="동적 필드 접근"):
+        implementation.validate_feature_sql(sql)
+
+
+@pytest.mark.parametrize(
+    "dynamic_value",
+    [
+        "to_jsonb(p)->>('total_' || 'return_' || 'close')",
+        "to_jsonb(p)->>concat('total','_ret','urn_cl','ose')",
+        "row_to_json(p)->>chr(116)",
+    ],
+)
+def test_gold_feature_sql_rejects_fragmented_dynamic_field_access(dynamic_value):
+    sql = (
+        "SELECT p.asset_id, p.trade_date AS as_of_date, "
+        f"({dynamic_value})::numeric AS value, 1 AS rank "
+        "FROM public.price_daily p "
+        "WHERE p.trade_date BETWEEN %(start_month)s AND %(end_month)s"
+    )
+
+    with pytest.raises(ValueError, match="동적 필드 접근"):
+        implementation.validate_feature_sql(sql)
+
+
+def test_gold_feature_sql_cannot_serialize_whole_price_row_to_recover_label():
+    sql = (
+        "SELECT p.asset_id, p.trade_date AS as_of_date, "
+        "split_part(p::text, ',', 7)::numeric AS value, 1 AS rank "
+        "FROM public.price_daily p "
+        "WHERE p.trade_date BETWEEN %(start_month)s AND %(end_month)s"
+    )
+
+    with pytest.raises(ValueError, match="인증 feature view"):
+        implementation.validate_feature_sql(sql)
+
+
 def test_negative_sign_and_tie_rank_parity_passes():
     factor = _factor()
     python, sql = _frames()
@@ -83,6 +154,7 @@ def test_negative_sign_and_tie_rank_parity_passes():
         discovery_signal_start="2023-05",
         discovery_signal_end="2023-05",
         discovery_snapshot_digest="b" * 64,
+        strategy_sha256=STRATEGY_SHA256,
     )
 
     assert evidence["status"] == "PASS"
@@ -111,6 +183,7 @@ def test_parity_mismatches_are_auditable_failures(mutation, reason):
         discovery_signal_start="2023-05",
         discovery_signal_end="2023-05",
         discovery_snapshot_digest="b" * 64,
+        strategy_sha256=STRATEGY_SHA256,
     )
 
     assert evidence["status"] == "FAIL"
@@ -134,7 +207,8 @@ def test_rank_contract_allows_only_tolerance_equivalent_reordering():
         implementation_uri="repo://TeamAlpha-data/pipeline/gold/factors/parity_factor.sql",
         implementation_sha256="a" * 64, manifest_spec=spec,
         discovery_signal_start="2023-05", discovery_signal_end="2023-05",
-        discovery_snapshot_digest="b" * 64, atol=1e-6,
+        discovery_snapshot_digest="b" * 64,
+        strategy_sha256=STRATEGY_SHA256, atol=1e-6,
         allow_tolerance_equivalent_ranks=True,
     )
     material = implementation.compare_parity(
@@ -142,7 +216,8 @@ def test_rank_contract_allows_only_tolerance_equivalent_reordering():
         implementation_uri="repo://TeamAlpha-data/pipeline/gold/factors/parity_factor.sql",
         implementation_sha256="a" * 64, manifest_spec=spec,
         discovery_signal_start="2023-05", discovery_signal_end="2023-05",
-        discovery_snapshot_digest="b" * 64, atol=1e-10,
+        discovery_snapshot_digest="b" * 64,
+        strategy_sha256=STRATEGY_SHA256, atol=1e-10,
         allow_tolerance_equivalent_ranks=True,
     )
 
@@ -171,6 +246,7 @@ def test_manifest_definition_hash_must_bind_python_definition():
             discovery_signal_start="2023-05",
             discovery_signal_end="2023-05",
             discovery_snapshot_digest="b" * 64,
+            strategy_sha256=STRATEGY_SHA256,
         )
 
 
@@ -181,6 +257,7 @@ def test_pre_parity_exception_is_preserved_as_deterministic_failure_evidence():
         discovery_signal_start="2018-03",
         discovery_signal_end="2023-05",
         discovery_snapshot_digest="b" * 64,
+        strategy_sha256=STRATEGY_SHA256,
         stage="sql_execute",
         error=RuntimeError("relation unavailable"),
     )
@@ -189,6 +266,7 @@ def test_pre_parity_exception_is_preserved_as_deterministic_failure_evidence():
         discovery_signal_start="2018-03",
         discovery_signal_end="2023-05",
         discovery_snapshot_digest="b" * 64,
+        strategy_sha256=STRATEGY_SHA256,
         stage="sql_execute",
         error=RuntimeError("relation unavailable"),
     )

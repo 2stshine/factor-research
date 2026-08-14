@@ -46,6 +46,23 @@ LABELS = [
 ]
 
 
+def _authenticated_factor_frames(discovery, confirmation, targets):
+    """Verify cache identity against live RDS before candidate computation."""
+    with silver.connect(read_only=True) as conn:
+        silver.verify_live_total_return_contract(
+            conn,
+            discovery.meta.get("return_contract_validation_evidence"),
+        )
+        run.P.verify_live_asset_identity(conn, discovery, cutoff=DATA_CUTOFF)
+        run._verify_confirmation_live_identity(conn, confirmation)
+        discovery = run._research_input_panel(discovery)
+        confirmation = run._research_input_panel(confirmation)
+        discovery_df = run._ensure_factor_columns(discovery, targets)
+        confirmation_df = run._ensure_factor_columns(confirmation, targets)
+        approved = run._approved_signals(conn, discovery_df)
+    return discovery, confirmation, discovery_df, confirmation_df, approved
+
+
 def _number(value):
     if value is None or not np.isfinite(value):
         return None
@@ -288,10 +305,9 @@ def main() -> None:
         oos_start=OOS_START,
         oos_end=OOS_END,
     )
-    discovery_df = run._ensure_factor_columns(discovery, targets)
-    confirmation_df = run._ensure_factor_columns(confirmation, targets)
-    with silver.connect(read_only=True) as conn:
-        approved = run._approved_signals(conn, discovery_df)
+    (
+        discovery, confirmation, discovery_df, confirmation_df, approved,
+    ) = _authenticated_factor_frames(discovery, confirmation, targets)
 
     is_work = _is_frame(discovery, discovery_df)
     oos_work = _oos_frame(confirmation, confirmation_df)

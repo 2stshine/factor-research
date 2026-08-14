@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import pickle
+import re
 import shutil
 import sys
 import tempfile
@@ -24,7 +25,18 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from engine import factors as F
-from engine import dividends, epochs, fundamentals, gate, implementation, null, panel as P, publish, silver, trials
+from engine import (
+    epochs,
+    fundamentals,
+    gate,
+    implementation,
+    null,
+    panel as P,
+    publish,
+    research_policy,
+    silver,
+    trials,
+)
 from engine.boundaries import (
     HISTORICAL_HOLDOUT_MODE,
     PROSPECTIVE_HOLDOUT_MODE,
@@ -36,6 +48,7 @@ CACHE = Path(os.environ.get("CACHE_DIR", ".cache"))
 TRIAL_DB = CACHE / "trials.sqlite3"
 PANEL_CACHE = CACHE / "panel.pkl"
 PANEL_ARCHIVE = CACHE / "panels"
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _file_sha256(path: Path) -> str:
@@ -68,6 +81,7 @@ def _archive_panel(path: Path, *, key: str | None = None) -> Path:
 def _activate_panel_cache(panel: P.Panel) -> tuple[Path, Path | None]:
     """Validate, archive, and atomically activate one fully-built panel."""
     CACHE.mkdir(parents=True, exist_ok=True)
+    P.verify_return_roles(panel)
     evidence = P.verify_asset_identity(panel)
     temporary_path: Path | None = None
     previous_archive: Path | None = None
@@ -82,6 +96,7 @@ def _activate_panel_cache(panel: P.Panel) -> tuple[Path, Path | None]:
             temporary_path = Path(fh.name)
         with temporary_path.open("rb") as fh:
             persisted = pickle.load(fh)
+        P.verify_return_roles(persisted)
         P.verify_asset_identity(persisted)
         # Persist the content-addressed version before changing the active file.
         _archive_panel(
@@ -101,6 +116,15 @@ def _implementation_contract(
     factor: F.Factor,
 ) -> tuple[publish.ImplementationRef, dict, Path, dict]:
     """Authenticate one allowlisted TeamAlpha query and its research binding."""
+    from factors.candidate_loader import RESEARCH_SPECS
+
+    research_spec = RESEARCH_SPECS.get(factor.name)
+    strategy_sha256 = (
+        research_spec.get("strategy_sha256")
+        if isinstance(research_spec, dict) else None
+    )
+    if not _SHA256.fullmatch(str(strategy_sha256)):
+        raise ValueError(f"동결할 후보 전략 파일 SHA-256이 없습니다: {factor.name}")
     configured = os.environ.get("TEAMALPHA_DATA_DIR")
     data_repo = (
         Path(configured).expanduser()
@@ -125,7 +149,7 @@ def _implementation_contract(
     if data_repo.resolve() not in sql_path.parents or not sql_path.is_file():
         raise ValueError(f"허용된 Gold SQL 파일을 찾을 수 없습니다: {relative}")
     sql_text = sql_path.read_text(encoding="utf-8")
-    implementation.validate_query_only_sql(sql_text)
+    implementation.validate_feature_sql(sql_text)
     reference = publish.ImplementationRef(
         uri=f"repo://TeamAlpha-data/{relative.as_posix()}",
         sha256=hashlib.sha256(sql_path.read_bytes()).hexdigest(),
@@ -134,6 +158,7 @@ def _implementation_contract(
     binding = {
         "factor": factor.name,
         "definition_hash": factor.definition_hash,
+        "strategy_sha256": strategy_sha256,
         "predicted_sign": factor.predicted_sign,
         "value_contract": publish.VALUE_CONTRACT_ID,
         "implementation_uri": reference.uri,
@@ -167,7 +192,6 @@ def cmd_build(args):
     load_registry()
     with silver.connect(read_only=True) as conn:
         pan = P.build(conn)
-        dividend_history = silver.load_dividend_history(conn)
         fund = fundamentals.build(conn)
     # Materializing the Silver revision ledger is the expensive part of a build.
     # Cache every PIT feature produced from that same immutable ledger so a newly
@@ -175,18 +199,15 @@ def cmd_build(args):
     # because it asks for a previously unused accounting column.
     available_features = sorted(set(fund.columns) - {"asset_id", "available_date"})
     df = fundamentals.attach(pan.monthly, fund, available_features)
-    df = dividends.attach(df, dividend_history)
     df = df.sort_values(["Code", "ym"]).reset_index(drop=True)
     pan.monthly = df
-    pan.meta["dividend_feature_contract"] = dividends.FEATURE_VERSION
     for tag, term in (("opt", 0.0), ("mid", -0.50), ("pess", -1.00)):
         df[f"fwd_{tag}"] = P.forward_returns(pan, terminal=term)   # 인덱스 정렬 (위치대입 금지)
-    df = F.compute_all(F.REGISTRY, df)
     pan.monthly = df
     active, previous_archive = _activate_panel_cache(pan)
     if previous_archive is not None:
         print(f"\n기존 캐시 보존: {previous_archive}")
-    print(f"캐시 저장: {active}  ({len(df):,}행 × {len(F.REGISTRY)}팩터)")
+    print(f"원시 연구 입력 캐시 저장: {active}  ({len(df):,}행, 팩터 선계산 없음)")
     print(f"asset identity: {pan.meta['asset_identity_digest']}")
 
 
@@ -194,18 +215,38 @@ def _load():
     with PANEL_CACHE.open("rb") as fh:
         panel = pickle.load(fh)
     required = {
-        "asset_id", "return_close", "total_return_close", "quality_run_id",
+        "asset_id", "adj_close", "total_return_close", "quality_run_id",
+        "total_return_quality_run_id",
         "amihud_illiquidity_1m", "amihud_observations_1m",
         "daily_volatility_252d", "daily_return_observations_252d",
         "max_daily_return_1m", "max_daily_return_observations_1m",
         "price_high_252d", "price_high_observations_252d",
-        dividends.DIVIDEND_CASH_TTM, dividends.DIVIDEND_EVENT_COUNT_TTM,
     }
-    valid_return_contract = (
-        panel.meta.get("return_field") == "total_return_close"
-        and panel.meta.get("return_methodology") == silver.TOTAL_RETURN_METHOD
-        and panel.meta.get("return_contract_status") == "CERTIFIED"
-    )
+    try:
+        P.verify_return_roles(panel)
+        return_evidence = silver.verify_total_return_validation_evidence(
+            panel.meta.get("return_contract_validation_evidence"),
+        )
+    except RuntimeError:
+        valid_return_contract = False
+    else:
+        valid_return_contract = (
+            panel.meta.get("label_return_field") == "total_return_close"
+            and panel.meta.get("label_return_methodology")
+            == silver.TOTAL_RETURN_METHOD
+            and panel.meta.get("label_return_contract_status") == "CERTIFIED"
+            and panel.meta.get("label_return_usage")
+            == silver.LABEL_RETURN_USAGE
+            and panel.meta.get("label_candidate_access") is False
+            and panel.meta.get("feature_price_field") == "adj_close"
+            and panel.meta.get("feature_return_methodology")
+            == silver.FEATURE_RETURN_METHOD
+            and panel.meta.get("return_contract_validation_status") == "VERIFIED"
+            and panel.meta.get("return_contract_run_id")
+            == return_evidence["quality_run_id"]
+            and panel.meta.get("return_contract_evidence_sha256")
+            == return_evidence["evidence_sha256"]
+        )
     try:
         P.verify_asset_identity(panel)
     except (KeyError, TypeError, ValueError, RuntimeError) as exc:
@@ -217,24 +258,27 @@ def _load():
         panel.meta.get("source") != "RDS public Silver"
         or not required.issubset(panel.monthly.columns)
         or not valid_return_contract
-        or panel.meta.get("dividend_feature_contract") != dividends.FEATURE_VERSION
     ):
         raise SystemExit(
-            "캐시가 구형이거나 배당 포함 총수익 계약이 없습니다. "
-            "Silver 배당 rebuild 후 `uv run python scripts/run.py build`로 "
+            "캐시가 구형이거나 feature/label 수익률 계약이 없습니다. "
+            "Silver 총수익 rebuild 후 `uv run python scripts/run.py build`로 "
             "인증 캐시를 다시 만드세요."
         )
     return panel
 
 
 def _ensure_factor_columns(pan, targets):
-    """캐시에 없는 팩터만 즉석 계산한다.
+    """인증된 연구 view에서 요청한 후보만 즉석 계산한다.
 
-    팩터 값은 build 때 캐시되지만, 새로 등록한 팩터는 컬럼이 없다.
-    재무 컬럼(needs)이 이미 패널에 있으면 10분짜리 재빌드 없이 여기서 채운다.
-    needs 가 부족하면 build 를 다시 돌려야 한다.
+    build 캐시는 Silver/PIT 입력만 보관한다. 후보 값은 사전등록된 평가가
+    요청될 때마다 격리된 2015+ 입력 view에서 계산하며 Gold에 쓰지 않는다.
     """
     df = pan.monthly
+    research_policy.assert_research_input_frame(df)
+    for factor in targets:
+        research_policy.assert_allowed_lookback(
+            name=factor.name, source=factor.source, params=factor.params,
+        )
     missing = [f for f in targets if f"f_{f.name}" not in df.columns]
     if not missing:
         return df
@@ -247,7 +291,9 @@ def _ensure_factor_columns(pan, targets):
           f"{', '.join(f.name for f in missing)}")
     for f in missing:
         try:
-            df[f"f_{f.name}"] = f.compute(df) * f.predicted_sign
+            df[f"f_{f.name}"] = (
+                research_policy.compute_factor(f, df) * f.predicted_sign
+            )
         except Exception as exc:
             df[f"f_{f.name}"] = float("nan")
             print(f"  ⚠️  {f.name} 계산 실패: {type(exc).__name__}: {exc}")
@@ -282,6 +328,44 @@ def _signal_family_digest(signals: dict[str, pd.Series]) -> str:
     return digest.hexdigest()
 
 
+def _research_policy_metadata() -> dict:
+    return {
+        "research_input_start": str(research_policy.RESEARCH_INPUT_START),
+        "common_evaluation_start": str(research_policy.COMMON_EVALUATION_START),
+        "max_factor_lookback_months": (
+            research_policy.MAX_FACTOR_LOOKBACK_MONTHS
+        ),
+    }
+
+
+def _research_input_panel(pan: P.Panel) -> P.Panel:
+    """Derive the only frame that factor code is allowed to inspect.
+
+    The parent panel keeps the complete pre-2015 history so its cache/live RDS
+    identity digest remains verifiable.  This child view is created only after
+    the parent identity has been checked and strips every cached factor column
+    before exposing rows to candidate code.
+    """
+    parent_identity = pan.meta.get("asset_identity_digest")
+    scoped = research_policy.research_input_frame(pan.monthly)
+    scoped = scoped.drop(
+        columns=[column for column in scoped if str(column).startswith("f_")],
+        errors="ignore",
+    ).copy()
+    asset_ids = set(scoped["asset_id"].unique())
+    dead = pan.dead[pan.dead.index.isin(asset_ids)].copy()
+    meta = dict(pan.meta)
+    meta.update(_research_policy_metadata())
+    meta["parent_asset_identity_digest"] = parent_identity
+    meta["parent_panel_start"] = str(pan.monthly["ym"].min())
+    meta["parent_panel_end"] = str(pan.monthly["ym"].max())
+    meta["asset_identity_scope"] = "research_input_derived_from_verified_parent"
+    output = P.Panel(monthly=scoped, dead=dead, meta=meta)
+    P.bind_asset_identity(output)
+    research_policy.assert_research_input_frame(output.monthly)
+    return output
+
+
 def _rebuild_scoped_panel(
     pan: P.Panel,
     scoped: pd.DataFrame,
@@ -302,14 +386,21 @@ def _rebuild_scoped_panel(
         key: pan.meta.get(key)
         for key in (
             "source",
-            "return_field",
-            "return_methodology",
-            "return_contract_status",
+            *P.RETURN_ROLE_META_KEYS,
+            "label_return_contract_status",
             "return_contract_run_id",
-            "dividend_feature_contract",
+            "return_contract_validation_status",
+            "return_contract_evidence_sha256",
+            "return_contract_scope_start",
+            "return_contract_coverage_start",
+            "return_contract_coverage_end",
+            "return_contract_action_snapshot_run_id",
+            "return_contract_asset_identity_digest",
+            "return_contract_validation_evidence",
         )
         if key in pan.meta
     }
+    meta.update(_research_policy_metadata())
     meta.update(meta_updates)
     output = P.Panel(monthly=scoped, dead=dead, meta=meta)
     P.bind_asset_identity(output)
@@ -483,14 +574,21 @@ def _scope_confirmation_panel(
         key: pan.meta.get(key)
         for key in (
             "source",
-            "return_field",
-            "return_methodology",
-            "return_contract_status",
+            *P.RETURN_ROLE_META_KEYS,
+            "label_return_contract_status",
             "return_contract_run_id",
-            "dividend_feature_contract",
+            "return_contract_validation_status",
+            "return_contract_evidence_sha256",
+            "return_contract_scope_start",
+            "return_contract_coverage_start",
+            "return_contract_coverage_end",
+            "return_contract_action_snapshot_run_id",
+            "return_contract_asset_identity_digest",
+            "return_contract_validation_evidence",
         )
         if key in pan.meta
     }
+    meta.update(_research_policy_metadata())
     meta.update({
         "confirmation_signal_end": str(signal_end),
         "confirmation_required_month": str(required_month),
@@ -531,24 +629,33 @@ def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict
 
     start = gate.RESEARCH_START
     end = window.discovery_signal_end
-    frame = discovery_panel.monthly
-    in_scope = (
-        discovery_panel.universe
-        & frame["ym"].ge(start)
-        & frame["ym"].le(end)
-    )
     evidence_by_name: dict[str, dict] = {}
     prepared: list[tuple[F.Factor, dict, Path, dict, pd.DataFrame]] = []
     try:
         with silver.connect(read_only=True) as conn:
             # This check and every parity query share one read-only transaction.
             # A re-keyed RDS therefore fails before candidate or Gold SQL runs.
+            silver.verify_live_total_return_contract(
+                conn,
+                discovery_panel.meta.get(
+                    "return_contract_validation_evidence"
+                ),
+            )
             P.verify_live_asset_identity(
                 conn, discovery_panel,
                 cutoff=window.discovery_data_cutoff,
             )
+            research_panel = _research_input_panel(discovery_panel)
+            frame = research_panel.monthly
+            in_scope = (
+                research_panel.universe
+                & frame["ym"].ge(start)
+                & frame["ym"].le(end)
+            )
             for factor in factors:
                 binding: dict | None = None
+                from factors.candidate_loader import RESEARCH_SPECS
+                strategy_sha256 = RESEARCH_SPECS[factor.name]["strategy_sha256"]
                 try:
                     _reference, spec, sql_path, binding = _implementation_contract(factor)
                 except Exception as exc:
@@ -557,13 +664,19 @@ def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict
                         discovery_signal_start=start,
                         discovery_signal_end=end,
                         discovery_snapshot_digest=snapshot_digest,
+                        strategy_sha256=strategy_sha256,
                         stage="contract",
                         error=exc,
                         binding=binding,
                     )
                     continue
                 try:
-                    raw = factor.compute(frame.copy())
+                    research_policy.assert_allowed_lookback(
+                        name=factor.name,
+                        source=factor.source,
+                        params=factor.params,
+                    )
+                    raw = research_policy.compute_factor(factor, frame)
                     if not isinstance(raw, pd.Series) or not raw.index.equals(frame.index):
                         raise ValueError(
                             "Python factor가 입력 index의 Series를 반환하지 않습니다: "
@@ -584,6 +697,7 @@ def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict
                         discovery_signal_start=start,
                         discovery_signal_end=end,
                         discovery_snapshot_digest=snapshot_digest,
+                        strategy_sha256=strategy_sha256,
                         stage="python_compute",
                         error=exc,
                         binding=binding,
@@ -612,6 +726,7 @@ def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict
                             discovery_signal_start=start,
                             discovery_signal_end=end,
                             discovery_snapshot_digest=snapshot_digest,
+                            strategy_sha256=binding["strategy_sha256"],
                             atol=float(spec.get(
                                 "parity_atol", implementation.DEFAULT_ATOL,
                             )),
@@ -628,6 +743,7 @@ def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict
                             discovery_signal_start=start,
                             discovery_signal_end=end,
                             discovery_snapshot_digest=snapshot_digest,
+                            strategy_sha256=binding["strategy_sha256"],
                             stage="sql_execute_or_parity",
                             error=exc,
                             binding=binding,
@@ -642,6 +758,7 @@ def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict
                     discovery_signal_start=start,
                     discovery_signal_end=end,
                     discovery_snapshot_digest=snapshot_digest,
+                    strategy_sha256=binding["strategy_sha256"],
                     stage="database_connect",
                     error=exc,
                     binding=binding,
@@ -725,7 +842,7 @@ def _evaluate(
         or discovery_asset_identity_digest is None
     ):
         raise ValueError(
-            "epoch-1.5 discovery는 campaign의 동결 cutoff·OOS 시작월·discovery "
+            "epoch-1.6 discovery는 campaign의 동결 cutoff·OOS 시작월·discovery "
             "snapshot digest와 asset identity digest가 필수입니다. "
             "scripts/research.py campaign workflow를 "
             "사용하세요."
@@ -799,21 +916,42 @@ def _evaluate(
             )
     else:
         pan = base_pan
-    df = pan.monthly
     if factor_names is not None:
         targets = [F.REGISTRY[name] for name in factor_names]
     else:
         targets = [F.REGISTRY[args.factor]] if args.factor else list(F.REGISTRY)
-    development_df = development_pan.monthly if development_pan is not None else None
+    authenticated_pan = pan
+    authenticated_development_pan = development_pan
+    authenticated_df = authenticated_pan.monthly
+    confirmation_snapshot_digest = (
+        P.snapshot_digest(authenticated_pan) if phase == "full" else None
+    )
     ledger = trials.TrialLedger(TRIAL_DB)
     with silver.connect(read_only=True) as conn:
+        silver.verify_live_total_return_contract(
+            conn,
+            authenticated_pan.meta.get(
+                "return_contract_validation_evidence"
+            ),
+        )
         if phase == "full" and oos_end is not None:
-            _verify_confirmation_live_identity(conn, pan)
+            _verify_confirmation_live_identity(conn, authenticated_pan)
         else:
             P.verify_live_asset_identity(
-                conn, pan,
-                cutoff=str(pd.Timestamp(df["trade_date"].max()).date()),
+                conn, authenticated_pan,
+                cutoff=str(pd.Timestamp(authenticated_df["trade_date"].max()).date()),
             )
+        # Only after the complete cache/live identity has matched do we derive
+        # the 2015+ frame that factor code and gates are allowed to inspect.
+        pan = _research_input_panel(authenticated_pan)
+        development_pan = (
+            _research_input_panel(authenticated_development_pan)
+            if authenticated_development_pan is not None else None
+        )
+        df = pan.monthly
+        development_df = (
+            development_pan.monthly if development_pan is not None else None
+        )
         approved = _approved_signals(conn, df)
         development_approved = (
             _approved_signals(conn, development_df)
@@ -822,7 +960,6 @@ def _evaluate(
         gold_trials = silver.load_gold_trial_history(conn)
     gold_family_digest = _signal_family_digest(approved)
     cutoff = str(df["trade_date"].max().date())
-    confirmation_snapshot_digest = P.snapshot_digest(pan) if phase == "full" else None
     calibration = None
     if phase == "full":
         calibration_path = CACHE / "null_dist.parquet"
@@ -964,7 +1101,7 @@ def _evaluate(
 def cmd_gate(args):
     del args
     raise SystemExit(
-        "전체 패널 gate는 봉인 OOS를 노출하므로 epoch-1.5에서 비활성화했습니다. "
+        "전체 패널 gate는 봉인 OOS를 노출하므로 epoch-1.6에서 비활성화했습니다. "
         "scripts/research.py의 campaign-start → epoch-start → evaluate를 사용하세요."
     )
 
@@ -1009,9 +1146,14 @@ def cmd_null(args):
     ):
         raise SystemExit("campaign 생성 당시 closure asset identity를 재현하지 못했습니다")
     ledger = trials.TrialLedger(TRIAL_DB)
+    confirmation_snapshot_digest = P.snapshot_digest(pan)
     with silver.connect(read_only=True) as conn:
+        silver.verify_live_total_return_contract(
+            conn, pan.meta.get("return_contract_validation_evidence"),
+        )
         _verify_confirmation_live_identity(conn, pan)
         gold_trials = silver.load_gold_trial_history(conn)
+        pan = _research_input_panel(pan)
         approved = _approved_signals(conn, pan.monthly)
     summary = ledger.summary(external=[
         (str(row.definition_hash), None, None)
@@ -1028,7 +1170,7 @@ def cmd_null(args):
         discovery_family_digest=campaign["discovery_family_digest"],
         oos_family_digest=campaign["oos_family_digest"],
         gold_family_digest=_signal_family_digest(approved),
-        confirmation_snapshot_digest=P.snapshot_digest(pan),
+        confirmation_snapshot_digest=confirmation_snapshot_digest,
         qualification_policy=campaign["qualification_policy"],
         existing=approved,
     )
@@ -1039,7 +1181,7 @@ def cmd_publish(args):
     """Never recompute or write Gold outside the authenticated campaign flow."""
     del args
     raise SystemExit(
-        "epoch-1.5 publish는 비활성화했습니다. campaign reveal 산출물을 사람 검토한 뒤 "
+        "epoch-1.6 publish는 비활성화했습니다. campaign reveal 산출물을 사람 검토한 뒤 "
         "별도 승인 절차에서만 Gold를 적재하세요."
     )
 

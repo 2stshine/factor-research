@@ -48,7 +48,8 @@ RESEARCH_SPEC = {
     ),
     "data_notes": (
         "현재 CERTIFIED total-return run에 결합된 canonical DART ISSUER 현금배당 사건만 센다. "
-        "announcement_date 다음 날과 applied_trade_date 중 늦은 날부터 보이게 한 PIT 사건을 "
+        "canonical latest terminal announcement_date 다음 날과 applied_trade_date 중 늦은 날부터 "
+        "보이게 한 PIT 사건을 "
         "신호월 말 기준 최근 12개월로 집계하며, 사건이 없는 인증기간 월은 0이다."
     ),
 }

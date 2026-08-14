@@ -149,7 +149,7 @@ class TrialLedger:
         min_in_sample: int = 60,
         min_oos_months: int = 36,
     ) -> pd.Period:
-        """Legacy pre-epoch splitter; epoch-1.5 campaign code must not use it."""
+        """Legacy pre-epoch splitter; epoch-1.6 campaign code must not use it."""
         ordered = sorted(set(months))
         if len(ordered) < min_in_sample + min_oos_months:
             raise ValueError(

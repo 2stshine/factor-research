@@ -14,7 +14,7 @@ def compute(frame):
     book_to_price = ordered["total_equity"] / ordered["market_cap"].where(
         ordered["market_cap"] > 0
     )
-    monthly_return = ordered.groupby("asset_id")["return_close"].pct_change()
+    monthly_return = ordered.groupby("asset_id")["adj_close"].pct_change()
     volatility = (
         monthly_return.groupby(ordered["asset_id"])
         .rolling(LOOKBACK_MONTHS, min_periods=LOOKBACK_MONTHS)
@@ -67,7 +67,7 @@ RESEARCH_SPEC = {
         "어느 하나와 완전히 동일하지 않고, 수익성 팩터와는 낮거나 중간 수준의 관계를 예상한다."
     ),
     "data_notes": (
-        "Silver PIT total_equity와 월말 total_return_close를 사용한다. 각 월의 횡단면 백분위 순위로 "
+        "Silver PIT total_equity와 월말 분할조정 가격 adj_close를 사용한다. 각 월의 횡단면 백분위 순위로 "
         "단위 차이를 제거하며 최초 12개월은 변동성 계산 때문에 의도적으로 결측이다."
     ),
 }

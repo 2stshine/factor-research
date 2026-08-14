@@ -11,7 +11,7 @@ MIN_OBSERVATIONS = 9
 def compute(frame):
     ordered = frame.sort_values(["asset_id", "ym"])
     asset = ordered["asset_id"]
-    monthly_return = ordered.groupby("asset_id")["return_close"].pct_change(
+    monthly_return = ordered.groupby("asset_id")["adj_close"].pct_change(
         fill_method=None
     )
     maximum_return = monthly_return.groupby(asset).transform(
@@ -43,7 +43,7 @@ FACTOR = Factor(
 
 RESEARCH_SPEC = {
     "thesis": (
-        "Silver PIT 총수익지수로 계산한 최근 12개월 최대 월수익률이 낮은 종목은 높은 종목보다 "
+        "Silver PIT 분할조정 가격으로 계산한 최근 12개월 최대 월 가격수익률이 낮은 종목은 높은 종목보다 "
         "이후 수익률 순위가 높을 것이다."
     ),
     "mechanism": (
@@ -62,7 +62,7 @@ RESEARCH_SPEC = {
         "것으로 예상한다."
     ),
     "data_notes": (
-        "Silver total_return_close에 매핑된 return_close로 월수익률을 계산한다. 최근 12개월 중 최소 "
+        "Silver PIT 분할조정 가격 adj_close로 월 가격수익률을 계산한다. 최근 12개월 중 최소 "
         "9개월이 있을 때 최대값을 사용한다. 일중 최대수익률이 아니라 월 단위 근사이며, 극단값을 "
         "사후 절단하거나 윈도 길이를 바꾸지 않는다."
     ),

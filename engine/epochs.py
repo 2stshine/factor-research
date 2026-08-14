@@ -23,6 +23,7 @@ from engine.factors import Factor
 from engine.implementation import PARITY_SCHEMA_VERSION
 from engine.panel import INACTIVE_DAYS
 from engine.publish import VALUE_CONTRACT_ID
+from engine import research_policy
 from engine.gate import (
     RESEARCH_START,
     Result,
@@ -33,7 +34,7 @@ from engine.gate import (
 )
 
 
-PROTOCOL_VERSION = "epoch-1.5"
+PROTOCOL_VERSION = "epoch-1.6"
 IDENTITY_INVALIDATION_SCHEMA_VERSION = "input-identity-invalidation-1"
 INVALIDATED_INPUT_IDENTITY_STATUS = "CLOSED_INVALIDATED_INPUT_IDENTITY"
 _NONTERMINAL_CAMPAIGN_STATUSES = frozenset({
@@ -394,7 +395,7 @@ def migrate_open_campaign(
     """Never relabel already-observed evidence as a clean historical OOS."""
     del root, campaign_id, as_of_month, reason
     raise ValueError(
-        "epoch-1.5 holdout은 기존 campaign으로 migration할 수 없습니다. "
+        "epoch-1.6 holdout은 기존 campaign으로 migration할 수 없습니다. "
         "기존 증거는 legacy/retrospective로 보존하고 새 campaign을 시작하세요."
     )
 
@@ -532,6 +533,8 @@ def start_epoch(
     campaign_id: str,
     epoch_id: str,
     factors: list[Factor],
+    *,
+    strategy_digests: dict[str, str],
 ) -> Path:
     """Freeze every candidate name and definition hash before any result is seen."""
     epoch_id = _validate_id(epoch_id, "epoch id")
@@ -557,10 +560,27 @@ def start_epoch(
             )
     if not factors:
         raise ValueError("epoch에는 후보가 하나 이상 필요합니다")
+    lookbacks = {
+        factor.name: research_policy.assert_allowed_lookback(
+            name=factor.name, source=factor.source, params=factor.params,
+        )
+        for factor in factors
+    }
     names = [factor.name for factor in factors]
     hashes = [factor.definition_hash for factor in factors]
     if len(names) != len(set(names)) or len(hashes) != len(set(hashes)):
         raise ValueError("epoch 후보 이름과 definition hash는 고유해야 합니다")
+    if set(strategy_digests) != set(names):
+        raise ValueError(
+            "전략 파일 SHA-256 mapping은 epoch 후보와 정확히 일치해야 합니다: "
+            f"expected={sorted(names)}, observed={sorted(strategy_digests)}"
+        )
+    invalid_digests = sorted(
+        name for name in names
+        if _SHA256.fullmatch(str(strategy_digests[name])) is None
+    )
+    if invalid_digests:
+        raise ValueError(f"전략 파일 SHA-256 형식 오류: {invalid_digests}")
     existing = {
         row["name"]
         for epoch_ref in campaign["epochs"]
@@ -595,6 +615,8 @@ def start_epoch(
                 "family": factor.family or factor.name,
                 "definition_hash": factor.definition_hash,
                 "predicted_sign": factor.predicted_sign,
+                "max_lookback_months": lookbacks[factor.name],
+                "strategy_sha256": strategy_digests[factor.name],
                 "status": "REGISTERED",
                 "cycle_id": None,
                 "verdict": None,
@@ -624,6 +646,8 @@ def assert_candidate_ready(
     campaign_id: str,
     epoch_id: str,
     factor: Factor,
+    *,
+    strategy_sha256: str,
 ) -> dict:
     campaign = load_campaign(root, campaign_id)
     epoch = load_epoch(root, campaign_id, epoch_id)
@@ -636,6 +660,11 @@ def assert_candidate_ready(
         raise ValueError(f"epoch에 사전등록되지 않은 후보입니다: {factor.name}")
     if candidate["definition_hash"] != factor.definition_hash:
         raise ValueError(f"사전등록 후 정의가 변경됐습니다: {factor.name}")
+    if _SHA256.fullmatch(str(strategy_sha256)) is None:
+        raise ValueError(f"전략 파일 SHA-256 형식 오류: {factor.name}")
+    frozen_strategy = candidate.get("strategy_sha256")
+    if frozen_strategy != strategy_sha256:
+        raise ValueError(f"사전등록 후 전략 파일이 변경됐습니다: {factor.name}")
     if candidate["status"] != "REGISTERED":
         raise ValueError(f"이미 평가했거나 평가 중인 후보입니다: {factor.name}")
     return candidate
@@ -648,6 +677,7 @@ def mark_evaluated(
     factor: Factor,
     result: Result,
     *,
+    strategy_sha256: str,
     report: str,
     strongest_relationship: dict | None,
 ) -> None:
@@ -659,6 +689,11 @@ def mark_evaluated(
     candidate = next(row for row in epoch["candidates"] if row["name"] == factor.name)
     if candidate["definition_hash"] != factor.definition_hash:
         raise ValueError(f"사전등록 정의와 평가 정의가 다릅니다: {factor.name}")
+    if (
+        _SHA256.fullmatch(str(strategy_sha256)) is None
+        or candidate.get("strategy_sha256") != strategy_sha256
+    ):
+        raise ValueError(f"사전등록 후 전략 파일이 변경됐습니다: {factor.name}")
     relation = strongest_relationship or {}
     correlation = relation.get("abs_median_spearman")
     if correlation is None:
@@ -858,6 +893,7 @@ def finalize_campaign(root: str | Path, campaign_id: str) -> Path:
         fdr_rows.append({
             "factor": candidate["name"],
             "definition_hash": candidate["definition_hash"],
+            "strategy_sha256": candidate["strategy_sha256"],
             "pvalue": float(raw_pvalue) if testable else None,
             "by_input_pvalue": by_inputs[candidate["definition_hash"]],
             "qvalue": qvalue if testable else None,
@@ -896,7 +932,9 @@ def finalize_campaign(root: str | Path, campaign_id: str) -> Path:
             "name": name,
             "family": candidates[name]["family"],
             "definition_hash": candidates[name]["definition_hash"],
+            "strategy_sha256": candidates[name]["strategy_sha256"],
             "predicted_sign": candidates[name]["predicted_sign"],
+            "max_lookback_months": candidates[name]["max_lookback_months"],
             "discovery_report": candidates[name]["report"],
             "discovery_multiple_testing": str(multiple_testing_path),
         }
@@ -933,7 +971,10 @@ def load_discovery_multiple_testing(root: str | Path, campaign_id: str) -> dict:
     rows = artifact.get("results") or []
     hashes = [row.get("definition_hash") for row in rows]
     expected_qualified = sorted(
-        (row.get("factor"), row.get("definition_hash"))
+        (
+            row.get("factor"), row.get("definition_hash"),
+            row.get("strategy_sha256"),
+        )
         for row in rows
         if row.get("status") == "PASS" and row.get("verdict") != "REJECT"
     )
@@ -945,6 +986,13 @@ def load_discovery_multiple_testing(root: str | Path, campaign_id: str) -> dict:
             root, campaign_id, reference["epoch_id"],
         )["candidates"]
     ]
+    expected_strategies = {
+        candidate["definition_hash"]: candidate.get("strategy_sha256")
+        for reference in campaign["epochs"]
+        for candidate in load_epoch(
+            root, campaign_id, reference["epoch_id"],
+        )["candidates"]
+    }
     valid = (
         artifact.get("protocol_version") == PROTOCOL_VERSION
         and artifact.get("ruleset_version") == RULESET_VERSION
@@ -956,10 +1004,19 @@ def load_discovery_multiple_testing(root: str | Path, campaign_id: str) -> dict:
         and artifact.get("total_definitions") == len(expected_hashes)
         and len(hashes) == len(set(hashes))
         and set(hashes) == set(expected_hashes)
+        and all(
+            _SHA256.fullmatch(str(row.get("strategy_sha256"))) is not None
+            and row.get("strategy_sha256")
+            == expected_strategies.get(row.get("definition_hash"))
+            for row in rows
+        )
         and _family_digest(hashes) == campaign.get("discovery_family_digest")
         and artifact.get("family_digest") == campaign.get("discovery_family_digest")
         and observed_qualified == expected_qualified
-        and _family_digest([definition_hash for _, definition_hash in expected_qualified])
+        and _family_digest([
+            definition_hash for _, definition_hash, _strategy_sha256
+            in expected_qualified
+        ])
         == campaign.get("oos_family_digest")
         and _payload_digest(artifact)
         == campaign.get("discovery_multiple_testing_digest")
@@ -969,9 +1026,9 @@ def load_discovery_multiple_testing(root: str | Path, campaign_id: str) -> dict:
     return artifact
 
 
-def _qualified_identity(campaign: dict) -> list[tuple[str, str]]:
+def _qualified_identity(campaign: dict) -> list[tuple[str, str, str]]:
     return sorted(
-        (row["name"], row["definition_hash"])
+        (row["name"], row["definition_hash"], row["strategy_sha256"])
         for row in campaign.get("qualified_factors", [])
     )
 
@@ -986,7 +1043,11 @@ def _verify_evidence_digest(row: dict) -> bool:
 def _validate_implementation_rows(campaign: dict, rows: list[dict]) -> None:
     expected = _qualified_identity(campaign)
     observed = sorted(
-        (row.get("factor"), row.get("definition_hash")) for row in rows
+        (
+            row.get("factor"), row.get("definition_hash"),
+            row.get("strategy_sha256"),
+        )
+        for row in rows
     )
     if len(observed) != len(set(observed)) or observed != expected:
         raise ValueError(
@@ -1012,6 +1073,7 @@ def _validate_implementation_rows(campaign: dict, rows: list[dict]) -> None:
         binding_valid = (
             row.get("schema_version") == PARITY_SCHEMA_VERSION
             and row.get("research_definition_hash") == row.get("definition_hash")
+            and row.get("strategy_sha256") == qualified.get("strategy_sha256")
             and row.get("predicted_sign") == qualified.get("predicted_sign")
             and row.get("value_contract") == VALUE_CONTRACT_ID
             and str(row.get("implementation_uri", "")).strip() != ""
@@ -1085,7 +1147,11 @@ def record_implementation_attempt(
         raise ValueError("구현 시도는 AWAITING_IMPLEMENTATION에서만 기록할 수 있습니다")
     expected = _qualified_identity(campaign)
     observed = sorted(
-        (row.get("factor"), row.get("definition_hash")) for row in rows
+        (
+            row.get("factor"), row.get("definition_hash"),
+            row.get("strategy_sha256"),
+        )
+        for row in rows
     )
     if len(observed) != len(set(observed)) or observed != expected:
         raise ValueError("구현 시도도 자동 통과 후보 전체를 포함해야 합니다")
@@ -1142,7 +1208,7 @@ def load_implementation_verification(
         raise ValueError("campaign Gold 구현 검증 artifact 무결성 검증에 실패했습니다")
     if current_bindings is not None:
         keys = (
-            "factor", "definition_hash", "predicted_sign", "value_contract",
+            "factor", "definition_hash", "strategy_sha256", "predicted_sign", "value_contract",
             "implementation_uri", "implementation_sha256", "manifest_entry_digest",
         )
         expected = sorted(
@@ -1219,11 +1285,14 @@ def record_reveal(
     )
     load_discovery_multiple_testing(root, campaign_id)
     expected = [
-        (row["name"], row["definition_hash"])
+        (row["name"], row["definition_hash"], row["strategy_sha256"])
         for row in campaign["qualified_factors"]
     ]
     observed = [
-        (row.get("factor"), row.get("definition_hash"))
+        (
+            row.get("factor"), row.get("definition_hash"),
+            row.get("strategy_sha256"),
+        )
         for row in confirmations
     ]
     if len(observed) != len(set(observed)) or set(observed) != set(expected):
@@ -1232,7 +1301,10 @@ def record_reveal(
             f"expected={expected}, observed={observed}"
         )
     by_name = {row["factor"]: row for row in confirmations}
-    confirmations = [by_name[name] for name, _definition_hash in expected]
+    confirmations = [
+        by_name[name]
+        for name, _definition_hash, _strategy_sha256 in expected
+    ]
     wrong_oos_window = [
         row["factor"]
         for row in confirmations

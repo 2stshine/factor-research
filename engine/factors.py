@@ -17,6 +17,8 @@ from typing import Callable
 
 import pandas as pd
 
+from engine import research_policy
+
 # 리터럴로 나와도 파라미터가 아닌 것들(인덱스·항등원·부호)
 _BENIGN = {0, 1, -1, 2, 0.0, 1.0, -1.0, 100, 12, 4}
 _NAME = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -172,7 +174,9 @@ def compute_all(reg: Registry, df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     for f in reg:
         try:
-            out[f"f_{f.name}"] = f.compute(out) * f.predicted_sign
+            out[f"f_{f.name}"] = (
+                research_policy.compute_factor(f, out) * f.predicted_sign
+            )
         except Exception as exc:   # 계산 실패도 정보다 — 게이트가 REJECT 처리
             out[f"f_{f.name}"] = float("nan")
             print(f"  [factors] {f.name} 계산 실패: {type(exc).__name__}: {exc}")

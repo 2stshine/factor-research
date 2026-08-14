@@ -19,8 +19,8 @@ def compute(frame):
     output = pd.Series(index=ordered.index, dtype=float)
     for _, group in ordered.groupby("asset_id", sort=False):
         calendar = pd.period_range(group["ym"].min(), group["ym"].max(), freq="M")
-        total_return_index = group.set_index("ym")["return_close"].reindex(calendar)
-        monthly_return = total_return_index.pct_change(fill_method=None)
+        price_index = group.set_index("ym")["adj_close"].reindex(calendar)
+        monthly_return = price_index.pct_change(fill_method=None)
         # The row at month s predicts the return in formation/holding month
         # t=s+1.  Therefore literature months t-12 ... t-7 map to observed
         # return months s-11 ... s-6, not s-12 ... s-7.
@@ -58,7 +58,7 @@ FACTOR = Factor(
 
 RESEARCH_SPEC = {
     "thesis": (
-        "Silver 총수익지수로 측정한 t-12부터 t-7까지 정확히 6개 월수익의 복리 누적값이 "
+        "Silver 분할조정 가격으로 측정한 t-12부터 t-7까지 정확히 6개 월수익의 복리 누적값이 "
         "높은 종목은 다음 달 총수익률 순위가 높을 것이다."
     ),
     "mechanism": (
@@ -75,7 +75,7 @@ RESEARCH_SPEC = {
         "t-1까지를 쓰지 않으므로 최근 추세·52주 고점 및 단기 반전과는 구별될 것으로 예상한다."
     ),
     "data_notes": (
-        "인증된 Silver total_return_close에 매핑된 return_close로 월수익을 먼저 계산하고, "
+        "Silver PIT 분할조정 가격 adj_close로 월 가격수익을 먼저 계산하고, "
         "다음 달을 formation month t로 두어 t-12~t-7의 6개 수익을 복리 누적한다. 종목별 "
         "달력월을 재색인하며 중간 결측을 채우지 않는다. 따라서 정확한 6개 월수익이 없는 "
         "관측은 결측이다."

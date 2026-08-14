@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
 from scripts import retrospective_finalize as finalize
+from scripts import retrospective_oos
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -328,3 +331,134 @@ def test_cli_forwards_one_factor_only_to_parity(monkeypatch) -> None:
     finalize.main()
 
     assert captured == {"selected_factor": selected}
+
+
+def test_gold_scope_authenticates_confirmation_before_gold_read(monkeypatch) -> None:
+    events: list[str] = []
+    connection = object()
+    monkeypatch.setattr(
+        finalize.silver, "connect", lambda **_kwargs: nullcontext(connection),
+    )
+    monkeypatch.setattr(
+        finalize.silver, "verify_live_total_return_contract",
+        lambda conn, evidence: events.append("return_contract"),
+    )
+    monkeypatch.setattr(
+        finalize.run, "_verify_confirmation_live_identity",
+        lambda conn, panel: events.append("identity"),
+    )
+    monkeypatch.setattr(
+        finalize.run, "_approved_signals",
+        lambda conn, frame: events.append("approved") or {},
+    )
+    monkeypatch.setattr(
+        finalize.silver, "load_gold_trial_history",
+        lambda conn: events.append("trials") or pd.DataFrame(),
+    )
+    confirmation = SimpleNamespace(monthly=pd.DataFrame(), meta={})
+
+    finalize._gold_scope(confirmation)
+
+    assert events == ["return_contract", "identity", "approved", "trials"]
+
+
+def test_retrospective_factor_frames_verify_both_identities_before_compute(
+    monkeypatch,
+) -> None:
+    events: list[str] = []
+    connection = object()
+    discovery = SimpleNamespace(meta={})
+    confirmation = SimpleNamespace(meta={})
+    monkeypatch.setattr(
+        retrospective_oos.silver, "connect",
+        lambda **_kwargs: nullcontext(connection),
+    )
+    monkeypatch.setattr(
+        retrospective_oos.silver, "verify_live_total_return_contract",
+        lambda conn, evidence: events.append("return_contract"),
+    )
+    monkeypatch.setattr(
+        retrospective_oos.run.P, "verify_live_asset_identity",
+        lambda conn, panel, cutoff: events.append("discovery_identity"),
+    )
+    monkeypatch.setattr(
+        retrospective_oos.run, "_verify_confirmation_live_identity",
+        lambda conn, panel: events.append("confirmation_identity"),
+    )
+    monkeypatch.setattr(
+        retrospective_oos.run, "_research_input_panel",
+        lambda panel: events.append("research_view") or panel,
+    )
+    monkeypatch.setattr(
+        retrospective_oos.run, "_ensure_factor_columns",
+        lambda panel, targets: events.append("candidate_compute") or pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        retrospective_oos.run, "_approved_signals",
+        lambda conn, frame: events.append("approved") or {},
+    )
+
+    retrospective_oos._authenticated_factor_frames(
+        discovery, confirmation, [object()],
+    )
+
+    assert events[:3] == [
+        "return_contract", "discovery_identity", "confirmation_identity",
+    ]
+    assert events.index("candidate_compute") > events.index("confirmation_identity")
+
+
+def test_retrospective_parity_identity_mismatch_prevents_candidate_compute(
+    monkeypatch,
+) -> None:
+    events: list[str] = []
+    factor = finalize.run.F.Factor(
+        name="identity_probe", category="other", hypothesis="가설",
+        predicted_sign=1, compute=lambda frame: frame["value"],
+    )
+    window = SimpleNamespace(
+        discovery_data_cutoff="2023-05-31",
+        oos_signal_start=pd.Period("2023-06", freq="M"),
+        discovery_signal_end=pd.Period("2023-04", freq="M"),
+    )
+    discovery = SimpleNamespace(meta={})
+    connection = SimpleNamespace(isolation_level=None)
+    monkeypatch.setattr(finalize, "validate_manifest", lambda *_args, **_kwargs: window)
+    monkeypatch.setattr(finalize.run, "_load", lambda: object())
+    monkeypatch.setattr(finalize.run, "_scope_discovery_panel", lambda *_args, **_kwargs: discovery)
+    monkeypatch.setattr(finalize.P, "snapshot_digest", lambda panel: "b" * 64)
+    monkeypatch.setattr(
+        finalize.run, "_implementation_contract",
+        lambda candidate: (object(), {}, Path("unused.sql"), {"strategy_sha256": "c" * 64}),
+    )
+    monkeypatch.setattr(
+        finalize.silver, "connect", lambda **_kwargs: nullcontext(connection),
+    )
+    monkeypatch.setattr(
+        finalize.silver, "verify_live_total_return_contract",
+        lambda conn, evidence: events.append("return_contract"),
+    )
+
+    def reject_identity(*_args, **_kwargs):
+        events.append("identity")
+        raise RuntimeError("identity mismatch")
+
+    monkeypatch.setattr(finalize.P, "verify_live_asset_identity", reject_identity)
+    monkeypatch.setattr(
+        finalize.run, "_research_input_panel",
+        lambda panel: events.append("candidate_compute") or panel,
+    )
+    from factors import candidate_loader
+
+    monkeypatch.setitem(
+        candidate_loader.RESEARCH_SPECS, factor.name,
+        {"strategy_sha256": "c" * 64},
+    )
+    manifest = {"snapshot": {"discovery_input_digest": "b" * 64}}
+
+    evidence, interrupted = finalize._verify_one_implementation(manifest, factor)
+
+    assert interrupted is False
+    assert evidence["status"] == "FAIL"
+    assert "candidate_compute" not in events
+    assert events == ["return_contract", "identity"]
