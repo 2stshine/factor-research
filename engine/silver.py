@@ -35,6 +35,7 @@ TOTAL_RETURN_ASSET_IDENTITY_CONTRACT = (
 )
 TOTAL_RETURN_ACTION_SNAPSHOT_MODE = "dart_dividend_action_backfill"
 TOTAL_RETURN_ACTION_SNAPSHOT_SCHEMA = "dart_total_return_action_snapshot_v5"
+RESEARCH_WORK_MEM = "64MB"
 TOTAL_RETURN_CASH_SCALE_SOURCE_CONTRACT = (
     "krx_cash_adjustment_scale_source_evidence_v1"
 )
@@ -1213,6 +1214,16 @@ def connect(*, read_only: bool = True):
         if port_override:
             overrides["port"] = int(port_override)
         conninfo = psycopg.conninfo.make_conninfo(conninfo, **overrides)
+    connection_options = psycopg.conninfo.conninfo_to_dict(conninfo).get(
+        "options", ""
+    )
+    work_mem_option = f"-c work_mem={RESEARCH_WORK_MEM}"
+    conninfo = psycopg.conninfo.make_conninfo(
+        conninfo,
+        options=" ".join(
+            part for part in (connection_options, work_mem_option) if part
+        ),
+    )
     conn = psycopg.connect(
         conninfo,
         connect_timeout=15,

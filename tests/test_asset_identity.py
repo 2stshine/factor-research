@@ -335,8 +335,11 @@ def test_read_only_connections_use_one_repeatable_read_snapshot(monkeypatch):
 
     connections = []
 
-    def fake_connect(*args, **kwargs):
-        del args, kwargs
+    conninfos = []
+
+    def fake_connect(conninfo, **kwargs):
+        del kwargs
+        conninfos.append(silver.psycopg.conninfo.conninfo_to_dict(conninfo))
         connection = FakeConnection()
         connections.append(connection)
         return connection
@@ -353,6 +356,10 @@ def test_read_only_connections_use_one_repeatable_read_snapshot(monkeypatch):
     write_connection = silver.connect(read_only=False)
     assert write_connection.read_only is False
     assert write_connection.isolation_level is None
+    assert [item["options"] for item in conninfos] == [
+        "-c work_mem=64MB",
+        "-c work_mem=64MB",
+    ]
 
 
 def test_panel_activation_archives_previous_cache_and_is_atomic(

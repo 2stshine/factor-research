@@ -1,8 +1,9 @@
 """게이트 판정과 승인 가능한 `gold.factor` metadata 계약.
 
 이 모듈이 리서치와 프로덕션의 **유일한 접점**이다.
-factor-research는 팩터별 query-only SQL과 parity 증거를 소유하지만 자동으로
-Gold를 쓰지 않는다. 별도 승인된 범용 게시 경로와의 계약은 `gold.factor` 테이블이다.
+factor-research는 팩터별 query-only SQL과 parity 증거를 소유한다. Gold write는
+REVEALED campaign의 exact qualified/PROMOTE 집합, null/OOS, 동결 hash, live
+CERTIFIED 계약을 한 트랜잭션에서 다시 검증한 자동 게시 경로에만 허용한다.
 
 팀 스키마가 강제하는 것(sql/gold_schema.sql):
   status='APPROVED'  → evaluation @> '{"passed": true}'
@@ -72,7 +73,9 @@ def _py(v):
 def build_row(factor: Factor, result: Result, *, implementation: ImplementationRef,
               n_trials: int | None = None,
               null_family_error_rate: float | None = None, data_cutoff: str | None = None,
-              approved_by: str | None = None) -> dict:
+              approved_by: str | None = None, campaign_id: str | None = None,
+              strategy_sha256: str | None = None,
+              manifest_entry_digest: str | None = None) -> dict:
     """gold.factor 한 행. 판정 근거를 재검토 가능한 형태로 전부 담는다."""
     if not KEY_RE.match(factor.name):
         raise ValueError(f"factor_key 규칙 위반(^[a-z][a-z0-9_]*$): {factor.name}")
@@ -103,6 +106,10 @@ def build_row(factor: Factor, result: Result, *, implementation: ImplementationR
         "n_trials": n_trials,
         "null_family_error_rate": null_family_error_rate,
         "data_cutoff": data_cutoff,
+        "campaign_id": campaign_id,
+        "automatic_publish_contract": (
+            "revealed_promote_exact_set_atomic_v1" if campaign_id else None
+        ),
     }
     config = {
         "hypothesis": factor.hypothesis,
@@ -120,6 +127,9 @@ def build_row(factor: Factor, result: Result, *, implementation: ImplementationR
         },
         "pit": {"fundamental": "available_date", "market": "price_daily.market(날짜별)"},
         "research_definition_hash": implementation.research_definition_hash,
+        "strategy_sha256": strategy_sha256,
+        "implementation_manifest_digest": manifest_entry_digest,
+        "campaign_id": campaign_id,
         "value_contract": {
             "id": VALUE_CONTRACT_ID,
             "value": "raw",
@@ -185,6 +195,70 @@ def publish(conn, rows: list[dict], *, apply: bool = False) -> list[dict]:
     if apply:
         conn.commit()
     return out
+
+
+def upsert_approved_metadata_atomic(conn, rows: list[dict]) -> list[dict]:
+    """Insert or reuse one exact APPROVED set without committing.
+
+    The caller owns the surrounding transaction and must roll it back if value
+    loading or any post-write verification fails.
+    """
+    keys = [str(row.get("factor_key")) for row in rows]
+    if len(keys) != len(set(keys)):
+        raise ValueError("Gold 자동 게시 factor_key는 고유해야 합니다")
+    if any(row.get("status") != "APPROVED" for row in rows):
+        raise ValueError("Gold 자동 게시에는 최종 PROMOTE만 허용됩니다")
+    output: list[dict] = []
+    for row in rows:
+        payload = dict(
+            row,
+            config=json.dumps(row["config"], ensure_ascii=False),
+            evaluation=json.dumps(row["evaluation"], ensure_ascii=False),
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT factor_id, factor_key, version, description,
+                       implementation_uri, implementation_hash,
+                       config, evaluation, status
+                FROM gold.factor
+                WHERE factor_key = %s AND status = 'APPROVED'
+                FOR UPDATE
+                """,
+                (row["factor_key"],),
+            )
+            existing = cur.fetchone()
+            columns = [column.name for column in cur.description]
+        if existing is not None:
+            current = dict(zip(columns, existing, strict=True))
+            same = (
+                current["description"] == row["description"]
+                and current["implementation_uri"] == row["implementation_uri"]
+                and current["implementation_hash"] == row["implementation_hash"]
+                and current["config"] == row["config"]
+                and current["evaluation"] == row["evaluation"]
+            )
+            if same:
+                output.append({
+                    "factor_id": int(current["factor_id"]),
+                    "factor_key": current["factor_key"],
+                    "version": int(current["version"]),
+                    "status": current["status"],
+                    "reused": True,
+                })
+                continue
+        with conn.cursor() as cur:
+            cur.execute(RETIRE_PREVIOUS, {"factor_key": row["factor_key"]})
+            cur.execute(UPSERT, payload)
+            factor_id, key, version, status = cur.fetchone()
+        output.append({
+            "factor_id": int(factor_id),
+            "factor_key": key,
+            "version": int(version),
+            "status": status,
+            "reused": False,
+        })
+    return output
 
 
 def connect():

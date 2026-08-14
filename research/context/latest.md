@@ -16,8 +16,8 @@
 - Forward-label return: `total_return_close` / `krx_gross_dividend_reinvested_v3` / `forward_return_labels_only` / revision=`latest_revision_ex_post_realized` / candidate_access=`False`
 - Gate ruleset: `fr-3.13.0`
 - Research protocol: `epoch-1.6`
-- Recorded autonomous cycles: `53`
-- Active sealed campaign: `-`
+- Recorded autonomous cycles: `58`
+- Active sealed campaign: `campaign-20260814-002`; OOS rows and post-cutoff outcomes are hidden from strategy context
 - Strategy context cutoff: `2023-05-31`
 
 ## Sealed-OOS campaigns
@@ -30,6 +30,8 @@
 | `campaign-20260808-001` | REVEALED | `2023-05-31` | REVEALED | `2023-06` | 1 | 5 | `research/campaigns/campaign-20260808-001/epochs/epoch-001/reflection.md` |
 | `campaign-20260809-001` | REVEALED | `2023-05-31` | REVEALED | `2023-06` | 1 | 2 | `research/campaigns/campaign-20260809-001/epochs/epoch-001/reflection.md` |
 | `campaign-20260811-001` | CLOSED_INVALIDATED_INPUT_IDENTITY | `2023-05-31` | NOT_USED | `-` | 1 | 1 | `research/campaigns/campaign-20260811-001/epochs/epoch-001/reflection.md` |
+| `campaign-20260814-001` | CLOSED_ABORTED | `2023-05-31` | NOT_USED | `-` | 1 | 0 | `-` |
+| `campaign-20260814-002` | READY_FOR_CONFIRMATION | `2023-05-31` | SEALED | `2023-06` | 1 | 5 | `research/campaigns/campaign-20260814-002/epochs/epoch-001/reflection.md` |
 
 ## Available strategy inputs
 
@@ -89,6 +91,7 @@
 | `amihud_illiquidity_1m` | other | `liquidity` | `72bd57d66a5cb84d` | - |
 | `asset_growth_12m` | other | `asset_growth` | `8036ceaacef6ac62` | total_assets |
 | `asset_turnover_change_12m` | quality | `asset_turnover_change` | `8f8e7c42fdc9fce8` | revenue_ttm, total_assets |
+| `current_asset_turnover` | quality | `current_asset_turnover` | `05c6633ec72d4e6a` | revenue_ttm, current_assets |
 | `current_liability_concentration` | quality | `liability_maturity_structure` | `38c06f992e387d49` | current_liabilities, total_liabilities |
 | `current_ratio` | quality | `short_term_solvency` | `27ae11f304c7e10a` | current_assets, current_liabilities |
 | `defensive_small_value` | value | `small_value` | `20ae444177ae7843` | total_equity |
@@ -99,6 +102,7 @@
 | `equity_growth_12m` | other | `equity_growth` | `7c69893c5073ff70` | total_equity |
 | `high_12m_proximity` | momentum | `price_anchoring` | `fce1984269262fba` | - |
 | `high_52w_price_proximity` | momentum | `price_anchoring` | `559d74ab903459ce` | - |
+| `idiosyncratic_volatility_24m` | other | `idiosyncratic_volatility` | `af24645c3a81a842` | - |
 | `intermediate_momentum_12_7` | momentum | `intermediate_momentum` | `df9d7a028fded1f2` | - |
 | `liability_growth_12m` | other | `liability_growth` | `048bced1c445efe6` | total_liabilities |
 | `long_term_reversal_36_12` | momentum | `long_term_reversal` | `27b93af8ce3d6c07` | - |
@@ -115,6 +119,8 @@
 | `noncurrent_asset_encumbrance` | quality | `long_term_asset_encumbrance` | `8c1ba3eef1fc9629` | noncurrent_liabilities, noncurrent_assets |
 | `noncurrent_asset_share` | other | `asset_rigidity` | `1ce4e1a937a3b221` | noncurrent_assets, total_assets |
 | `nonoperating_burden_to_assets` | quality | `nonoperating_burden` | `bafec4ce16293b98` | operating_income_ttm, net_income_ttm, total_assets |
+| `operating_earnings_yield` | value | `operating_earnings_yield` | `692110a461d94df5` | operating_income_ttm |
+| `operating_income_to_current_liabilities` | quality | `short_term_operating_coverage` | `eaf7784cd83b4082` | operating_income_ttm, current_liabilities |
 | `operating_income_to_liabilities` | quality | `operating_obligation_coverage` | `5ff8c69343b28a3f` | operating_income_ttm, total_liabilities |
 | `operating_margin_change_12m` | earnings | `operating_margin_expansion` | `9700ff68f8b1878b` | operating_income_ttm, revenue_ttm |
 | `operating_return_on_capital_employed` | quality | `capital_employment_efficiency` | `aa11ccad9cfd19c6` | operating_income_ttm, total_assets, current_liabilities |
@@ -124,10 +130,12 @@
 | `paid_in_capital_ratio` | quality | `equity_composition` | `8c82db0117290bcd` | capital_stock, total_equity |
 | `positive_return_share_12m` | momentum | `return_consistency` | `acae6c61863c2804` | - |
 | `posttax_income_conversion` | quality | `tax_conversion_efficiency` | `3d16d45df92eff5a` | pretax_income_ttm, net_income_ttm |
+| `pretax_roa` | quality | `pretax_roa` | `9ad1b0b40a9f57d9` | pretax_income_ttm, total_assets |
 | `profitable_small_value` | quality | `quality_small_value` | `ec639be0f12aad5a` | total_equity, operating_income_ttm, total_assets |
 | `quality_stability` | quality | `quality_stability` | `6ee5f5fd4f04ffe0` | operating_income_ttm, revenue_ttm, total_assets, total_equity |
 | `realized_volatility_252d` | other | `low_volatility` | `e0668fb0e7c0eb69` | - |
 | `retained_earnings_to_assets` | quality | `internal_financing` | `1489feceb711fd22` | retained_earnings, total_assets |
+| `retained_earnings_to_equity` | quality | `retained_earnings_equity_share` | `ede7286f5e5ca082` | retained_earnings, total_equity |
 | `return_kurtosis_24m` | other | `return_tail_concentration` | `28373510626d93b0` | - |
 | `return_skewness_24m` | other | `return_skewness` | `5aa1c6a0520281df` | - |
 | `sales_growth_12m` | other | `sales_growth` | `17b53e851b0e2994` | revenue_ttm |
@@ -141,11 +149,6 @@
 
 | cycle | factor | family | ruleset | verdict | failed checks | strongest relation | report |
 |---|---|---|---|---|---|---|---|
-| `cycle-0024-retained_earnings_to_assets` | `retained_earnings_to_assets` | `internal_financing` | `fr-3.2.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
-| `cycle-0025-current_ratio` | `current_ratio` | `short_term_solvency` | `fr-3.2.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
-| `cycle-0026-nonoperating_burden_to_assets` | `nonoperating_burden_to_assets` | `nonoperating_burden` | `fr-3.2.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
-| `cycle-0027-max_monthly_return_12m` | `max_monthly_return_12m` | `lottery_demand` | `fr-3.2.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
-| `cycle-0028-trading_turnover_20d` | `trading_turnover_20d` | `trading_activity` | `fr-3.5.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
 | `cycle-0029-working_capital_accruals_12m` | `working_capital_accruals_12m` | `working_capital_accruals` | `fr-3.5.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
 | `cycle-0030-earnings_change_to_assets` | `earnings_change_to_assets` | `quarterly_earnings_change` | `fr-3.5.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
 | `cycle-0031-market_beta_36m` | `market_beta_36m` | `market_beta` | `fr-3.5.0` | WITHHELD_POST_CUTOFF | 봉인 경계 뒤 결과이므로 숨김 | - | - |
@@ -171,5 +174,10 @@
 | `cycle-0051-dividend_event_frequency_ttm` | `dividend_event_frequency_ttm` | `payout_frequency` | `fr-3.10.1` | PROVISIONAL | - | dividend_yield_ttm (0.92) | `research/runs/cycle-0051-dividend_event_frequency_ttm/report.md` |
 | `cycle-0052-intermediate_momentum_12_7` | `intermediate_momentum_12_7` | `intermediate_momentum` | `fr-3.10.1` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 투자가능 Rank ICIR 최소요건, 다중검정 FDR | mom_12_1 (0.69) | `research/runs/cycle-0052-intermediate_momentum_12_7/report.md` |
 | `cycle-0053-market_leverage` | `market_leverage` | `market_leverage` | `fr-3.10.1` | PROVISIONAL | - | value_sp (0.81) | `research/runs/cycle-0053-market_leverage/report.md` |
+| `cycle-0054-operating_earnings_yield` | `operating_earnings_yield` | `operating_earnings_yield` | `fr-3.13.0` | PROVISIONAL | - | operating_return_on_capital_employed (0.83) | `research/runs/cycle-0054-operating_earnings_yield/report.md` |
+| `cycle-0055-retained_earnings_to_equity` | `retained_earnings_to_equity` | `retained_earnings_equity_share` | `fr-3.13.0` | PROVISIONAL | - | retained_earnings_to_assets (0.93) | `research/runs/cycle-0055-retained_earnings_to_equity/report.md` |
+| `cycle-0056-current_asset_turnover` | `current_asset_turnover` | `current_asset_turnover` | `fr-3.13.0` | PROVISIONAL | - | asset_turnover (0.72) | `research/runs/cycle-0056-current_asset_turnover/report.md` |
+| `cycle-0057-idiosyncratic_volatility_24m` | `idiosyncratic_volatility_24m` | `idiosyncratic_volatility` | `fr-3.13.0` | PROVISIONAL | - | low_vol_12m (0.80) | `research/runs/cycle-0057-idiosyncratic_volatility_24m/report.md` |
+| `cycle-0058-operating_income_to_current_liabilities` | `operating_income_to_current_liabilities` | `short_term_operating_coverage` | `fr-3.13.0` | PROVISIONAL | - | operating_income_to_liabilities (0.98) | `research/runs/cycle-0058-operating_income_to_current_liabilities/report.md` |
 
-> 위 표는 최근 30건만 담는다. 오래된 23건은 생략됐다. 전문은 `research/history.jsonl`.
+> 위 표는 최근 30건만 담는다. 오래된 28건은 생략됐다. 전문은 `research/history.jsonl`.

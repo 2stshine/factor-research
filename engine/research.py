@@ -113,6 +113,115 @@ def factor_relationships(
     return sorted(output, key=lambda row: row["abs_median_spearman"], reverse=True)
 
 
+def factor_relationships_batch(
+    panel: Panel,
+    df: pd.DataFrame,
+    factors: list[Factor],
+    registry: Registry,
+) -> dict[str, list[dict]]:
+    """Compute registry signals once and reuse them for an epoch batch.
+
+    The cache is invocation-local and contains only the authenticated research
+    view.  Nothing is written to the panel cache or Gold.  Monthly Spearman
+    matrices replace the old target-by-target recomputation while preserving
+    the same investable sample, minimum pair count, and median statistic.
+    """
+    research_policy.assert_research_input_frame(df)
+    names = [factor.name for factor in factors]
+    if len(names) != len(set(names)):
+        raise ValueError("batch 관계 대상 팩터 이름은 고유해야 합니다")
+    missing_targets = [name for name in names if f"f_{name}" not in df]
+    if missing_targets:
+        raise ValueError(
+            f"batch 관계 계산에 대상 신호가 없습니다: {missing_targets}"
+        )
+
+    signals: dict[str, pd.Series] = {
+        factor.name: pd.to_numeric(df[f"f_{factor.name}"], errors="coerce")
+        for factor in factors
+    }
+    comparable: list[Factor] = []
+    for other in registry:
+        try:
+            research_policy.assert_allowed_lookback(
+                name=other.name, source=other.source, params=other.params,
+            )
+        except ValueError:
+            continue
+        column = f"f_{other.name}"
+        if other.name in signals:
+            comparable.append(other)
+            continue
+        if column in df:
+            values = df[column]
+        elif set(other.needs).issubset(df.columns):
+            try:
+                values = (
+                    research_policy.compute_factor(other, df)
+                    * other.predicted_sign
+                )
+            except Exception:
+                continue
+            if not isinstance(values, pd.Series) or not values.index.equals(df.index):
+                continue
+        else:
+            continue
+        signals[other.name] = pd.to_numeric(values, errors="coerce")
+        comparable.append(other)
+
+    eligible = panel.investable.reindex(df.index).fillna(False)
+    sample_mask = eligible & df["ym"].ge(RESEARCH_START)
+    signal_frame = pd.DataFrame(
+        {name: values.reindex(df.index) for name, values in signals.items()},
+        index=df.index,
+    ).replace([np.inf, -np.inf], np.nan)
+    signal_frame.insert(0, "ym", df["ym"])
+    signal_frame = signal_frame.loc[sample_mask]
+
+    pair_values: dict[tuple[str, str], list[float]] = {
+        (target, other.name): []
+        for target in names
+        for other in comparable
+        if other.name != target
+    }
+    for _, month in signal_frame.groupby("ym", sort=True):
+        correlations = month.drop(columns="ym").corr(
+            method="spearman", min_periods=30,
+        )
+        for key, values in pair_values.items():
+            target, other = key
+            if target not in correlations.index or other not in correlations.columns:
+                continue
+            value = correlations.at[target, other]
+            if pd.notna(value):
+                values.append(float(value))
+
+    categories = {factor.name: factor.category for factor in registry}
+    output: dict[str, list[dict]] = {}
+    for target in names:
+        rows = []
+        for other in comparable:
+            if other.name == target:
+                continue
+            monthly = pair_values[(target, other.name)]
+            if not monthly:
+                continue
+            median = float(np.median(monthly))
+            rows.append({
+                "factor": other.name,
+                "category": categories[other.name],
+                "median_spearman": median,
+                "abs_median_spearman": abs(median),
+                "months": len(monthly),
+            })
+        output[target] = sorted(
+            rows,
+            key=lambda row: row["abs_median_spearman"],
+            reverse=True,
+        )
+    return output
+
+
 def _read_history(path: Path) -> list[dict]:
     if not path.exists():
         return []

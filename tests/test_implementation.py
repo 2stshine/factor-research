@@ -73,6 +73,17 @@ def test_query_only_contract_rejects_dml_and_requires_closed_month_range():
         )
 
 
+def test_query_only_contract_recognizes_materialized_ctes():
+    implementation.validate_query_only_sql(
+        "WITH bounded AS MATERIALIZED ("
+        "SELECT asset_id, trade_date FROM public.factor_price_feature_daily"
+        "), final AS NOT MATERIALIZED ("
+        "SELECT * FROM bounded"
+        ") SELECT * FROM final "
+        "WHERE trade_date BETWEEN %(start_month)s AND %(end_month)s"
+    )
+
+
 @pytest.mark.parametrize("label", ["total_return_close", "return_close"])
 def test_gold_feature_sql_cannot_read_ex_post_label_fields(label):
     sql = (

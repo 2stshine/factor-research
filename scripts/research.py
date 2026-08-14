@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -13,7 +14,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from engine import epochs, panel as P, research, silver
+from engine import epochs, gate, panel as P, research, silver, trials
 from engine.boundaries import (
     HISTORICAL_HOLDOUT_MODE,
     PROSPECTIVE_HOLDOUT_MODE,
@@ -94,6 +95,19 @@ def cmd_campaign_invalidate_input(args) -> None:
     print(f"campaign 입력 identity 무효화 기록: {path}")
     print("campaign 상태: CLOSED_INVALIDATED_INPUT_IDENTITY / OOS NOT_USED")
     print("기존 discovery·epoch·parity 시도 산출물: 보존")
+    print("Gold write: 없음")
+
+
+def cmd_campaign_abort(args) -> None:
+    try:
+        path = epochs.abort_open_campaign(
+            "research", args.campaign, reason=args.reason,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"campaign 중단 기록: {path}")
+    print("campaign 상태: CLOSED_ABORTED / OOS NOT_USED")
+    print("후보 소스·epoch·시행 원장: 보존")
     print("Gold write: 없음")
 
 
@@ -397,14 +411,28 @@ def cmd_evaluate(args) -> None:
             discovery_asset_identity_digest=(
                 campaign["snapshot"].get("discovery_asset_identity_digest")
             ),
+            record_ledger=False,
         )
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
     factor, result = targets[0], results[0]
     relationships = research.factor_relationships(panel, df, factor, F.REGISTRY)
+    report, context = _persist_discovery_result(
+        args, panel, factor, result, relationships,
+    )
+    print(f"\n연구 사이클 기록: {report}")
+    print(f"다음 루프 컨텍스트: {context}")
+    print(f"Discovery 사전 판정(FDR 대기): {result.verdict.value}")
+    print("최종 OOS: SEALED (계산·기록 없음)")
+    print("Gold write: 없음")
+
+
+def _persist_discovery_result(args, panel, factor, result, relationships):
+    """Persist artifacts first and append the trial ledger last."""
     report, context = research.record_cycle(
-        panel, F.REGISTRY, factor, result, RESEARCH_SPECS[factor.name], relationships,
-        campaign_id=args.campaign, epoch_id=args.epoch, phase="discovery",
+        panel, F.REGISTRY, factor, result, RESEARCH_SPECS[factor.name],
+        relationships, campaign_id=args.campaign, epoch_id=args.epoch,
+        phase="discovery",
     )
     epochs.mark_evaluated(
         "research", args.campaign, args.epoch, factor, result,
@@ -412,10 +440,91 @@ def cmd_evaluate(args) -> None:
         report=str(report),
         strongest_relationship=relationships[0] if relationships else None,
     )
-    print(f"\n연구 사이클 기록: {report}")
-    print(f"다음 루프 컨텍스트: {context}")
-    print(f"Discovery 사전 판정(FDR 대기): {result.verdict.value}")
-    print("최종 OOS: SEALED (계산·기록 없음)")
+    trials.TrialLedger(run.TRIAL_DB).record(
+        factor,
+        result,
+        data_cutoff=str(panel.monthly["trade_date"].max().date()),
+        ruleset_version=gate.RULESET_VERSION,
+    )
+    return report, context
+
+
+def cmd_epoch_evaluate(args) -> None:
+    """Evaluate every REGISTERED candidate with one shared immutable snapshot."""
+    run.load_registry()
+    try:
+        campaign = epochs.load_campaign("research", args.campaign)
+        epoch = epochs.load_epoch("research", args.campaign, args.epoch)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    pending_rows = [
+        row for row in epoch.get("candidates", [])
+        if row.get("status") == "REGISTERED"
+    ]
+    if not pending_rows:
+        print("epoch에 평가할 REGISTERED 후보가 없습니다")
+        return
+    names = [row["name"] for row in pending_rows]
+    missing = [name for name in names if name not in F.REGISTRY]
+    if missing:
+        raise SystemExit(f"등록되지 않은 팩터: {missing}")
+    factors = [F.REGISTRY[name] for name in names]
+    attempted = trials.TrialLedger(run.TRIAL_DB).definition_hashes()
+    for factor in factors:
+        if factor.name not in RESEARCH_SPECS:
+            raise SystemExit(f"자율 연구 후보가 아닙니다: {factor.name}")
+        try:
+            research.assert_new_candidate(
+                factor,
+                RESEARCH_SPECS[factor.name],
+                attempted_definition_hashes=attempted,
+            )
+            epochs.assert_candidate_ready(
+                "research", args.campaign, args.epoch, factor,
+                strategy_sha256=RESEARCH_SPECS[factor.name]["strategy_sha256"],
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+
+    namespace = argparse.Namespace(factor=None)
+    try:
+        panel, df, targets, results = run._evaluate(
+            namespace,
+            phase="discovery",
+            data_cutoff=campaign["discovery"]["data_cutoff"],
+            oos_start=campaign["oos"]["start"],
+            factor_names=names,
+            record_ledger=False,
+            defer_multiple_testing=True,
+            discovery_snapshot_digest=(
+                campaign["snapshot"]["discovery_input_digest"]
+            ),
+            discovery_asset_identity_digest=(
+                campaign["snapshot"].get("discovery_asset_identity_digest")
+            ),
+        )
+        started = time.perf_counter()
+        relationships = research.factor_relationships_batch(
+            panel, df, targets, F.REGISTRY,
+        )
+        run._log_timing(
+            "discovery.relationships_batch",
+            started,
+            factor_count=len(targets),
+            registry_count=len(F.REGISTRY),
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise SystemExit(str(exc)) from exc
+
+    for factor, result in zip(targets, results, strict=True):
+        report, _context = _persist_discovery_result(
+            args, panel, factor, result, relationships[factor.name],
+        )
+        print(
+            f"batch 후보 기록: {factor.name} -> {report} "
+            f"({result.verdict.value}, OOS SEALED)"
+        )
+    print(f"epoch batch 평가 완료: {len(targets)}개")
     print("Gold write: 없음")
 
 
@@ -600,12 +709,42 @@ def cmd_campaign_reveal(args) -> None:
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    try:
+        publication = run.publish_revealed_campaign(args.campaign, panel)
+        publication_path = epochs.record_gold_publication(
+            "research", args.campaign, publication,
+        )
+    except Exception as exc:
+        raise SystemExit(
+            "OOS 공개는 완료됐지만 Gold 자동 게시 transaction은 rollback됐습니다. "
+            f"campaign-publish로 동일 gate를 재시도할 수 있습니다: {exc}"
+        ) from exc
     context = research.write_context(panel, F.REGISTRY)
     print(f"봉인 OOS 공개 및 campaign 종료: {report}")
     print(f"전체 확인 결과: {result}")
     print("이 OOS 결과는 종료된 campaign 후보 수정에 사용할 수 없습니다")
     print(f"다음 루프 컨텍스트 갱신: {context}")
-    print("Gold write: 없음")
+    print(
+        f"Gold publication: {publication['status']} "
+        f"({len(publication['published_factors'])}개), {publication_path}"
+    )
+
+
+def cmd_campaign_publish(args) -> None:
+    """Retry only the exact atomic publication of an already-revealed campaign."""
+    run.load_registry()
+    panel = run._load()
+    try:
+        publication = run.publish_revealed_campaign(args.campaign, panel)
+        path = epochs.record_gold_publication(
+            "research", args.campaign, publication,
+        )
+    except Exception as exc:
+        raise SystemExit(f"Gold 자동 게시 실패; transaction rollback: {exc}") from exc
+    print(
+        f"Gold publication: {publication['status']} "
+        f"({len(publication['published_factors'])}개), {path}"
+    )
 
 
 def main() -> None:
@@ -622,6 +761,12 @@ def main() -> None:
     )
     campaign_invalidate.add_argument("--campaign", required=True)
     campaign_invalidate.add_argument("--migration", required=True)
+    campaign_abort = commands.add_parser(
+        "campaign-abort",
+        help="중단된 OPEN campaign을 OOS 미사용으로 종료",
+    )
+    campaign_abort.add_argument("--campaign", required=True)
+    campaign_abort.add_argument("--reason", required=True)
     campaign_start = commands.add_parser("campaign-start", help="봉인 OOS campaign 시작")
     campaign_start.add_argument("--campaign", required=True)
     campaign_start.add_argument(
@@ -645,6 +790,12 @@ def main() -> None:
     evaluate.add_argument("--factor", required=True)
     evaluate.add_argument("--campaign", required=True)
     evaluate.add_argument("--epoch", required=True)
+    epoch_evaluate = commands.add_parser(
+        "epoch-evaluate",
+        help="epoch의 REGISTERED 후보를 공유 snapshot에서 일괄 평가",
+    )
+    epoch_evaluate.add_argument("--campaign", required=True)
+    epoch_evaluate.add_argument("--epoch", required=True)
     epoch_close = commands.add_parser("epoch-close", help="epoch 종료 및 구조화 성찰")
     epoch_close.add_argument("--campaign", required=True)
     epoch_close.add_argument("--epoch", required=True)
@@ -660,18 +811,26 @@ def main() -> None:
     campaign_verify.add_argument("--campaign", required=True)
     campaign_reveal = commands.add_parser("campaign-reveal", help="충분히 쌓인 봉인 OOS를 한 번 공개")
     campaign_reveal.add_argument("--campaign", required=True)
+    campaign_publish = commands.add_parser(
+        "campaign-publish",
+        help="REVEALED campaign의 exact PROMOTE 집합만 원자적으로 Gold 게시",
+    )
+    campaign_publish.add_argument("--campaign", required=True)
     args = parser.parse_args()
     {
         "context": cmd_context,
         "identity-audit": cmd_identity_audit,
         "campaign-invalidate-input": cmd_campaign_invalidate_input,
+        "campaign-abort": cmd_campaign_abort,
         "campaign-start": cmd_campaign_start,
         "epoch-start": cmd_epoch_start,
         "evaluate": cmd_evaluate,
+        "epoch-evaluate": cmd_epoch_evaluate,
         "epoch-close": cmd_epoch_close,
         "campaign-finalize": cmd_campaign_finalize,
         "campaign-verify-implementations": cmd_campaign_verify_implementations,
         "campaign-reveal": cmd_campaign_reveal,
+        "campaign-publish": cmd_campaign_publish,
     }[args.command](args)
 
 

@@ -37,6 +37,7 @@ from engine.gate import (
 PROTOCOL_VERSION = "epoch-1.6"
 IDENTITY_INVALIDATION_SCHEMA_VERSION = "input-identity-invalidation-1"
 INVALIDATED_INPUT_IDENTITY_STATUS = "CLOSED_INVALIDATED_INPUT_IDENTITY"
+ABORTED_CAMPAIGN_STATUS = "CLOSED_ABORTED"
 _NONTERMINAL_CAMPAIGN_STATUSES = frozenset({
     "OPEN", "AWAITING_IMPLEMENTATION", "READY_FOR_CONFIRMATION",
 })
@@ -526,6 +527,52 @@ def invalidate_input_identity(
     campaign["input_identity_invalidation_digest"] = _payload_digest(payload)
     _write(manifest_path, campaign)
     return path
+
+
+def abort_open_campaign(
+    root: str | Path,
+    campaign_id: str,
+    *,
+    reason: str,
+) -> Path:
+    """Close an interrupted OPEN campaign without consuming its sealed OOS.
+
+    Candidate files, epoch manifests, reports, and any append-only trial-ledger
+    rows remain untouched.  This transition exists for operational interruption
+    only; it cannot be used after discovery finalize or OOS reveal.
+    """
+    reason = str(reason).strip()
+    if not reason:
+        raise ValueError("campaign 중단 reason은 비어 있을 수 없습니다")
+    campaign = load_campaign(root, campaign_id)
+    _assert_current_state(campaign)
+    if campaign.get("status") != "OPEN":
+        raise ValueError(
+            f"OPEN campaign만 중단할 수 있습니다: {campaign.get('status')}"
+        )
+    if campaign.get("oos", {}).get("status") != "SEALED":
+        raise ValueError("SEALED OOS campaign만 미사용 중단할 수 있습니다")
+    validate_manifest(campaign, expected_oos_months=TH["min_oos_months"])
+
+    aborted_at = _now()
+    for reference in campaign.get("epochs", []):
+        epoch = load_epoch(root, campaign_id, reference["epoch_id"])
+        if epoch.get("status") == "OPEN":
+            epoch["status"] = "ABORTED"
+            epoch["aborted_at"] = aborted_at
+            epoch["abort_reason"] = reason
+            _write(
+                _epoch_path(root, campaign_id, reference["epoch_id"]),
+                epoch,
+            )
+            reference["status"] = "ABORTED"
+
+    campaign["status"] = ABORTED_CAMPAIGN_STATUS
+    campaign["oos"]["status"] = "NOT_USED"
+    campaign["aborted_at"] = aborted_at
+    campaign["abort_reason"] = reason
+    _write(_campaign_path(root, campaign_id), campaign)
+    return _campaign_path(root, campaign_id)
 
 
 def start_epoch(
@@ -1354,8 +1401,76 @@ def record_reveal(
     campaign["oos"]["revealed_at"] = payload["revealed_at"]
     campaign["oos"]["silver_as_of"] = payload["silver_as_of"]
     campaign["confirmation"] = str(report_path)
+    campaign["confirmation_result"] = str(json_path)
+    campaign["confirmation_result_digest"] = _payload_digest(payload)
     _write(_campaign_path(root, campaign_id), campaign)
     return report_path, json_path
+
+
+def load_confirmation(root: str | Path, campaign_id: str) -> dict:
+    """Authenticate the one-time revealed confirmation exact family."""
+    campaign = load_campaign(root, campaign_id)
+    if campaign.get("status") != "REVEALED" or campaign.get("oos", {}).get(
+        "status"
+    ) != "REVEALED":
+        raise ValueError("REVEALED campaign만 Gold 자동 게시할 수 있습니다")
+    path = campaign.get("confirmation_result")
+    if not path:
+        raise ValueError("campaign confirmation result 경로가 없습니다")
+    payload = _read(Path(path))
+    expected = sorted(
+        (row["name"], row["definition_hash"], row["strategy_sha256"])
+        for row in campaign["qualified_factors"]
+    )
+    confirmations = payload.get("confirmations") or []
+    observed = sorted(
+        (
+            row.get("factor"), row.get("definition_hash"),
+            row.get("strategy_sha256"),
+        )
+        for row in confirmations
+    )
+    valid = (
+        payload.get("protocol_version") == PROTOCOL_VERSION
+        and payload.get("campaign_id") == campaign_id
+        and payload.get("oos_start") == campaign["oos"]["start"]
+        and payload.get("oos_end") == campaign["oos"]["signal_end"]
+        and payload.get("revealed_at") == campaign["oos"].get("revealed_at")
+        and len(observed) == len(set(observed))
+        and observed == expected
+        and _payload_digest(payload) == campaign.get("confirmation_result_digest")
+    )
+    if not valid:
+        raise ValueError("campaign confirmation exact-set/digest 검증에 실패했습니다")
+    return payload
+
+
+def record_gold_publication(
+    root: str | Path,
+    campaign_id: str,
+    evidence: dict,
+) -> Path:
+    """Bind one completed or no-op automatic Gold publication to a reveal."""
+    campaign = load_campaign(root, campaign_id)
+    load_confirmation(root, campaign_id)
+    if evidence.get("campaign_id") != campaign_id:
+        raise ValueError("Gold publication campaign identity가 다릅니다")
+    qualified = sorted(row["name"] for row in campaign["qualified_factors"])
+    if evidence.get("qualified_factors") != qualified:
+        raise ValueError("Gold publication qualified exact set이 다릅니다")
+    status = evidence.get("status")
+    published = evidence.get("published_factors") or []
+    if status not in {"APPROVED_ATOMIC", "NO_PROMOTE_NO_WRITE"}:
+        raise ValueError("Gold publication status가 유효하지 않습니다")
+    if len(published) != len(set(published)) or not set(published).issubset(qualified):
+        raise ValueError("Gold publication 대상 집합이 유효하지 않습니다")
+    path = _campaign_dir(root, campaign_id) / "gold-publication.json"
+    _write(path, evidence)
+    campaign["gold_publication"] = str(path)
+    campaign["gold_publication_digest"] = _payload_digest(evidence)
+    campaign["gold_publication_status"] = status
+    _write(_campaign_path(root, campaign_id), campaign)
+    return path
 
 
 def context_rows(root: str | Path) -> list[dict]:

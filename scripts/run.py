@@ -17,10 +17,12 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import psycopg
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -48,7 +50,63 @@ CACHE = Path(os.environ.get("CACHE_DIR", ".cache"))
 TRIAL_DB = CACHE / "trials.sqlite3"
 PANEL_CACHE = CACHE / "panel.pkl"
 PANEL_ARCHIVE = CACHE / "panels"
+PARITY_CHECKPOINT_ROOT = CACHE / "implementation-parity-checkpoints"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_PARITY_CHECKPOINT_SCHEMA = "implementation-parity-sql-checkpoint-v1"
+
+
+def _log_timing(stage: str, started: float, **context: object) -> None:
+    """Emit non-persistent operational timings without research outcomes."""
+    payload = {
+        "event": "research_timing_v1",
+        "stage": stage,
+        "seconds": round(time.perf_counter() - started, 3),
+        **context,
+    }
+    print(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _database_temp_usage(conn) -> tuple[int, int]:
+    """Read database-wide temp counters for operational before/after deltas."""
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT pg_stat_clear_snapshot()")
+        cursor.execute(
+            "SELECT temp_files, temp_bytes FROM pg_stat_database "
+            "WHERE datname = current_database()"
+        )
+        row = cursor.fetchone()
+    if row is None:
+        raise RuntimeError("현재 DB의 temp I/O 통계를 읽을 수 없습니다")
+    return int(row[0]), int(row[1])
+
+
+def _parity_query_windows(
+    start: str | pd.Period,
+    end: str | pd.Period,
+    chunk_months: int | None,
+) -> list[tuple[pd.Period, pd.Period]]:
+    """Return exact, non-overlapping inclusive result windows for parity SQL."""
+    first = pd.Period(start, freq="M")
+    last = pd.Period(end, freq="M")
+    if first > last:
+        raise ValueError("Gold parity 시작월이 종료월보다 늦습니다")
+    if chunk_months is None:
+        return [(first, last)]
+    if isinstance(chunk_months, bool) or not isinstance(chunk_months, int):
+        raise ValueError("Gold manifest query_chunk_months는 정수여야 합니다")
+    if chunk_months < 1:
+        raise ValueError("Gold manifest query_chunk_months는 1 이상이어야 합니다")
+    windows = []
+    cursor = first
+    while cursor <= last:
+        window_end = min(cursor + (chunk_months - 1), last)
+        windows.append((cursor, window_end))
+        cursor = window_end + 1
+    return windows
 
 
 def _file_sha256(path: Path) -> str:
@@ -57,6 +115,142 @@ def _file_sha256(path: Path) -> str:
         while chunk := fh.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _canonical_json_bytes(payload: object) -> bytes:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _sql_result_digest(frame: pd.DataFrame) -> str:
+    """Digest exact SQL parity rows independent of Parquet representation."""
+    required = {"asset_id", "as_of_date", "value", "rank"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(f"SQL checkpoint 필수 컬럼이 없습니다: {sorted(missing)}")
+    has_factor = "factor" in frame.columns
+    records: list[tuple[str, ...]] = []
+    for row in frame.itertuples(index=False):
+        values = row._asdict()
+        try:
+            asset_id = int(values["asset_id"])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("SQL checkpoint asset_id가 정수가 아닙니다") from exc
+        as_of_date = pd.Timestamp(values["as_of_date"])
+        if pd.isna(as_of_date):
+            raise ValueError("SQL checkpoint as_of_date가 비어 있습니다")
+        value = float(values["value"])
+        rank = float(values["rank"])
+        if not np.isfinite(value) or not np.isfinite(rank):
+            raise ValueError("SQL checkpoint value/rank는 유한해야 합니다")
+        record = (
+            str(values["factor"]) if has_factor else "",
+            str(asset_id),
+            str(as_of_date.normalize().date()),
+            value.hex(),
+            rank.hex(),
+        )
+        records.append(record)
+    digest = hashlib.sha256()
+    for record in sorted(records):
+        digest.update("\x1f".join(record).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _parity_checkpoint_binding(
+    campaign: dict,
+    group: list[tuple],
+    sql_path: Path,
+    window_start: pd.Period,
+    window_end: pd.Period,
+) -> dict:
+    return {
+        "schema_version": _PARITY_CHECKPOINT_SCHEMA,
+        "campaign_id": campaign["campaign_id"],
+        "discovery_snapshot_digest": campaign["snapshot"][
+            "discovery_input_digest"
+        ],
+        "sql_path": str(sql_path.relative_to(Path(__file__).resolve().parents[1])),
+        "sql_sha256": _file_sha256(sql_path),
+        "factor_names": sorted(item[0].name for item in group),
+        "manifest_entry_digests": sorted(item[3]["manifest_entry_digest"] for item in group),
+        "query_start_month": str(window_start),
+        "query_end_month": str(window_end),
+    }
+
+
+def _parity_checkpoint_paths(binding: dict) -> tuple[Path, Path]:
+    key = hashlib.sha256(_canonical_json_bytes(binding)).hexdigest()
+    directory = PARITY_CHECKPOINT_ROOT / binding["campaign_id"] / key
+    return directory / "result.parquet", directory / "manifest.json"
+
+
+def _load_parity_checkpoint(binding: dict) -> pd.DataFrame | None:
+    data_path, manifest_path = _parity_checkpoint_paths(binding)
+    if not data_path.exists() and not manifest_path.exists():
+        return None
+    if not data_path.is_file() or not manifest_path.is_file():
+        raise RuntimeError("SQL parity checkpoint가 부분적으로만 존재합니다")
+    metadata = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if metadata.get("binding") != binding:
+        raise RuntimeError("SQL parity checkpoint binding이 현재 실행과 다릅니다")
+    if metadata.get("parquet_sha256") != _file_sha256(data_path):
+        raise RuntimeError("SQL parity checkpoint 파일 SHA-256이 다릅니다")
+    frame = pd.read_parquet(data_path)
+    if int(metadata.get("row_count", -1)) != len(frame):
+        raise RuntimeError("SQL parity checkpoint row_count가 다릅니다")
+    if metadata.get("columns") != list(frame.columns):
+        raise RuntimeError("SQL parity checkpoint column 계약이 다릅니다")
+    if metadata.get("result_digest") != _sql_result_digest(frame):
+        raise RuntimeError("SQL parity checkpoint 행 digest가 다릅니다")
+    return frame
+
+
+def _write_parity_checkpoint(binding: dict, frame: pd.DataFrame) -> tuple[Path, Path]:
+    data_path, manifest_path = _parity_checkpoint_paths(binding)
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    result_digest = _sql_result_digest(frame)
+    temporary_data: Path | None = None
+    temporary_manifest: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=".result-", suffix=".parquet", dir=data_path.parent, delete=False,
+        ) as fh:
+            temporary_data = Path(fh.name)
+        frame.to_parquet(temporary_data, index=False)
+        with temporary_data.open("rb") as fh:
+            os.fsync(fh.fileno())
+        metadata = {
+            "binding": binding,
+            "columns": list(frame.columns),
+            "row_count": len(frame),
+            "result_digest": result_digest,
+            "parquet_sha256": _file_sha256(temporary_data),
+        }
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=".manifest-", suffix=".json",
+            dir=data_path.parent, delete=False,
+        ) as fh:
+            fh.write(_canonical_json_bytes(metadata))
+            fh.flush()
+            os.fsync(fh.fileno())
+            temporary_manifest = Path(fh.name)
+        temporary_data.replace(data_path)
+        temporary_data = None
+        temporary_manifest.replace(manifest_path)
+        temporary_manifest = None
+    finally:
+        if temporary_data is not None:
+            temporary_data.unlink(missing_ok=True)
+        if temporary_manifest is not None:
+            temporary_manifest.unlink(missing_ok=True)
+    return data_path, manifest_path
 
 
 def _archive_panel(path: Path, *, key: str | None = None) -> Path:
@@ -285,15 +479,51 @@ def _ensure_factor_columns(pan, targets):
     print(f"[gate] 신규 팩터 {len(missing)}개 즉석 계산: "
           f"{', '.join(f.name for f in missing)}")
     for f in missing:
+        started = time.perf_counter()
         try:
-            df[f"f_{f.name}"] = (
+            column = f"f_{f.name}"
+            df[column] = (
                 research_policy.compute_factor(f, df) * f.predicted_sign
             )
+            research_policy.bind_authoritative_factor_column(f, df, column)
         except Exception as exc:
             df[f"f_{f.name}"] = float("nan")
             print(f"  ⚠️  {f.name} 계산 실패: {type(exc).__name__}: {exc}")
+        finally:
+            _log_timing("discovery.factor_compute", started, factor=f.name)
     pan.monthly = df
     return df
+
+
+def _reuse_factor_columns(
+    source: pd.DataFrame,
+    target_panel: P.Panel,
+    targets: list[F.Factor],
+) -> pd.DataFrame:
+    """Copy causal factor outputs to an exact row-subset without recomputation."""
+    keys = ["asset_id", "trade_date"]
+    source_index = pd.MultiIndex.from_frame(source[keys])
+    target = target_panel.monthly
+    target_index = pd.MultiIndex.from_frame(target[keys])
+    if source_index.has_duplicates or target_index.has_duplicates:
+        raise ValueError("factor 재사용 row identity는 고유해야 합니다")
+    positions = source_index.get_indexer(target_index)
+    if (positions < 0).any():
+        raise ValueError("discovery row가 confirmation snapshot의 exact subset이 아닙니다")
+    for factor in targets:
+        column = f"f_{factor.name}"
+        if column not in source:
+            raise ValueError(f"재사용할 factor column이 없습니다: {column}")
+        if research_policy.authoritative_factor_values(
+            factor, source, column,
+        ) is None:
+            raise ValueError(
+                f"재사용할 factor column의 authoritative binding이 없습니다: {column}"
+            )
+        target[column] = source[column].to_numpy()[positions]
+        research_policy.bind_authoritative_factor_column(factor, target, column)
+    target_panel.monthly = target
+    return target
 
 
 def _approved_signals(conn, df: pd.DataFrame) -> dict[str, pd.Series]:
@@ -600,10 +830,14 @@ def _scope_confirmation_panel(
 
 def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict]:
     """Run read-only, discovery-only Python/Gold SQL parity for all qualifiers."""
+    total_started = time.perf_counter()
     window = validate_manifest(
         campaign, expected_oos_months=gate.TH["min_oos_months"],
     )
+    started = time.perf_counter()
     base_panel = _load()
+    _log_timing("parity.panel_load", started)
+    started = time.perf_counter()
     discovery_panel = _scope_discovery_panel(
         base_panel,
         data_cutoff=window.discovery_data_cutoff,
@@ -621,13 +855,86 @@ def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict
         raise ValueError(
             "campaign 생성 당시 discovery asset identity를 재현하지 못했습니다"
         )
+    _log_timing("parity.snapshot_scope", started)
 
     start = gate.RESEARCH_START
     end = window.discovery_signal_end
     evidence_by_name: dict[str, dict] = {}
     prepared: list[tuple[F.Factor, dict, Path, dict, pd.DataFrame]] = []
+
+    # Python reference values depend only on the frozen local discovery
+    # snapshot.  Compute them before opening the live RDS transaction so a
+    # long local factor cannot consume the bounded SSM tunnel lifetime.  The
+    # live identity check and every SQL parity query still share one
+    # read-only REPEATABLE READ transaction below.
+    research_panel = _research_input_panel(discovery_panel)
+    frame = research_panel.monthly
+    in_scope = (
+        research_panel.universe
+        & frame["ym"].ge(start)
+        & frame["ym"].le(end)
+    )
+    for factor in factors:
+        binding: dict | None = None
+        from factors.candidate_loader import RESEARCH_SPECS
+        strategy_sha256 = RESEARCH_SPECS[factor.name]["strategy_sha256"]
+        try:
+            _reference, spec, sql_path, binding = _implementation_contract(factor)
+        except Exception as exc:
+            evidence_by_name[factor.name] = implementation.failure_evidence(
+                factor,
+                discovery_signal_start=start,
+                discovery_signal_end=end,
+                discovery_snapshot_digest=snapshot_digest,
+                strategy_sha256=strategy_sha256,
+                stage="contract",
+                error=exc,
+                binding=binding,
+            )
+            continue
+        started = time.perf_counter()
+        try:
+            research_policy.assert_allowed_lookback(
+                name=factor.name,
+                source=factor.source,
+                params=factor.params,
+            )
+            raw = research_policy.compute_factor(factor, frame)
+            if not isinstance(raw, pd.Series) or not raw.index.equals(frame.index):
+                raise ValueError(
+                    "Python factor가 입력 index의 Series를 반환하지 않습니다: "
+                    f"{factor.name}"
+                )
+            raw = pd.to_numeric(raw, errors="coerce")
+            finite = pd.Series(
+                pd.notna(raw) & (raw.abs() != float("inf")), index=raw.index,
+            )
+            valid = in_scope & finite
+            python_frame = frame.loc[
+                valid, ["asset_id", "trade_date"]
+            ].rename(columns={"trade_date": "as_of_date"})
+            python_frame["value"] = raw.loc[valid].astype(float).to_numpy()
+        except Exception as exc:
+            evidence_by_name[factor.name] = implementation.failure_evidence(
+                factor,
+                discovery_signal_start=start,
+                discovery_signal_end=end,
+                discovery_snapshot_digest=snapshot_digest,
+                strategy_sha256=strategy_sha256,
+                stage="python_compute",
+                error=exc,
+                binding=binding,
+            )
+            continue
+        finally:
+            _log_timing(
+                "parity.python_factor", started, factor=factor.name,
+            )
+        prepared.append((factor, spec, sql_path, binding, python_frame))
+
     try:
         with silver.connect(read_only=True) as conn:
+            started = time.perf_counter()
             # This check and every parity query share one read-only transaction.
             # A re-keyed RDS therefore fails before candidate or Gold SQL runs.
             silver.verify_live_total_return_contract(
@@ -640,109 +947,168 @@ def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict
                 conn, discovery_panel,
                 cutoff=window.discovery_data_cutoff,
             )
-            research_panel = _research_input_panel(discovery_panel)
-            frame = research_panel.monthly
-            in_scope = (
-                research_panel.universe
-                & frame["ym"].ge(start)
-                & frame["ym"].le(end)
-            )
-            for factor in factors:
-                binding: dict | None = None
-                from factors.candidate_loader import RESEARCH_SPECS
-                strategy_sha256 = RESEARCH_SPECS[factor.name]["strategy_sha256"]
-                try:
-                    _reference, spec, sql_path, binding = _implementation_contract(factor)
-                except Exception as exc:
-                    evidence_by_name[factor.name] = implementation.failure_evidence(
-                        factor,
-                        discovery_signal_start=start,
-                        discovery_signal_end=end,
-                        discovery_snapshot_digest=snapshot_digest,
-                        strategy_sha256=strategy_sha256,
-                        stage="contract",
-                        error=exc,
-                        binding=binding,
-                    )
-                    continue
-                try:
-                    research_policy.assert_allowed_lookback(
-                        name=factor.name,
-                        source=factor.source,
-                        params=factor.params,
-                    )
-                    raw = research_policy.compute_factor(factor, frame)
-                    if not isinstance(raw, pd.Series) or not raw.index.equals(frame.index):
-                        raise ValueError(
-                            "Python factor가 입력 index의 Series를 반환하지 않습니다: "
-                            f"{factor.name}"
-                        )
-                    raw = pd.to_numeric(raw, errors="coerce")
-                    finite = pd.Series(
-                        pd.notna(raw) & (raw.abs() != float("inf")), index=raw.index,
-                    )
-                    valid = in_scope & finite
-                    python_frame = frame.loc[
-                        valid, ["asset_id", "trade_date"]
-                    ].rename(columns={"trade_date": "as_of_date"})
-                    python_frame["value"] = raw.loc[valid].astype(float).to_numpy()
-                except Exception as exc:
-                    evidence_by_name[factor.name] = implementation.failure_evidence(
-                        factor,
-                        discovery_signal_start=start,
-                        discovery_signal_end=end,
-                        discovery_snapshot_digest=snapshot_digest,
-                        strategy_sha256=strategy_sha256,
-                        stage="python_compute",
-                        error=exc,
-                        binding=binding,
-                    )
-                    continue
-                prepared.append((factor, spec, sql_path, binding, python_frame))
-
+            _log_timing("parity.live_identity", started)
             if prepared:
-                for factor, spec, sql_path, binding, python_frame in prepared:
+                query_groups: dict[Path, list[tuple]] = {}
+                for item in prepared:
+                    query_groups.setdefault(item[2], []).append(item)
+                for sql_path in sorted(query_groups, key=str):
+                    group = query_groups[sql_path]
+                    sql_started = time.perf_counter()
                     try:
-                        with conn.cursor() as cursor:
-                            cursor.execute(sql_path.read_text(encoding="utf-8"), {
-                                "start_month": f"{start}-01",
-                                "end_month": f"{end}-01",
-                            })
-                            rows = cursor.fetchall()
-                            columns = [column.name for column in cursor.description]
-                        sql_frame = pd.DataFrame(rows, columns=columns)
-                        evidence_by_name[factor.name] = implementation.compare_parity(
-                            factor,
-                            python_frame,
-                            sql_frame,
-                            implementation_uri=binding["implementation_uri"],
-                            implementation_sha256=binding["implementation_sha256"],
-                            manifest_spec=spec,
-                            discovery_signal_start=start,
-                            discovery_signal_end=end,
-                            discovery_snapshot_digest=snapshot_digest,
-                            strategy_sha256=binding["strategy_sha256"],
-                            atol=float(spec.get(
-                                "parity_atol", implementation.DEFAULT_ATOL,
-                            )),
-                            rtol=float(spec.get(
-                                "parity_rtol", implementation.DEFAULT_RTOL,
-                            )),
-                            allow_tolerance_equivalent_ranks=bool(spec.get(
-                                "allow_tolerance_equivalent_ranks", False,
-                            )),
+                        chunk_values = {
+                            spec.get("query_chunk_months")
+                            for _factor, spec, _path, _binding, _python in group
+                        }
+                        if len(chunk_values) != 1:
+                            raise ValueError(
+                                "공유 Gold SQL의 query_chunk_months가 서로 다릅니다"
+                            )
+                        windows = _parity_query_windows(
+                            start, end, chunk_values.pop(),
                         )
+                        planner_values = {
+                            spec.get("planner_enable_nestloop", True)
+                            for _factor, spec, _path, _binding, _python in group
+                        }
+                        if len(planner_values) != 1:
+                            raise ValueError(
+                                "공유 Gold SQL의 planner 계약이 서로 다릅니다"
+                            )
+                        planner_enable_nestloop = planner_values.pop()
+                        sql_text = sql_path.read_text(encoding="utf-8")
+                        query_frames = []
+                        for chunk_index, (window_start, window_end) in enumerate(
+                            windows, start=1,
+                        ):
+                            chunk_started = time.perf_counter()
+                            checkpoint_binding = _parity_checkpoint_binding(
+                                campaign, group, sql_path, window_start, window_end,
+                            )
+                            chunk_frame = _load_parity_checkpoint(
+                                checkpoint_binding,
+                            )
+                            checkpoint_reused = chunk_frame is not None
+                            temp_files_delta = 0
+                            temp_bytes_delta = 0
+                            if chunk_frame is None:
+                                temp_files_before, temp_bytes_before = (
+                                    _database_temp_usage(conn)
+                                )
+                                with conn.cursor() as cursor:
+                                    cursor.execute(
+                                        "SET LOCAL enable_nestloop = "
+                                        + ("on" if planner_enable_nestloop else "off")
+                                    )
+                                    cursor.execute(sql_text, {
+                                        "start_month": f"{window_start}-01",
+                                        "end_month": f"{window_end}-01",
+                                    })
+                                    rows = cursor.fetchall()
+                                    columns = [
+                                        column.name for column in cursor.description
+                                    ]
+                                chunk_frame = pd.DataFrame(rows, columns=columns)
+                                _write_parity_checkpoint(
+                                    checkpoint_binding, chunk_frame,
+                                )
+                                temp_files_after, temp_bytes_after = (
+                                    _database_temp_usage(conn)
+                                )
+                                temp_files_delta = (
+                                    temp_files_after - temp_files_before
+                                )
+                                temp_bytes_delta = (
+                                    temp_bytes_after - temp_bytes_before
+                                )
+                            query_frames.append(chunk_frame)
+                            _log_timing(
+                                "parity.sql_query_chunk",
+                                chunk_started,
+                                sql=sql_path.name,
+                                factor_count=len(group),
+                                chunk_index=chunk_index,
+                                chunk_count=len(windows),
+                                query_start_month=str(window_start),
+                                query_end_month=str(window_end),
+                                checkpoint_reused=checkpoint_reused,
+                                database_temp_files_global_delta=temp_files_delta,
+                                database_temp_bytes_global_delta=temp_bytes_delta,
+                            )
+                        query_frame = pd.concat(query_frames, ignore_index=True)
+                        _log_timing(
+                            "parity.sql_query",
+                            sql_started,
+                            sql=sql_path.name,
+                            factor_count=len(group),
+                            query_chunk_count=len(windows),
+                        )
+                        discriminated = any(
+                            spec.get("result_factor") is not None
+                            for _factor, spec, _path, _binding, _python in group
+                        )
+                        if discriminated and "factor" not in query_frame.columns:
+                            raise ValueError(
+                                "공유 Gold SQL에 factor discriminator가 없습니다"
+                            )
+                        for factor, spec, _path, binding, python_frame in group:
+                            parity_started = time.perf_counter()
+                            result_factor = spec.get("result_factor")
+                            if discriminated:
+                                if result_factor != factor.name:
+                                    raise ValueError(
+                                        "Gold manifest result_factor가 후보와 다릅니다: "
+                                        f"{factor.name}"
+                                    )
+                                sql_frame = query_frame.loc[
+                                    query_frame["factor"].eq(result_factor)
+                                ].drop(columns="factor")
+                            else:
+                                sql_frame = query_frame
+                            evidence_by_name[factor.name] = implementation.compare_parity(
+                                factor,
+                                python_frame,
+                                sql_frame,
+                                implementation_uri=binding["implementation_uri"],
+                                implementation_sha256=binding["implementation_sha256"],
+                                manifest_spec=spec,
+                                discovery_signal_start=start,
+                                discovery_signal_end=end,
+                                discovery_snapshot_digest=snapshot_digest,
+                                strategy_sha256=binding["strategy_sha256"],
+                                atol=float(spec.get(
+                                    "parity_atol", implementation.DEFAULT_ATOL,
+                                )),
+                                rtol=float(spec.get(
+                                    "parity_rtol", implementation.DEFAULT_RTOL,
+                                )),
+                                allow_tolerance_equivalent_ranks=bool(spec.get(
+                                    "allow_tolerance_equivalent_ranks", False,
+                                )),
+                            )
+                            _log_timing(
+                                "parity.compare",
+                                parity_started,
+                                factor=factor.name,
+                            )
                     except Exception as exc:
-                        evidence_by_name[factor.name] = implementation.failure_evidence(
-                            factor,
-                            discovery_signal_start=start,
-                            discovery_signal_end=end,
-                            discovery_snapshot_digest=snapshot_digest,
-                            strategy_sha256=binding["strategy_sha256"],
-                            stage="sql_execute_or_parity",
-                            error=exc,
-                            binding=binding,
+                        _log_timing(
+                            "parity.sql_query_or_compare_failed",
+                            sql_started,
+                            sql=sql_path.name,
+                            factor_count=len(group),
                         )
+                        for factor, _spec, _path, binding, _python_frame in group:
+                            evidence_by_name[factor.name] = implementation.failure_evidence(
+                                factor,
+                                discovery_signal_start=start,
+                                discovery_signal_end=end,
+                                discovery_snapshot_digest=snapshot_digest,
+                                strategy_sha256=binding["strategy_sha256"],
+                                stage="sql_execute_or_parity",
+                                error=exc,
+                                binding=binding,
+                            )
     except (ValueError, RuntimeError):
         raise
     except Exception as exc:
@@ -760,7 +1126,446 @@ def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict
                 )
         if not prepared:
             raise
+    _log_timing("parity.total", total_started, factor_count=len(factors))
     return [evidence_by_name[factor.name] for factor in factors]
+
+
+def _confirmation_gate_result(row: dict) -> gate.Result:
+    evaluation = row.get("evaluation") or {}
+    if evaluation.get("factor") != row.get("factor"):
+        raise ValueError("confirmation factor identity가 evaluation과 다릅니다")
+    if evaluation.get("definition_hash") != row.get("definition_hash"):
+        raise ValueError("confirmation definition hash가 evaluation과 다릅니다")
+    if evaluation.get("verdict") != row.get("verdict"):
+        raise ValueError("confirmation verdict가 evaluation과 다릅니다")
+    try:
+        verdict = gate.Verdict(row["verdict"])
+    except (KeyError, ValueError) as exc:
+        raise ValueError("confirmation verdict가 유효하지 않습니다") from exc
+    checks = [
+        gate.Check(
+            str(check.get("tier")),
+            str(check.get("name")),
+            check.get("passed"),
+            check.get("value"),
+            str(check.get("threshold") or ""),
+            str(check.get("note") or ""),
+        )
+        for check in evaluation.get("checks") or []
+    ]
+    return gate.Result(
+        factor=row["factor"],
+        definition_hash=row["definition_hash"],
+        verdict=verdict,
+        checks=checks,
+        metrics=dict(evaluation.get("metrics") or {}),
+        labels=list(evaluation.get("labels") or []),
+    )
+
+
+def _assert_promote_confirmation(result: gate.Result) -> None:
+    if result.verdict != gate.Verdict.PROMOTE:
+        raise ValueError(f"Gold 게시 대상이 PROMOTE가 아닙니다: {result.factor}")
+    if any(check.passed is not True for check in result.checks):
+        raise ValueError(f"Gold PROMOTE에 미통과 gate가 남아 있습니다: {result.factor}")
+    for tier in ("T4.1", "T4.2", "T4.4"):
+        matching = [check for check in result.checks if check.tier == tier]
+        if len(matching) != 1 or matching[0].passed is not True:
+            raise ValueError(
+                f"Gold 자동 게시 {tier} exact PASS가 없습니다: {result.factor}"
+            )
+    metrics = result.metrics
+    if (
+        not metrics.get("null_count")
+        or metrics.get("null_family_error_rate") is None
+        or metrics.get("oos_fdr_status") != "PASS"
+    ):
+        raise ValueError(f"null/OOS family 보정 증거가 불완전합니다: {result.factor}")
+
+
+def _create_gold_value_temp(conn, table: str) -> None:
+    if table not in {"campaign_gold_values", "campaign_gold_verify"}:
+        raise ValueError("허용되지 않은 Gold temp table 이름입니다")
+    with conn.cursor() as cursor:
+        cursor.execute(f"""
+            CREATE TEMP TABLE {table} (
+                factor TEXT NOT NULL,
+                asset_id BIGINT NOT NULL,
+                as_of_date DATE NOT NULL,
+                value DOUBLE PRECISION NOT NULL,
+                rank BIGINT NOT NULL CHECK (rank > 0),
+                PRIMARY KEY (factor, asset_id, as_of_date)
+            ) ON COMMIT DROP
+        """)
+
+
+def _populate_gold_value_temp(
+    conn,
+    table: str,
+    campaign: dict,
+    factors: list[F.Factor],
+) -> None:
+    if table not in {"campaign_gold_values", "campaign_gold_verify"}:
+        raise ValueError("허용되지 않은 Gold temp table 이름입니다")
+    prepared = [
+        (factor, *_implementation_contract(factor)[1:])
+        for factor in factors
+    ]
+    query_groups: dict[Path, list[tuple]] = {}
+    for item in prepared:
+        query_groups.setdefault(item[2], []).append(item)
+    start = gate.RESEARCH_START
+    end = pd.Period(campaign["oos"]["signal_end"], freq="M")
+    for sql_path in sorted(query_groups, key=str):
+        group = query_groups[sql_path]
+        chunk_values = {
+            spec.get("query_chunk_months")
+            for _factor, spec, _path, _binding in group
+        }
+        if len(chunk_values) != 1:
+            raise ValueError("Gold 게시 공유 SQL의 chunk 계약이 서로 다릅니다")
+        windows = _parity_query_windows(start, end, chunk_values.pop())
+        planner_values = {
+            spec.get("planner_enable_nestloop", True)
+            for _factor, spec, _path, _binding in group
+        }
+        if len(planner_values) != 1:
+            raise ValueError("Gold 게시 공유 SQL의 planner 계약이 서로 다릅니다")
+        planner_enable_nestloop = planner_values.pop()
+        query = sql_path.read_text(encoding="utf-8").strip().removesuffix(";")
+        discriminated = any(
+            spec.get("result_factor") is not None
+            for _factor, spec, _path, _binding in group
+        )
+        if discriminated:
+            targets = sorted(factor.name for factor, *_rest in group)
+            wrapped = f"""
+                INSERT INTO {table} (factor, asset_id, as_of_date, value, rank)
+                SELECT factor, asset_id, as_of_date, value, rank
+                FROM (
+                    {query}
+                ) values_for_campaign
+                WHERE factor = ANY(%(publish_factors)s)
+            """
+        else:
+            if len(group) != 1:
+                raise ValueError("factor discriminator 없는 SQL은 단일 팩터여야 합니다")
+            targets = [group[0][0].name]
+            wrapped = f"""
+                INSERT INTO {table} (factor, asset_id, as_of_date, value, rank)
+                SELECT %(publish_factor)s, asset_id, as_of_date, value, rank
+                FROM (
+                    {query}
+                ) values_for_campaign
+            """
+        for window_start, window_end in windows:
+            params = {
+                "start_month": f"{window_start}-01",
+                "end_month": f"{window_end}-01",
+                "publish_factors": targets,
+                "publish_factor": targets[0],
+            }
+            started = time.perf_counter()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SET LOCAL enable_nestloop = "
+                    + ("on" if planner_enable_nestloop else "off")
+                )
+                cursor.execute(wrapped, params)
+            _log_timing(
+                "gold.sql_materialize",
+                started,
+                sql=sql_path.name,
+                target_table=table,
+                query_start_month=str(window_start),
+                query_end_month=str(window_end),
+            )
+    expected = sorted(factor.name for factor in factors)
+    with conn.cursor() as cursor:
+        cursor.execute(f"SELECT DISTINCT factor FROM {table} ORDER BY factor")
+        observed = [str(row[0]) for row in cursor.fetchall()]
+        cursor.execute(f"""
+            SELECT count(*)
+            FROM {table}
+            WHERE value::text IN ('NaN', 'Infinity', '-Infinity')
+               OR rank <= 0
+               OR as_of_date < %s::date
+               OR as_of_date >= (%s::date + INTERVAL '1 month')
+        """, (f"{start}-01", f"{end}-01"))
+        invalid_count = int(cursor.fetchone()[0])
+        cursor.execute(f"""
+            SELECT factor,
+                   count(DISTINCT date_trunc('month', as_of_date))::integer,
+                   min(date_trunc('month', as_of_date))::date,
+                   max(date_trunc('month', as_of_date))::date
+            FROM {table}
+            GROUP BY factor
+            ORDER BY factor
+        """)
+        coverage = cursor.fetchall()
+    expected_months = len(pd.period_range(start, end, freq="M"))
+    coverage_valid = all(
+        int(months) == expected_months
+        and pd.Period(min_month, freq="M") == start
+        and pd.Period(max_month, freq="M") == end
+        for _factor, months, min_month, max_month in coverage
+    ) and len(coverage) == len(expected)
+    if observed != expected or invalid_count or not coverage_valid:
+        raise ValueError(
+            "Gold SQL materialization exact set/scope가 다릅니다: "
+            f"expected={expected}, observed={observed}, invalid={invalid_count}, "
+            f"coverage={coverage}"
+        )
+
+
+def _gold_value_difference_count(conn) -> tuple[int, int]:
+    columns = "factor, asset_id, as_of_date, value, rank"
+    with conn.cursor() as cursor:
+        cursor.execute(f"""
+            SELECT count(*) FROM (
+                (SELECT {columns} FROM campaign_gold_values
+                 EXCEPT ALL
+                 SELECT {columns} FROM campaign_gold_verify)
+                UNION ALL
+                (SELECT {columns} FROM campaign_gold_verify
+                 EXCEPT ALL
+                 SELECT {columns} FROM campaign_gold_values)
+            ) differences
+        """)
+        source_difference = int(cursor.fetchone()[0])
+        cursor.execute("""
+            SELECT count(*) FROM (
+                (SELECT ids.factor_key AS factor, values.asset_id,
+                        values.as_of_date, values.value, values.rank::bigint AS rank
+                 FROM gold.factor_value values
+                 JOIN campaign_gold_factor_ids ids USING (factor_id)
+                 EXCEPT ALL
+                 SELECT factor, asset_id, as_of_date, value, rank
+                 FROM campaign_gold_verify)
+                UNION ALL
+                (SELECT factor, asset_id, as_of_date, value, rank
+                 FROM campaign_gold_verify
+                 EXCEPT ALL
+                 SELECT ids.factor_key AS factor, values.asset_id,
+                        values.as_of_date, values.value, values.rank::bigint AS rank
+                 FROM gold.factor_value values
+                 JOIN campaign_gold_factor_ids ids USING (factor_id))
+            ) differences
+        """)
+        persisted_difference = int(cursor.fetchone()[0])
+    return source_difference, persisted_difference
+
+
+def publish_revealed_campaign(
+    campaign_id: str,
+    panel: P.Panel,
+) -> dict:
+    """Atomically publish the exact final PROMOTE set after every frozen gate."""
+    load_registry()
+    campaign = epochs.load_campaign("research", campaign_id)
+    confirmation_panel = _scope_confirmation_panel(
+        panel,
+        data_cutoff=campaign["discovery"]["data_cutoff"],
+        oos_start=campaign["oos"]["start"],
+        oos_end=campaign["oos"]["signal_end"],
+    )
+    confirmations = epochs.load_confirmation("research", campaign_id)
+    qualified = campaign.get("qualified_factors") or []
+    qualified_names = sorted(row["name"] for row in qualified)
+    factors = [F.REGISTRY[name] for name in qualified_names]
+    current_bindings = _implementation_bindings(factors)
+    verification = epochs.load_implementation_verification(
+        "research", campaign_id, current_bindings=current_bindings,
+    )
+    parity_rows = verification.get("implementations") or []
+    if (
+        sorted(row.get("factor") for row in parity_rows) != qualified_names
+        or any(row.get("passed") is not True or row.get("status") != "PASS" for row in parity_rows)
+    ):
+        raise ValueError("qualified 전체의 Python/Gold SQL parity가 PASS가 아닙니다")
+    confirmation_by_name = {
+        row["factor"]: row for row in confirmations["confirmations"]
+    }
+    if sorted(confirmation_by_name) != qualified_names:
+        raise ValueError("qualified/confirmation exact set이 다릅니다")
+    results = {
+        name: _confirmation_gate_result(confirmation_by_name[name])
+        for name in qualified_names
+    }
+    promote_names = sorted(
+        name for name, result in results.items()
+        if result.verdict == gate.Verdict.PROMOTE
+    )
+    if set(promote_names) != {
+        row["factor"] for row in confirmations["confirmations"]
+        if row.get("verdict") == gate.Verdict.PROMOTE.value
+    }:
+        raise ValueError("PROMOTE/publish exact set을 재현하지 못했습니다")
+    if not promote_names:
+        return {
+            "schema_version": "gold-auto-publication-v1",
+            "campaign_id": campaign_id,
+            "status": "NO_PROMOTE_NO_WRITE",
+            "qualified_factors": qualified_names,
+            "published_factors": [],
+            "database_mutated": False,
+        }
+    for name in promote_names:
+        _assert_promote_confirmation(results[name])
+    promote_factors = [F.REGISTRY[name] for name in promote_names]
+    binding_by_name = {row["factor"]: row for row in current_bindings}
+    metadata_rows = []
+    for factor in promote_factors:
+        binding = binding_by_name[factor.name]
+        implementation_ref = publish.ImplementationRef(
+            uri=binding["implementation_uri"],
+            sha256=binding["implementation_sha256"],
+            research_definition_hash=binding["definition_hash"],
+        )
+        result = results[factor.name]
+        metadata_rows.append(publish.build_row(
+            factor,
+            result,
+            implementation=implementation_ref,
+            n_trials=int(campaign["discovery_family_size"]),
+            null_family_error_rate=result.metrics.get("null_family_error_rate"),
+            data_cutoff=campaign["discovery"]["data_cutoff"],
+            approved_by="automatic_exact_campaign_gate_v1",
+            campaign_id=campaign_id,
+            strategy_sha256=binding["strategy_sha256"],
+            manifest_entry_digest=binding["manifest_entry_digest"],
+        ))
+    conn = silver.connect(read_only=False)
+    try:
+        conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"factor-research:{campaign_id}",),
+            )
+        silver.verify_live_total_return_contract(
+            conn,
+            confirmation_panel.meta.get("return_contract_validation_evidence"),
+        )
+        _verify_confirmation_live_identity(conn, confirmation_panel)
+        research_panel = _research_input_panel(confirmation_panel)
+        approved_before = _approved_signals(conn, research_panel.monthly)
+        gold_family_digest = _signal_family_digest(approved_before)
+        expected_gold_digests = {
+            result.metrics.get("null_gold_family_digest")
+            for result in results.values()
+        }
+        if expected_gold_digests != {gold_family_digest}:
+            raise ValueError(
+                "null calibration 뒤 live Gold family가 변경됐습니다: "
+                f"expected={expected_gold_digests}, observed={gold_family_digest}"
+            )
+        _create_gold_value_temp(conn, "campaign_gold_values")
+        _populate_gold_value_temp(
+            conn, "campaign_gold_values", campaign, promote_factors,
+        )
+        published = publish.upsert_approved_metadata_atomic(conn, metadata_rows)
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TEMP TABLE campaign_gold_factor_ids (
+                    factor_id BIGINT PRIMARY KEY,
+                    factor_key TEXT UNIQUE NOT NULL
+                ) ON COMMIT DROP
+            """)
+            cursor.executemany(
+                "INSERT INTO campaign_gold_factor_ids VALUES (%s, %s)",
+                [(row["factor_id"], row["factor_key"]) for row in published],
+            )
+            cursor.execute("""
+                DELETE FROM gold.factor_value values
+                USING campaign_gold_factor_ids ids
+                WHERE values.factor_id = ids.factor_id
+            """)
+            cursor.execute("""
+                INSERT INTO gold.factor_value (
+                    factor_id, asset_id, as_of_date, value, rank
+                )
+                SELECT ids.factor_id, source.asset_id, source.as_of_date,
+                       source.value, source.rank::integer
+                FROM campaign_gold_values source
+                JOIN campaign_gold_factor_ids ids
+                  ON ids.factor_key = source.factor
+                ORDER BY source.factor, source.as_of_date, source.asset_id
+            """)
+        _create_gold_value_temp(conn, "campaign_gold_verify")
+        _populate_gold_value_temp(
+            conn, "campaign_gold_verify", campaign, promote_factors,
+        )
+        source_difference, persisted_difference = _gold_value_difference_count(conn)
+        if source_difference or persisted_difference:
+            raise ValueError(
+                "Gold SQL 재계산/persisted exact parity 실패: "
+                f"source={source_difference}, persisted={persisted_difference}"
+            )
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT ids.factor_key, f.status, count(values.factor_id)::bigint AS row_count,
+                       min(values.as_of_date) AS min_date,
+                       max(values.as_of_date) AS max_date,
+                       count(values.factor_id)
+                         - count(DISTINCT (values.asset_id, values.as_of_date))
+                           AS duplicate_count
+                FROM campaign_gold_factor_ids ids
+                JOIN gold.factor f ON f.factor_id = ids.factor_id
+                LEFT JOIN gold.factor_value values ON values.factor_id = ids.factor_id
+                GROUP BY ids.factor_key, f.status
+                ORDER BY ids.factor_key
+            """)
+            post_rows = [
+                dict(zip([column.name for column in cursor.description], row, strict=True))
+                for row in cursor.fetchall()
+            ]
+        if (
+            [row["factor_key"] for row in post_rows] != promote_names
+            or any(
+                row["status"] != "APPROVED"
+                or int(row["row_count"]) <= 0
+                or int(row["duplicate_count"]) != 0
+                for row in post_rows
+            )
+        ):
+            raise ValueError("Gold APPROVED/row/date/duplicate 사후 검증에 실패했습니다")
+        evidence = {
+            "schema_version": "gold-auto-publication-v1",
+            "campaign_id": campaign_id,
+            "status": "APPROVED_ATOMIC",
+            "qualified_factors": qualified_names,
+            "published_factors": promote_names,
+            "database_mutated": True,
+            "implementation_verification_digest": campaign[
+                "implementation_verification_digest"
+            ],
+            "confirmation_result_digest": campaign[
+                "confirmation_result_digest"
+            ],
+            "gold_family_digest_before": gold_family_digest,
+            "source_recompute_difference_count": source_difference,
+            "persisted_recompute_difference_count": persisted_difference,
+            "factors": [
+                {
+                    **published_row,
+                    **{
+                        "row_count": int(post_row["row_count"]),
+                        "min_date": str(post_row["min_date"]),
+                        "max_date": str(post_row["max_date"]),
+                        "duplicate_count": int(post_row["duplicate_count"]),
+                    },
+                }
+                for published_row, post_row in zip(published, post_rows, strict=True)
+            ],
+        }
+        conn.commit()
+        return evidence
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _merge_discovery_and_oos(
@@ -830,6 +1635,7 @@ def _evaluate(
     closure_asset_identity_digest: str | None = None,
     confirmation_mode: str | None = None,
 ):
+    total_started = time.perf_counter()
     if phase == "discovery" and (
         data_cutoff is None
         or oos_start is None
@@ -843,7 +1649,9 @@ def _evaluate(
             "사용하세요."
         )
     load_registry()
+    started = time.perf_counter()
     base_pan = _load()
+    _log_timing("evaluation.panel_load", started, phase=phase)
     frozen_oos = pd.Period(oos_start, freq="M") if oos_start is not None else None
     frozen_oos_end = pd.Period(oos_end, freq="M") if oos_end is not None else None
     development_pan = None
@@ -922,6 +1730,7 @@ def _evaluate(
         P.snapshot_digest(authenticated_pan) if phase == "full" else None
     )
     ledger = trials.TrialLedger(TRIAL_DB)
+    started = time.perf_counter()
     with silver.connect(read_only=True) as conn:
         silver.verify_live_total_return_contract(
             conn,
@@ -953,6 +1762,7 @@ def _evaluate(
             if development_df is not None else None
         )
         gold_trials = silver.load_gold_trial_history(conn)
+    _log_timing("evaluation.live_inputs", started, phase=phase)
     gold_family_digest = _signal_family_digest(approved)
     cutoff = str(df["trade_date"].max().date())
     calibration = None
@@ -977,7 +1787,7 @@ def _evaluate(
         )
     df = _ensure_factor_columns(pan, targets)
     development_df = (
-        _ensure_factor_columns(development_pan, targets)
+        _reuse_factor_columns(df, development_pan, targets)
         if development_pan is not None else None
     )
     # Gold's legacy trial rows contain return Sharpe/p-values.  They still count
@@ -996,6 +1806,7 @@ def _evaluate(
         # OOS return may be evaluated until all recoverable snapshot/artifact
         # failures have been ruled out.
         for f in targets:
+            started = time.perf_counter()
             existing = {
                 name: values for name, values in (development_approved or {}).items()
                 if name != f.name
@@ -1005,6 +1816,9 @@ def _evaluate(
                 trial_count=summary.count, prior_sharpes=summary.sharpes,
                 oos_start=frozen_oos, data_cutoff=data_cutoff, phase="discovery",
             ))
+            _log_timing(
+                "evaluation.gate", started, factor=f.name, phase="discovery",
+            )
         if frozen_discovery is None:
             raise ValueError("봉인 confirmation에는 discovery artifact가 필요합니다")
         for result in results:
@@ -1051,6 +1865,7 @@ def _evaluate(
         _assert_confirmation_discovery_ics(authenticated_discovery)
         results = []
         for f, discovery_result in zip(targets, authenticated_discovery, strict=True):
+            started = time.perf_counter()
             confirmation_result = gate.evaluate_oos(
                 f, pan, df, oos_start=frozen_oos, oos_end=frozen_oos_end,
                 data_cutoff=data_cutoff,
@@ -1059,8 +1874,12 @@ def _evaluate(
             results.append(_merge_discovery_and_oos(
                 discovery_result, confirmation_result,
             ))
+            _log_timing(
+                "evaluation.gate", started, factor=f.name, phase="full",
+            )
     else:
         for f in targets:
+            started = time.perf_counter()
             # A new version of an already-approved factor is compared with other
             # Gold families, not with its own currently active version.
             existing = {name: values for name, values in approved.items() if name != f.name}
@@ -1069,6 +1888,9 @@ def _evaluate(
                 prior_sharpes=summary.sharpes, oos_start=frozen_oos,
                 oos_end=frozen_oos_end, data_cutoff=data_cutoff, phase=phase,
             ))
+            _log_timing(
+                "evaluation.gate", started, factor=f.name, phase=phase,
+            )
         gate.apply_multiple_testing(
             results, summary.pvalues, defer=defer_multiple_testing,
             total_trials=summary.ic_count,
@@ -1090,6 +1912,9 @@ def _evaluate(
     if record_ledger:
         for factor, result in zip(targets, results, strict=True):
             ledger.record(factor, result, data_cutoff=cutoff, ruleset_version=gate.RULESET_VERSION)
+    _log_timing(
+        "evaluation.total", total_started, phase=phase, factor_count=len(targets),
+    )
     return pan, df, targets, results
 
 
@@ -1168,6 +1993,9 @@ def cmd_null(args):
         confirmation_snapshot_digest=confirmation_snapshot_digest,
         qualification_policy=campaign["qualification_policy"],
         existing=approved,
+        checkpoint_path=(
+            CACHE / "null-checkpoints" / f"{args.campaign}.json"
+        ),
     )
     out.to_parquet(CACHE / "null_dist.parquet", index=False)
 
@@ -1176,8 +2004,8 @@ def cmd_publish(args):
     """Never recompute or write Gold outside the authenticated campaign flow."""
     del args
     raise SystemExit(
-        "epoch-1.6 publish는 비활성화했습니다. campaign reveal 산출물을 사람 검토한 뒤 "
-        "별도 승인 절차에서만 Gold를 적재하세요."
+        "범용 publish는 비활성화했습니다. REVEALED campaign의 exact PROMOTE 집합은 "
+        "scripts/research.py campaign-publish --campaign <id> 경로에서만 자동 적재됩니다."
     )
 
 

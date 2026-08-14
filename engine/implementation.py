@@ -48,7 +48,11 @@ _FEATURE_FORBIDDEN_RELATIONS = frozenset({
     "public.price_daily",
     "public.price_return_contract",
 })
-_CTE_NAME = re.compile(r"(?:\bwith|,)\s*([a-z_][a-z0-9_]*)\s+as\s*\(", re.I)
+_CTE_NAME = re.compile(
+    r"(?:\bwith|,)\s*([a-z_][a-z0-9_]*)\s+as\s+"
+    r"(?:(?:not\s+)?materialized\s+)?\(",
+    re.I,
+)
 _RELATION = re.compile(
     r"\b(?:from|join)\s+([a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?)",
     re.I,
@@ -302,6 +306,16 @@ def _validate_binding(
     rank_equivalence = manifest_spec.get("allow_tolerance_equivalent_ranks", False)
     if not isinstance(rank_equivalence, bool):
         raise ValueError("Gold manifest allow_tolerance_equivalent_ranks는 bool이어야 합니다")
+    query_chunk_months = manifest_spec.get("query_chunk_months")
+    if query_chunk_months is not None and (
+        isinstance(query_chunk_months, bool)
+        or not isinstance(query_chunk_months, int)
+        or query_chunk_months < 1
+    ):
+        raise ValueError("Gold manifest query_chunk_months는 1 이상의 정수여야 합니다")
+    planner_enable_nestloop = manifest_spec.get("planner_enable_nestloop", True)
+    if not isinstance(planner_enable_nestloop, bool):
+        raise ValueError("Gold manifest planner_enable_nestloop는 bool이어야 합니다")
     sql_path = str(manifest_spec["sql"]).strip()
     if not sql_path or not (
         implementation_uri == sql_path or implementation_uri.endswith(f"/{sql_path}")

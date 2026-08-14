@@ -414,7 +414,9 @@ def _validate_factor(factor: Factor, df: pd.DataFrame, cached: str) -> list[Chec
     if forbidden_inputs or missing or not lookback_ok or not input_floor_ok:
         return checks
     try:
-        first = research_policy.compute_factor(factor, df)
+        first = research_policy.authoritative_factor_values(factor, df, cached)
+        if first is None:
+            first = research_policy.compute_factor(factor, df)
         second = research_policy.compute_factor(factor, df)
         valid_series = isinstance(first, pd.Series) and first.index.equals(df.index)
         numeric = valid_series and pd.api.types.is_numeric_dtype(first)

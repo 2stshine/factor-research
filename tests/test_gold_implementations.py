@@ -14,11 +14,16 @@ MANIFEST = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 
 EXPECTED_DEFINITIONS = {
     "amihud_illiquidity_1m": (1, "72bd57d66a5cb84d"),
+    "current_asset_turnover": (1, "05c6633ec72d4e6a"),
+    "idiosyncratic_volatility_24m": (-1, "af24645c3a81a842"),
     "max_daily_return_1m": (-1, "e29c3da27f06a3ba"),
     "net_equity_issuance_price_adjusted_12m": (-1, "01ee73e28cd8f170"),
+    "operating_earnings_yield": (1, "692110a461d94df5"),
+    "operating_income_to_current_liabilities": (1, "eaf7784cd83b4082"),
     "operating_income_to_liabilities": (1, "5ff8c69343b28a3f"),
     "paid_in_capital_ratio": (-1, "8c82db0117290bcd"),
     "realized_volatility_252d": (-1, "e0668fb0e7c0eb69"),
+    "retained_earnings_to_equity": (1, "ede7286f5e5ca082"),
     "trading_turnover_20d": (-1, "c03efb8638407bd6"),
 }
 
@@ -33,13 +38,77 @@ def test_manifest_owns_the_reviewed_query_only_implementations_locally():
         path = (ROOT / spec["sql"]).resolve()
         assert ROOT.resolve() in path.parents
         assert path.is_file()
-        assert spec["sql"] == f"implementations/gold/factors/{factor_name}.sql"
+        if "result_factor" in spec:
+            assert spec["sql"] == (
+                "implementations/gold/factors/campaign_20260814_002_batch.sql"
+            )
+            assert spec["result_factor"] == factor_name
+            assert "query_chunk_months" not in spec
+        else:
+            assert spec["sql"] == f"implementations/gold/factors/{factor_name}.sql"
+            if factor_name == "idiosyncratic_volatility_24m":
+                assert spec["query_chunk_months"] == 24
+            else:
+                assert "query_chunk_months" not in spec
         assert spec["feature_price_field"] == "adj_close"
         assert spec["value_contract"] == VALUE_CONTRACT_ID
         expected_sign, expected_hash = EXPECTED_DEFINITIONS[factor_name]
         assert spec["predicted_sign"] == expected_sign
         assert spec["research_definition_hash"] == expected_hash
         assert len(hashlib.sha256(path.read_bytes()).hexdigest()) == 64
+
+
+def test_campaign_batch_implementation_has_exact_factor_discriminators():
+    batch = {
+        name: spec["result_factor"]
+        for name, spec in MANIFEST.items()
+        if "result_factor" in spec
+    }
+    assert batch == {
+        "current_asset_turnover": "current_asset_turnover",
+        "operating_earnings_yield": "operating_earnings_yield",
+        "operating_income_to_current_liabilities": (
+            "operating_income_to_current_liabilities"
+        ),
+        "retained_earnings_to_equity": "retained_earnings_to_equity",
+    }
+
+
+def test_campaign_batch_reuses_one_narrow_causal_price_ordering():
+    sql = _sql("current_asset_turnover")
+    assert "p.*" not in sql
+    assert "month_rank" not in sql
+    assert "trade_date DESC" not in sql
+    assert "lead(p.trade_date) OVER (asset_history)" in sql
+    assert "PARTITION BY p.asset_id ORDER BY p.trade_date" in sql
+    assert "stats.prior_rows + row_number()" in sql
+    assert "price_stats AS MATERIALIZED" in sql
+    assert "universe AS MATERIALIZED" in sql
+
+
+def test_campaign_batch_replays_fundamentals_once_as_effective_intervals():
+    sql = _sql("current_asset_turnover")
+    assert "fundamental_candidates AS MATERIALIZED" in sql
+    assert "effective_fundamental_events AS" in sql
+    assert "first_cfs_date" in sql
+    assert "lead(available_date) OVER" in sql
+    assert "f.next_available_date > u.trade_date" in sql
+    assert "f.available_date <= u.trade_date" in sql
+    assert "PARTITION BY\n                u.asset_id, u.trade_date" not in sql
+    assert MANIFEST["current_asset_turnover"].get("query_chunk_months") is None
+    assert MANIFEST["current_asset_turnover"]["planner_enable_nestloop"] is False
+    assert "public.fundamental" not in _sql("idiosyncratic_volatility_24m")
+
+
+def test_price_only_idio_chunks_preserve_the_exact_legacy_value_contract():
+    sql = _sql("idiosyncratic_volatility_24m")
+    assert "(%(start_month)s::date - INTERVAL '24 months')" in sql
+    assert "RANGE BETWEEN INTERVAL '23 months' PRECEDING AND CURRENT ROW" in sql
+    assert "asset_variance" in sql
+    assert "asset_market_covariance * asset_market_covariance" in sql
+    assert "observations >= 18" in sql
+    assert "ORDER BY value ASC" in sql
+    assert MANIFEST["idiosyncratic_volatility_24m"]["query_chunk_months"] == 24
 
 
 def test_every_implementation_is_read_only_and_uses_the_certified_feature_view():
@@ -53,8 +122,11 @@ def test_every_implementation_is_read_only_and_uses_the_certified_feature_view()
         assert "%(end_month)s" in sql
         assert "INSERT INTO" not in sql.upper()
         assert "adj_close > 0" in sql
-        rank_order = "DESC" if spec["predicted_sign"] == 1 else "ASC"
-        assert f"ORDER BY value {rank_order}" in sql
+        if "result_factor" in spec:
+            assert "ORDER BY value * predicted_sign DESC" in sql
+        else:
+            rank_order = "DESC" if spec["predicted_sign"] == 1 else "ASC"
+            assert f"ORDER BY value {rank_order}" in sql
 
 
 def test_daily_price_implementations_match_research_windows():
@@ -82,13 +154,24 @@ def test_daily_price_implementations_match_research_windows():
 
 
 def test_accounting_implementations_are_point_in_time():
-    for factor_name in ("paid_in_capital_ratio", "operating_income_to_liabilities"):
+    for factor_name in (
+        "current_asset_turnover",
+        "operating_earnings_yield",
+        "operating_income_to_current_liabilities",
+        "operating_income_to_liabilities",
+        "paid_in_capital_ratio",
+        "retained_earnings_to_equity",
+    ):
         sql = _sql(factor_name)
         body = "\n".join(
             line for line in sql.splitlines()
             if not line.lstrip().startswith("--")
         )
-        assert "f.available_date <= u.as_of_date" in sql
+        assert (
+            "f.available_date <= u.trade_date" in sql
+            if "result_factor" in MANIFEST[factor_name]
+            else "f.available_date <= u.as_of_date" in sql
+        )
         assert "q.status = 'CERTIFIED'" in sql
         assert "fundamental_current" not in body
 

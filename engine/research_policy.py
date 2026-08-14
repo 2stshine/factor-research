@@ -7,6 +7,7 @@ common IC evaluation begins later, after the longest permitted warm-up.
 from __future__ import annotations
 
 import ast
+import hashlib
 import math
 import re
 
@@ -369,6 +370,66 @@ def compute_factor(factor, frame: pd.DataFrame) -> pd.Series:
         ).to_numpy(dtype=float)
         output[np.flatnonzero(months == anchor)] = anchor_values
     return pd.Series(output, index=frame.index)
+
+
+_AUTHORITATIVE_FACTOR_BINDINGS_ATTR = (
+    "factor_research_authoritative_factor_bindings_v1"
+)
+
+
+def _factor_column_digest(values: pd.Series) -> str:
+    """Bind one computed factor column to its exact index, dtype, and values."""
+    hashed = pd.util.hash_pandas_object(values, index=True).to_numpy(
+        dtype="uint64", copy=False,
+    )
+    payload = b"\0".join((
+        str(values.dtype).encode("utf-8"),
+        str(len(values)).encode("ascii"),
+        hashed.tobytes(),
+    ))
+    return hashlib.sha256(payload).hexdigest()
+
+
+def bind_authoritative_factor_column(factor, frame: pd.DataFrame, column: str) -> None:
+    """Record that ``column`` came from this engine's bounded computation.
+
+    The binding is invocation-local DataFrame metadata, not a persistent factor
+    cache.  It lets the integrity gate reuse the already-computed values as the
+    first side of its determinism comparison while retaining an independent
+    second computation and the causal anchor checks.
+    """
+    if column not in frame:
+        raise ValueError(f"authoritative factor column이 없습니다: {column}")
+    values = frame[column]
+    bindings = dict(frame.attrs.get(_AUTHORITATIVE_FACTOR_BINDINGS_ATTR) or {})
+    bindings[column] = {
+        "definition_hash": factor.definition_hash,
+        "predicted_sign": int(factor.predicted_sign),
+        "row_count": len(frame),
+        "value_digest": _factor_column_digest(values),
+    }
+    frame.attrs[_AUTHORITATIVE_FACTOR_BINDINGS_ATTR] = bindings
+
+
+def authoritative_factor_values(
+    factor, frame: pd.DataFrame, column: str,
+) -> pd.Series | None:
+    """Return bound raw values only when the exact invocation binding matches."""
+    binding = (
+        frame.attrs.get(_AUTHORITATIVE_FACTOR_BINDINGS_ATTR) or {}
+    ).get(column)
+    if not isinstance(binding, dict) or column not in frame:
+        return None
+    values = frame[column]
+    expected = {
+        "definition_hash": factor.definition_hash,
+        "predicted_sign": int(factor.predicted_sign),
+        "row_count": len(frame),
+        "value_digest": _factor_column_digest(values),
+    }
+    if binding != expected:
+        return None
+    return pd.to_numeric(values, errors="raise") * factor.predicted_sign
 
 
 def causal_lookback_check(
