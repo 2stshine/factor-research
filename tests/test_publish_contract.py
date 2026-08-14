@@ -27,7 +27,7 @@ def _factor(*, predicted_sign: int) -> Factor:
 
 def _implementation(factor: Factor) -> ImplementationRef:
     return ImplementationRef(
-        uri="teamalpha-data://pipeline/gold/factors/contract_test.sql",
+        uri="repo://factor-research/implementations/gold/factors/contract_test.sql",
         sha256="a" * 64,
         research_definition_hash=factor.definition_hash,
     )
@@ -74,7 +74,7 @@ def test_build_row_rejects_mismatched_research_definition():
         verdict=Verdict.PROVISIONAL,
     )
     implementation = ImplementationRef(
-        uri="teamalpha-data://pipeline/gold/factors/contract_test.sql",
+        uri="repo://factor-research/implementations/gold/factors/contract_test.sql",
         sha256="b" * 64,
         research_definition_hash="different-definition",
     )
@@ -106,15 +106,19 @@ def test_gold_trial_history_prefers_research_hash_with_legacy_fallback():
         "trading_turnover_20d",
     ],
 )
-def test_research_candidate_binds_to_real_teamalpha_sql(factor_name: str):
+def test_research_candidate_binds_to_local_gold_sql(
+    factor_name: str, monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TEAMALPHA_DATA_DIR", "/definitely/not/used")
     load_candidates(factor_registry.REGISTRY)
     factor = factor_registry.REGISTRY[factor_name]
 
     implementation = _implementation_ref(factor)
 
     assert implementation.uri.endswith(
-        f"pipeline/gold/factors/{factor_name}.sql"
+        f"implementations/gold/factors/{factor_name}.sql"
     )
+    assert implementation.uri.startswith("repo://factor-research/")
     assert len(implementation.sha256) == 64
     assert implementation.research_definition_hash == factor.definition_hash
 

@@ -135,8 +135,9 @@ Gold 테이블에는 쓰지 않는다. 생산 manifest에는 방향 계약·`res
 기록하고, 구현 검증 artifact에는 manifest digest와 실제 SQL SHA256을 기록한다. 일부 후보만 구현하거나 구현 단계에서 경제적 정의·파라미터·
 방향을 바꿀 수 없다. SQL은 read-only 연결에서 인증 Silver allowlist만 읽고 Bronze·Gold·
 `fundamental_current` 같은 현재상태 relation은 읽지 않는다.
-기본 구현 위치는 형제 레포 `../TeamAlpha-data/pipeline/gold/factors/`의 SQL과
-`manifest.json`이며, 생산 runner는 검증된 query를 일반 Gold upsert로 감싼다.
+기본 구현 위치는 이 레포의 `implementations/gold/factors/` SQL과
+`implementations/gold/manifest.json`이다. 팩터별 구현·hash·parity 변경은 연구 PR 하나에
+묶고, 별도 승인된 범용 게시 경로만 검증된 query를 Gold upsert로 감싼다.
 
 그 뒤 다음 명령으로 모든 binding과 parity를 검증한다.
 

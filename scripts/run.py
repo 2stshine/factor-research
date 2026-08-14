@@ -115,7 +115,7 @@ def _activate_panel_cache(panel: P.Panel) -> tuple[Path, Path | None]:
 def _implementation_contract(
     factor: F.Factor,
 ) -> tuple[publish.ImplementationRef, dict, Path, dict]:
-    """Authenticate one allowlisted TeamAlpha query and its research binding."""
+    """Authenticate one repository-owned query and its research binding."""
     from factors.candidate_loader import RESEARCH_SPECS
 
     research_spec = RESEARCH_SPECS.get(factor.name)
@@ -125,19 +125,14 @@ def _implementation_contract(
     )
     if not _SHA256.fullmatch(str(strategy_sha256)):
         raise ValueError(f"동결할 후보 전략 파일 SHA-256이 없습니다: {factor.name}")
-    configured = os.environ.get("TEAMALPHA_DATA_DIR")
-    data_repo = (
-        Path(configured).expanduser()
-        if configured
-        else Path(__file__).resolve().parents[2] / "TeamAlpha-data"
-    )
-    manifest_path = data_repo / "pipeline/gold/factors/manifest.json"
+    research_repo = Path(__file__).resolve().parents[1]
+    manifest_path = research_repo / "implementations/gold/manifest.json"
     if not manifest_path.is_file():
-        raise ValueError(f"TeamAlpha Gold 구현 manifest가 없습니다: {manifest_path}")
+        raise ValueError(f"Gold 구현 manifest가 없습니다: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     spec = manifest.get(factor.name)
     if spec is None:
-        raise ValueError(f"TeamAlpha Gold 구현이 없는 팩터입니다: {factor.name}")
+        raise ValueError(f"Gold 구현이 없는 팩터입니다: {factor.name}")
     if int(spec.get("predicted_sign", 0)) != factor.predicted_sign:
         raise ValueError(f"Gold manifest predicted_sign 불일치: {factor.name}")
     if spec.get("research_definition_hash") != factor.definition_hash:
@@ -145,13 +140,13 @@ def _implementation_contract(
     if spec.get("value_contract") != publish.VALUE_CONTRACT_ID:
         raise ValueError(f"Gold value/rank 계약 불일치: {factor.name}")
     relative = Path(spec["sql"])
-    sql_path = (data_repo / relative).resolve()
-    if data_repo.resolve() not in sql_path.parents or not sql_path.is_file():
+    sql_path = (research_repo / relative).resolve()
+    if research_repo.resolve() not in sql_path.parents or not sql_path.is_file():
         raise ValueError(f"허용된 Gold SQL 파일을 찾을 수 없습니다: {relative}")
     sql_text = sql_path.read_text(encoding="utf-8")
     implementation.validate_feature_sql(sql_text)
     reference = publish.ImplementationRef(
-        uri=f"repo://TeamAlpha-data/{relative.as_posix()}",
+        uri=f"repo://factor-research/{relative.as_posix()}",
         sha256=hashlib.sha256(sql_path.read_bytes()).hexdigest(),
         research_definition_hash=factor.definition_hash,
     )
