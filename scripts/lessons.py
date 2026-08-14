@@ -6,10 +6,11 @@
 
 내보내는 것은 두 가지뿐이다.
   ① 정체성   cycle_id · factor · family · ruleset_version · 축 라벨 · variant_of
-  ② 지시     reflection.json 의 permitted_next_actions · forbidden_actions 원문
+  ② 공개된 지시   reflection.json 의 permitted_next_actions · forbidden_actions 원문
 
-①은 평가 **이전**에 정해지는 정보이고, ②는 엔진이 다음 epoch 에 넘기려고 만든 공인 통로다.
-둘 다 봉인 밖이다.
+①은 평가 **이전**에 정해지는 정보라 항상 봉인 밖이다. ②는 평가 뒤 생성될 수 있으므로
+reflection 이 공개됐고 연결된 시행도 봉인 밖일 때만 싣는다. 출처를 입증할 수 없는 지시는
+결과 파생으로 간주해 닫는다.
 
 내보내지 않는 것 — verdict, failed_checks, strongest_relationship, 성과 수치, 결과 집계,
 그리고 **평가에서 파생된 라벨 일체**(outcome · novelty · duplicates). 뒤쪽 셋은 이름만
@@ -157,26 +158,57 @@ def sealed_lessons(
     history: list[dict], reflections: list[dict], sealed_ids: set[str]
 ) -> set[tuple]:
     """평가 파생 라벨을 가려야 할 (campaign, epoch, factor). 매핑이 안 되면 가린다."""
-    index = {
-        (h.get("campaign_id"), h.get("epoch_id"), h["factor"]): h["cycle_id"]
-        for h in history
-    }
+    index: dict[tuple, list[str]] = {}
+    for h in history:
+        key = (h.get("campaign_id"), h.get("epoch_id"), h["factor"])
+        index.setdefault(key, []).append(h["cycle_id"])
     out = set()
     for ref in reflections:
         epoch_sealed = ref.get("oos_status") not in RELEASED_OOS_STATUSES
         for lesson in ref.get("lessons", []) or []:
             key = (ref.get("campaign_id"), ref.get("epoch_id"), lesson.get("factor"))
-            cycle = index.get(key)
-            if epoch_sealed or cycle is None or cycle in sealed_ids:
+            cycles = index.get(key, [])
+            if epoch_sealed or len(cycles) != 1 or cycles[0] in sealed_ids:
                 out.add(key)
     return out
 
 
+def directives_released(
+    reflection: dict, history: list[dict], sealed_ids: set[str]
+) -> bool:
+    """지시가 속한 epoch의 시행 전부를 유일하게 식별하고 공개할 수 있을 때만 연다."""
+    if reflection.get("oos_status") not in RELEASED_OOS_STATUSES:
+        return False
+    campaign_id = reflection.get("campaign_id")
+    epoch_id = reflection.get("epoch_id")
+    expected = [
+        h for h in history
+        if h.get("campaign_id") == campaign_id and h.get("epoch_id") == epoch_id
+    ]
+    lessons = reflection.get("lessons")
+    if not expected or not isinstance(lessons, list) or not lessons:
+        return False
+    expected_factors = [h.get("factor") for h in expected]
+    lesson_factors = [lesson.get("factor") for lesson in lessons if isinstance(lesson, dict)]
+    if (
+        len(lesson_factors) != len(lessons)
+        or any(not isinstance(factor, str) or not factor for factor in lesson_factors)
+        or len(set(expected_factors)) != len(expected_factors)
+        or len(set(lesson_factors)) != len(lesson_factors)
+        or set(lesson_factors) != set(expected_factors)
+    ):
+        return False
+    return not any(h["cycle_id"] in sealed_ids for h in expected)
+
+
 def render_lessons(
-    rows: list[dict], reflections: list[dict], omitted: int, sealed: set[tuple]
+    rows: list[dict], reflections: list[dict], omitted: int, sealed: set[tuple],
+    *, released_epochs: set[tuple] | None = None,
 ) -> str:
     """지시 먼저, 데이터 나중. 읽는 쪽이 제약을 맨 앞에서 만나게 배치한다."""
+    released_epochs = released_epochs or set()
     latest = reflections[-1] if reflections else {}
+    latest_key = (latest.get("campaign_id"), latest.get("epoch_id"))
     out = [
         "# 다음 회차 지침과 누적 시행",
         "",
@@ -185,9 +217,9 @@ def render_lessons(
         "",
     ]
 
-    # ── ① 제약 — 엔진이 쓴 지시를 원문 그대로 옮긴다 ──────────────────────
+    # ── ① 제약 — 공개된 reflection 의 지시만 원문 그대로 옮긴다 ───────────
     out += ["## 1. 이번 회차의 제약", ""]
-    if latest:
+    if latest and latest_key in released_epochs:
         out.append(
             f"아래는 `{latest.get('campaign_id')}` / `{latest.get('epoch_id')}` 의 "
             "`reflection.json` 에 엔진이 기록한 지시다. **원문 그대로 옮겼다.**"
@@ -202,6 +234,8 @@ def render_lessons(
         out.append("")
         for item in latest.get("forbidden_actions", []) or ["(없음)"]:
             out.append(f"- {item}")
+    elif latest:
+        out.append("최신 성찰의 지시는 봉인 경계 안에 있어 공개하지 않는다.")
     else:
         out.append("아직 성찰 기록이 없어 제약이 비어 있다.")
     out.append("")
@@ -228,7 +262,7 @@ def render_lessons(
         "가장 가까운 기존 팩터: <4절 목록에서 하나> — 차이: <한 줄>",
         "```",
         "",
-        "붙일 대상이 떠오르지 않으면 4절을 다시 읽는다. 목록이 42건이라 \"없다\"는 답은 거의 틀린다.",
+        f"붙일 대상이 떠오르지 않으면 4절을 다시 읽는다. 목록이 {len(rows)}건이라 \"없다\"는 답은 거의 틀린다.",
         "같은 변수를 부호나 표현만 뒤집은 것(예: 고점 대비 근접도 ↔ 고점 대비 낙폭,",
         "변동성 ↔ 안정성)은 **새 후보가 아니라 같은 후보**다.",
         "",
@@ -247,12 +281,13 @@ def render_lessons(
     if not reflections:
         out.append("아직 성찰 기록 없음.")
     for ref in reflections:
+        ref_key = (ref.get("campaign_id"), ref.get("epoch_id"))
         out.append(f"**{ref.get('campaign_id')} / {ref.get('epoch_id')}**")
         out.append("")
-        epoch_sealed = False
+        epoch_sealed = ref_key not in released_epochs
         for lesson in ref.get("lessons", []):
             key = (ref.get("campaign_id"), ref.get("epoch_id"), lesson.get("factor"))
-            if key in sealed:
+            if epoch_sealed or key in sealed:
                 epoch_sealed = True
                 out.append(f"- `{lesson.get('factor')}` ({lesson.get('family')}) — 시행함")
                 continue
@@ -414,6 +449,11 @@ def main() -> None:
     visible_cutoff, active_campaign_id = seal_state(root, args.context_cutoff)
     sealed_ids = sealed_cycles(history, visible_cutoff, active_campaign_id)
     sealed = sealed_lessons(history, reflections, sealed_ids)
+    released_epochs = {
+        (reflection.get("campaign_id"), reflection.get("epoch_id"))
+        for reflection in reflections
+        if directives_released(reflection, history, sealed_ids)
+    }
 
     if args.view == "crosstab":
         text = render_crosstab(rows)
@@ -426,7 +466,10 @@ def main() -> None:
     elif args.view == "before-after":
         text = render_before_after(rows, root / "context" / "latest.md")
     else:
-        text = render_lessons(rows, reflections, omitted=0, sealed=sealed)
+        text = render_lessons(
+            rows, reflections, omitted=0, sealed=sealed,
+            released_epochs=released_epochs,
+        )
 
     # 부분 문자열이 아니라 독립 식별자로만 잡는다. `net_roa` 의 net, `trading_turnover_20d` 의
     # turnover 는 팩터명의 일부이지 metrics 키가 아니다.

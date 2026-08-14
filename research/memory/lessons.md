@@ -5,18 +5,7 @@
 
 ## 1. 이번 회차의 제약
 
-아래는 `campaign-20260807-002` / `epoch-003` 의 `reflection.json` 에 엔진이 기록한 지시다. **원문 그대로 옮겼다.**
-
-**해도 되는 것**
-
-- 다른 경제적 family와 아직 쓰지 않은 PIT 입력을 다음 epoch 후보로 검토한다.
-- 실패 원인을 데이터·무결성·예측력·강건성·중복으로 구분해 연구 우선순위를 바꾼다.
-
-**하면 안 되는 것**
-
-- 결과를 본 후보의 부호·룩백·산식·표본을 수정하지 않는다.
-- 게이트 임계값을 이번 결과에 맞춰 완화하지 않는다.
-- 봉인 OOS를 열거나 OOS 결과를 다음 후보 생성에 사용하지 않는다.
+최신 성찰의 지시는 봉인 경계 안에 있어 공개하지 않는다.
 
 ## 2. 후보 하나가 갖춰야 할 것
 
@@ -40,7 +29,7 @@
 가장 가까운 기존 팩터: <4절 목록에서 하나> — 차이: <한 줄>
 ```
 
-붙일 대상이 떠오르지 않으면 4절을 다시 읽는다. 목록이 42건이라 "없다"는 답은 거의 틀린다.
+붙일 대상이 떠오르지 않으면 4절을 다시 읽는다. 목록이 53건이라 "없다"는 답은 거의 틀린다.
 같은 변수를 부호나 표현만 뒤집은 것(예: 고점 대비 근접도 ↔ 고점 대비 낙폭,
 변동성 ↔ 안정성)은 **새 후보가 아니라 같은 후보**다.
 
@@ -49,17 +38,17 @@
 - Accruals: 1건 등록
 - Debt Issuance: 1건 등록
 - Investment: 4건 등록
-- Low Leverage: 5건 등록
-- Low Risk: 7건 등록
-- Momentum: 1건 등록
-- Profit Growth: 3건 등록
+- Low Leverage: 6건 등록
+- Low Risk: 9건 등록
+- Momentum: 2건 등록
+- Profit Growth: 4건 등록
 - Profitability: 3건 등록
-- Quality: 4건 등록
+- Quality: 5건 등록
 - Seasonality: 1건 등록
 - Short-Term Reversal: 1건 등록
-- Size: 0건 등록
-- Value: 7건 등록
-- (미매칭): 4건
+- Size: 1건 등록
+- Value: 10건 등록
+- (미매칭): 5건
 
 ### 구조적 교훈
 
@@ -98,9 +87,32 @@
 - `return_kurtosis_24m` (return_tail_concentration) — 시행함
 - 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
 
+**campaign-20260808-001 / epoch-001**
+
+- `amihud_illiquidity_1m` (liquidity) — 시행함
+- `dividend_yield_ttm` (dividend_yield) — 시행함
+- `high_52w_price_proximity` (price_anchoring) — 시행함
+- `max_daily_return_1m` (lottery_demand) — 시행함
+- `net_equity_issuance_price_adjusted_12m` (net_equity_issuance) — 시행함
+- `realized_volatility_252d` (low_volatility) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
+
+**campaign-20260809-001 / epoch-001**
+
+- `operating_income_to_liabilities` (operating_obligation_coverage) — 시행함
+- `noncurrent_asset_share` (asset_rigidity) — 시행함
+- `dividend_event_frequency_ttm` (payout_frequency) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
+
+**campaign-20260811-001 / epoch-001**
+
+- `intermediate_momentum_12_7` (intermediate_momentum) — 시행함
+- `market_leverage` (market_leverage) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
+
 ## 4. 시행 전량
 
-시행 42건 · 생략 없음
+시행 53건 · 생략 없음
 
 | cycle | factor | family | ruleset | 테마 | 데이터 |
 |---|---|---|---|---|---|
@@ -146,3 +158,14 @@
 | `cycle-0040-equity_growth_12m` | `equity_growth_12m` | `equity_growth` | `fr-3.9.0` | Investment | Accounting |
 | `cycle-0041-positive_return_share_12m` | `positive_return_share_12m` | `return_consistency` | `fr-3.9.0` | - | Price |
 | `cycle-0042-return_kurtosis_24m` | `return_kurtosis_24m` | `return_tail_concentration` | `fr-3.9.0` | Low Risk | Price |
+| `cycle-0043-amihud_illiquidity_1m` | `amihud_illiquidity_1m` | `liquidity` | `fr-3.10.1` | Size | Trading |
+| `cycle-0044-dividend_yield_ttm` | `dividend_yield_ttm` | `dividend_yield` | `fr-3.10.1` | Value | Accounting |
+| `cycle-0045-high_52w_price_proximity` | `high_52w_price_proximity` | `price_anchoring` | `fr-3.10.1` | Momentum | Price |
+| `cycle-0046-max_daily_return_1m` | `max_daily_return_1m` | `lottery_demand` | `fr-3.10.1` | Low Risk | Price |
+| `cycle-0047-net_equity_issuance_price_adjusted_12m` | `net_equity_issuance_price_adjusted_12m` | `net_equity_issuance` | `fr-3.10.1` | Value | Accounting |
+| `cycle-0048-realized_volatility_252d` | `realized_volatility_252d` | `low_volatility` | `fr-3.10.1` | Low Risk | Price |
+| `cycle-0049-operating_income_to_liabilities` | `operating_income_to_liabilities` | `operating_obligation_coverage` | `fr-3.10.1` | Quality | Accounting |
+| `cycle-0050-noncurrent_asset_share` | `noncurrent_asset_share` | `asset_rigidity` | `fr-3.10.1` | Low Leverage | Accounting |
+| `cycle-0051-dividend_event_frequency_ttm` | `dividend_event_frequency_ttm` | `payout_frequency` | `fr-3.10.1` | - | Event |
+| `cycle-0052-intermediate_momentum_12_7` | `intermediate_momentum_12_7` | `intermediate_momentum` | `fr-3.10.1` | Profit Growth | Price |
+| `cycle-0053-market_leverage` | `market_leverage` | `market_leverage` | `fr-3.10.1` | Value | Accounting |

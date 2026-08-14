@@ -165,8 +165,9 @@ def test_generator_never_writes_latest_md():
     assert before == after, "이 층은 latest.md 를 건드리지 않는다"
 
 
-def test_engine_directives_are_transcribed(lessons):
-    """엔진이 reflection 에 쓴 지시를 원문으로 싣는다. 요약하지 않는다."""
+def test_current_sealed_directives_are_not_transcribed(lessons, history):
+    """현재 최신 reflection은 봉인됐으므로 결과 파생 지시도 컨텍스트에 없어야 한다."""
+    module = _lessons_module()
     reflections = sorted((RESEARCH / "campaigns").glob("*/epochs/*/reflection.json"))
     if not reflections:
         pytest.skip("성찰 기록이 없다")
@@ -174,15 +175,127 @@ def test_engine_directives_are_transcribed(lessons):
     directives = (latest.get("permitted_next_actions") or []) + (latest.get("forbidden_actions") or [])
     if not directives:
         pytest.skip("지시가 비어 있다")
+    visible_cutoff, active = module.seal_state(RESEARCH, None)
+    sealed_ids = module.sealed_cycles(history, visible_cutoff, active)
+    assert not module.directives_released(latest, history, sealed_ids)
     for line in directives:
-        assert line in lessons, f"엔진 지시가 원문 그대로 실리지 않았다: {line[:40]}"
+        assert line not in lessons, f"봉인된 엔진 지시가 컨텍스트로 나갔다: {line[:40]}"
+
+
+def test_sealed_reflection_hides_results_and_result_derived_directives():
+    """성공·실패·IC·신규성 및 그 결과에서 만든 지시가 봉인 밖으로 새지 않는다."""
+    module = _lessons_module()
+    history = [{
+        "cycle_id": "cycle-canary", "campaign_id": "campaign-canary",
+        "epoch_id": "epoch-canary", "factor": "factor-canary",
+    }]
+    reflection = {
+        "campaign_id": "campaign-canary", "epoch_id": "epoch-canary",
+        "oos_status": "SEALED",
+        "lessons": [{
+            "factor": "factor-canary", "family": "family-canary",
+            "outcome": "CANARY_SUCCESS", "novelty": "CANARY_NOVELTY",
+            "failed_checks": ["CANARY_FAILURE"], "metrics": {"ic_full": "CANARY_IC"},
+        }],
+        "duplicates": ["CANARY_DUPLICATE"],
+        "permitted_next_actions": ["CANARY_PERMITTED_FROM_RESULT"],
+        "forbidden_actions": ["CANARY_FORBIDDEN_FROM_RESULT"],
+    }
+    sealed_ids = {"cycle-canary"}
+    sealed = module.sealed_lessons(history, [reflection], sealed_ids)
+    release = module.directives_released(reflection, history, sealed_ids)
+    text = module.render_lessons(
+        [], [reflection], omitted=0, sealed=sealed, released_epochs=set()
+    )
+    changed_payload = {
+        **reflection,
+        "permitted_next_actions": ["A_DIFFERENT_RESULT_DERIVED_ACTION"],
+        "forbidden_actions": [],
+    }
+    changed_text = module.render_lessons(
+        [], [changed_payload], omitted=0, sealed=sealed, released_epochs=set()
+    )
+
+    assert not release
+    assert text == changed_text, "봉인된 지시의 내용이나 개수가 출력에 영향을 줬다"
+    for canary in (
+        "CANARY_SUCCESS", "CANARY_NOVELTY", "CANARY_FAILURE", "CANARY_IC",
+        "CANARY_DUPLICATE", "CANARY_PERMITTED_FROM_RESULT",
+        "CANARY_FORBIDDEN_FROM_RESULT",
+    ):
+        assert canary not in text
+
+
+def test_revealed_complete_reflection_transcribes_directives():
+    """정확히 연결되고 공개된 epoch의 지시만 원문으로 연다."""
+    module = _lessons_module()
+    history = [{
+        "cycle_id": "cycle-public", "campaign_id": "campaign-public",
+        "epoch_id": "epoch-public", "factor": "factor-public",
+    }]
+    reflection = {
+        "campaign_id": "campaign-public", "epoch_id": "epoch-public",
+        "oos_status": "REVEALED",
+        "lessons": [{
+            "factor": "factor-public", "family": "family-public",
+            "outcome": "INDEPENDENT", "novelty": "INDEPENDENT",
+        }],
+        "permitted_next_actions": ["PUBLIC_PERMITTED"],
+        "forbidden_actions": ["PUBLIC_FORBIDDEN"],
+    }
+    sealed_ids: set[str] = set()
+    sealed = module.sealed_lessons(history, [reflection], sealed_ids)
+    release = module.directives_released(reflection, history, sealed_ids)
+    text = module.render_lessons(
+        [], [reflection], omitted=0, sealed=sealed,
+        released_epochs={("campaign-public", "epoch-public")} if release else set(),
+    )
+
+    assert release
+    assert "PUBLIC_PERMITTED" in text
+    assert "PUBLIC_FORBIDDEN" in text
+
+
+def test_directives_stay_sealed_without_exact_epoch_lineage():
+    module = _lessons_module()
+    history = [
+        {"cycle_id": "cycle-a", "campaign_id": "campaign-x", "epoch_id": "epoch-x", "factor": "a"},
+        {"cycle_id": "cycle-b", "campaign_id": "campaign-x", "epoch_id": "epoch-x", "factor": "b"},
+    ]
+    base = {"campaign_id": "campaign-x", "epoch_id": "epoch-x", "oos_status": "REVEALED"}
+    assert not module.directives_released({**base, "lessons": []}, history, set())
+    assert not module.directives_released(
+        {**base, "lessons": [{"factor": "a"}]}, history, set()
+    )
+    partial = {
+        **base,
+        "lessons": [{"factor": "a", "family": "family-a"}],
+        "duplicates": ["PARTIAL_EPOCH_DUPLICATE_CANARY"],
+        "permitted_next_actions": ["PARTIAL_EPOCH_DIRECTIVE_CANARY"],
+    }
+    text = module.render_lessons(
+        [], [partial], omitted=0,
+        sealed=module.sealed_lessons(history, [partial], set()),
+        released_epochs=set(),
+    )
+    assert "PARTIAL_EPOCH_DUPLICATE_CANARY" not in text
+    assert "PARTIAL_EPOCH_DIRECTIVE_CANARY" not in text
+
+
+def test_unknown_cutoff_seals_every_trial(history):
+    """경계를 모르는 기본 경로는 한 건도 추측해서 열지 않는다."""
+    module = _lessons_module()
+    assert module.sealed_cycles(history, None, None) == {h["cycle_id"] for h in history}
 
 
 def test_labels_cover_every_trial(history):
-    """라벨이 시행보다 적으면 분류 축이 조용히 비어 보인다."""
+    """원장의 시행이 라벨에서 누락·중복·다른 팩터로 바뀌면 실패한다."""
     path = RESEARCH / "memory" / "labels.jsonl"
     labels = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
-    assert {r["cycle_id"] for r in labels} == {h["cycle_id"] for h in history}
+    label_keys = [(r["cycle_id"], r["factor"]) for r in labels]
+    history_keys = [(h["cycle_id"], h["factor"]) for h in history]
+    assert len(label_keys) == len(set(label_keys)), "중복 라벨이 있다"
+    assert label_keys == history_keys
 
 
 def test_label_themes_are_within_the_closed_vocabulary():
