@@ -830,7 +830,10 @@ SELECT
     count(*) FILTER (
         WHERE is_canonical IS FALSE
           AND excluded_reason NOT IN (
+              'ATTACHMENT_CORRECTION',
               'SUPERSEDED_REVISION',
+              'NO_COMMON_CASH_DIVIDEND',
+              'NO_ECONOMIC_EVENT',
               'BEFORE_MARKET_COVERAGE',
               'PENDING_FUTURE_TRADE',
               'BEFORE_LISTING_OR_EPISODE_START',
@@ -3098,6 +3101,22 @@ def _cash_scale_stored_scale_interval(
     return low - ulp, high + ulp
 
 
+def _cash_scale_stored_scale_parity(
+    scale: object,
+    adjusted: object,
+    raw: object,
+) -> bool:
+    """Bind NUMERIC(28,12) scale to the interval implied by 4dp price data."""
+    try:
+        observed = float(scale)
+        low, high = _cash_scale_stored_scale_interval(
+            close=float(raw), adjusted_close=float(adjusted),
+        )
+    except (ArithmeticError, TypeError, ValueError):
+        return False
+    return math.isfinite(observed) and low <= observed <= high
+
+
 def _cash_scale_stored_factor_interval(
     *,
     previous_close: float,
@@ -3265,7 +3284,7 @@ def _cash_scale_resolution_semantic_checks(
     for values in numeric.values():
         positive &= values.notna() & values.gt(0) & values.map(math.isfinite)
     previous_scale_parity = pd.Series([
-        _cash_scale_ratio_equal(
+        _cash_scale_stored_scale_parity(
             row.previous_price_scale,
             row.previous_adj_close,
             row.previous_close,
@@ -3273,7 +3292,7 @@ def _cash_scale_resolution_semantic_checks(
         for row in frame.itertuples(index=False)
     ], index=frame.index)
     applied_scale_parity = pd.Series([
-        _cash_scale_ratio_equal(
+        _cash_scale_stored_scale_parity(
             row.applied_price_scale,
             row.applied_adj_close,
             row.applied_close,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from copy import deepcopy
 from decimal import Decimal
 
@@ -685,6 +686,38 @@ def test_complete_total_return_lineage_is_content_addressed():
     assert evidence["cash_scale_changed_event_count"] == 1
     assert evidence["cash_scale_evidence_match_count"] == 1
     assert silver.verify_total_return_validation_evidence(evidence) == evidence
+
+
+def test_resolution_audit_accepts_only_the_certified_v3_terminal_exclusions():
+    sql = silver.TOTAL_RETURN_RESOLUTION_AUDIT_SQL
+    for reason in (
+        "ATTACHMENT_CORRECTION",
+        "SUPERSEDED_REVISION",
+        "NO_COMMON_CASH_DIVIDEND",
+        "NO_ECONOMIC_EVENT",
+        "BEFORE_MARKET_COVERAGE",
+        "PENDING_FUTURE_TRADE",
+        "BEFORE_LISTING_OR_EPISODE_START",
+        "LISTING_EPISODE_GAP",
+    ):
+        assert f"'{reason}'" in sql
+
+
+def test_stored_scale_accepts_the_exact_four_decimal_price_interval():
+    # The certified NUMERIC(28,12) scale can sit on the opposite side of a
+    # half-quantum from adj_close / close because adj_close is stored at 4dp.
+    assert silver._cash_scale_stored_scale_parity(
+        Decimal("0.953827460937"), Decimal("4883.59660000"), Decimal("5120"),
+    )
+    low, high = silver._cash_scale_stored_scale_interval(
+        close=5120.0, adjusted_close=4883.5966,
+    )
+    assert not silver._cash_scale_stored_scale_parity(
+        math.nextafter(low, -math.inf), 4883.5966, 5120.0,
+    )
+    assert not silver._cash_scale_stored_scale_parity(
+        math.nextafter(high, math.inf), 4883.5966, 5120.0,
+    )
 
 
 @pytest.mark.parametrize(
