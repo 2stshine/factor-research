@@ -14,7 +14,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from engine import epochs, gate, panel as P, research, silver, trials
+from engine import epochs, gate, panel as P, research, research_policy, silver, trials
 from engine.boundaries import (
     HISTORICAL_HOLDOUT_MODE,
     PROSPECTIVE_HOLDOUT_MODE,
@@ -285,9 +285,10 @@ def cmd_campaign_start(args) -> None:
         if args.mode == HISTORICAL_HOLDOUT_MODE
         else None
     )
+    input_generation = None
     try:
         with silver.connect(read_only=True) as conn:
-            silver.verify_live_total_return_contract(
+            verified_return = silver.verify_live_total_return_contract(
                 conn,
                 panel.meta.get("return_contract_validation_evidence"),
             )
@@ -302,6 +303,9 @@ def cmd_campaign_start(args) -> None:
                     conn, closure_identity,
                     cutoff=closure_identity["asset_identity_cutoff"],
                 )
+            input_generation = silver.research_generation_evidence(
+                verified_return,
+            )
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
     path = epochs.start_campaign(
@@ -327,6 +331,7 @@ def cmd_campaign_start(args) -> None:
         mode=args.mode,
         oos_start=window.oos_signal_start,
         planned_epoch_count=args.epochs,
+        input_generation=input_generation,
     )
     context = research.write_context(panel, F.REGISTRY)
     print(f"campaign 생성: {path}")
@@ -347,6 +352,11 @@ def cmd_epoch_start(args) -> None:
         raise SystemExit(f"등록되지 않은 팩터: {missing}")
     factors = [F.REGISTRY[name] for name in args.factors]
     attempted = run.trials.TrialLedger(run.TRIAL_DB).definition_hashes()
+    attempted_names = research.attempted_factor_names("research")
+    attempted_factors = [
+        F.REGISTRY[name] for name in sorted(attempted_names)
+        if name in F.REGISTRY and name not in set(args.factors)
+    ]
     for factor in factors:
         if factor.name not in RESEARCH_SPECS:
             raise SystemExit(f"자율 연구 후보가 아닙니다: {factor.name}")
@@ -359,12 +369,31 @@ def cmd_epoch_start(args) -> None:
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
     try:
+        batch_policy = research_policy.candidate_batch_policy(
+            factors, existing_factors=attempted_factors,
+        )
+        research_policy.assert_candidate_batch_policy(batch_policy)
+        campaign = epochs.load_campaign("research", args.campaign)
+        input_feasibility = run.preflight_candidate_inputs(
+            campaign, run._load(), factors,
+        )
+        research_policy.assert_input_feasibility_artifact(
+            input_feasibility,
+            factors,
+            snapshot_digest=campaign["snapshot"]["discovery_input_digest"],
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise SystemExit(str(exc)) from exc
+    try:
         path = epochs.start_epoch(
             "research", args.campaign, args.epoch, factors,
             strategy_digests={
                 factor.name: RESEARCH_SPECS[factor.name]["strategy_sha256"]
                 for factor in factors
             },
+            input_feasibility=input_feasibility,
+            existing_factors=attempted_factors,
+            comparison_registry=research.registry_snapshot(F.REGISTRY),
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
@@ -395,6 +424,7 @@ def cmd_evaluate(args) -> None:
             strategy_sha256=RESEARCH_SPECS[args.factor]["strategy_sha256"],
         )
         campaign = epochs.load_campaign("research", args.campaign)
+        epoch = epochs.load_epoch("research", args.campaign, args.epoch)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     namespace = argparse.Namespace(factor=args.factor)
@@ -412,11 +442,21 @@ def cmd_evaluate(args) -> None:
                 campaign["snapshot"].get("discovery_asset_identity_digest")
             ),
             record_ledger=False,
+            input_generation=campaign.get("input_generation"),
         )
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
     factor, result = targets[0], results[0]
-    relationships = research.factor_relationships(panel, df, factor, F.REGISTRY)
+    comparison_registry = (
+        research.bind_registry_snapshot(
+            epoch["comparison_registry"], F.REGISTRY,
+        )
+        if epoch.get("comparison_registry") is not None
+        else list(F.REGISTRY)
+    )
+    relationships = research.factor_relationships(
+        panel, df, factor, comparison_registry,
+    )
     report, context = _persist_discovery_result(
         args, panel, factor, result, relationships,
     )
@@ -470,6 +510,13 @@ def cmd_epoch_evaluate(args) -> None:
     if missing:
         raise SystemExit(f"등록되지 않은 팩터: {missing}")
     factors = [F.REGISTRY[name] for name in names]
+    comparison_registry = (
+        research.bind_registry_snapshot(
+            epoch["comparison_registry"], F.REGISTRY,
+        )
+        if epoch.get("comparison_registry") is not None
+        else list(F.REGISTRY)
+    )
     attempted = trials.TrialLedger(run.TRIAL_DB).definition_hashes()
     for factor in factors:
         if factor.name not in RESEARCH_SPECS:
@@ -503,10 +550,11 @@ def cmd_epoch_evaluate(args) -> None:
             discovery_asset_identity_digest=(
                 campaign["snapshot"].get("discovery_asset_identity_digest")
             ),
+            input_generation=campaign.get("input_generation"),
         )
         started = time.perf_counter()
         relationships = research.factor_relationships_batch(
-            panel, df, targets, F.REGISTRY,
+            panel, df, targets, comparison_registry,
             cache_root=run.CACHE / "registry-signals",
             snapshot_digest=campaign["snapshot"]["discovery_input_digest"],
             asset_identity_digest=campaign["snapshot"].get(
@@ -517,7 +565,7 @@ def cmd_epoch_evaluate(args) -> None:
             "discovery.relationships_batch",
             started,
             factor_count=len(targets),
-            registry_count=len(F.REGISTRY),
+            registry_count=len(comparison_registry),
         )
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
@@ -551,7 +599,19 @@ def cmd_campaign_finalize(args) -> None:
     run.load_registry()
     panel = run._load()
     try:
-        path = epochs.finalize_campaign("research", args.campaign)
+        campaign = epochs.load_campaign("research", args.campaign)
+        preliminary = epochs.preview_discovery_qualified(
+            "research", args.campaign,
+        )
+        batch_orthogonality = run._campaign_batch_orthogonality(
+            campaign,
+            panel,
+            [F.REGISTRY[name] for name in preliminary],
+        )
+        path = epochs.finalize_campaign(
+            "research", args.campaign,
+            batch_orthogonality=batch_orthogonality,
+        )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     campaign = epochs.load_campaign("research", args.campaign)
@@ -696,6 +756,7 @@ def cmd_campaign_reveal(args) -> None:
         ),
         confirmation_mode=campaign["oos"]["mode"],
         preloaded_panel=panel,
+        input_generation=campaign.get("input_generation"),
     )
     confirmations = []
     for factor, result in zip(factors, results, strict=True):

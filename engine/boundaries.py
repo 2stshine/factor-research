@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 
-QUALIFICATION_POLICY = "all_discovery_non_reject_by_pass_v1"
+QUALIFICATION_POLICY = "by_pass_batch_orthogonal_lexical_v2"
 HISTORICAL_HOLDOUT_MODE = "trailing_historical_holdout"
 PROSPECTIVE_HOLDOUT_MODE = "prospective_holdout"
 
@@ -268,7 +268,7 @@ class CampaignWindow:
 
 
 def validate_manifest(campaign: dict, *, expected_oos_months: int) -> CampaignWindow:
-    """Authenticate every stored epoch-1.6 boundary from its frozen inputs."""
+    """Authenticate every stored epoch-1.7 boundary from its frozen inputs."""
     snapshot = campaign.get("snapshot") or {}
     discovery = campaign.get("discovery") or {}
     oos = campaign.get("oos") or {}

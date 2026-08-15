@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from engine import epochs, gate, research
+from engine import epochs, gate, research, research_policy, silver
 from engine.factors import Factor, Registry
 from scripts import run as run_script
 
@@ -28,6 +28,21 @@ def _make_factor(name, compute=_identity):
         hypothesis=f"{name} 사전등록 가설",
         predicted_sign=1,
         compute=compute,
+    )
+
+
+def _input_feasibility(factors):
+    return research_policy.input_feasibility_artifact(
+        factors,
+        snapshot_digest="2" * 64,
+        signal_start=str(gate.RESEARCH_START),
+        signal_end="2023-04",
+        metrics={
+            factor.name: {"coverage": 1.0, "monthly_coverage_p10": 1.0}
+            for factor in factors
+        },
+        minimum_coverage=gate.TH["coverage"],
+        minimum_monthly_p10=gate.TH["monthly_coverage_p10"],
     )
 
 
@@ -494,6 +509,71 @@ def test_batch_relationships_reuses_only_exact_content_bound_registry_cache(
         )
 
 
+def test_epoch_registry_snapshot_ignores_additions_but_rejects_definition_drift():
+    registry = Registry()
+    first = registry.add(_make_factor("first"))
+    snapshot = research.registry_snapshot(registry)
+
+    registry.add(_make_factor("added_later"))
+    assert [factor.name for factor in research.bind_registry_snapshot(
+        snapshot, registry,
+    )] == ["first"]
+
+    changed = Registry()
+    changed.add(_make_factor("first", _negative))
+    with pytest.raises(ValueError, match="정의가 바뀌었습니다"):
+        research.bind_registry_snapshot(snapshot, changed)
+
+
+def test_campaign_generation_uses_one_light_certified_metadata_query(monkeypatch):
+    validation = {
+        "quality_run_id": "return-run",
+        "action_snapshot_run_id": "action-run",
+        "methodology_version": silver.TOTAL_RETURN_METHOD,
+        "dividend_treatment": silver.TOTAL_RETURN_DIVIDEND_TREATMENT,
+        "coverage_start": "2015-01-02",
+        "coverage_end": "2026-08-10",
+        "action_snapshot_schema_version": silver.TOTAL_RETURN_ACTION_SNAPSHOT_SCHEMA,
+        "action_snapshot_manifest_sha256": "a" * 64,
+        "action_snapshot_body_digest": "b" * 64,
+        "asset_identity_digest": "c" * 64,
+        "evidence_sha256": "d" * 64,
+    }
+    monkeypatch.setattr(
+        silver, "verify_total_return_validation_evidence",
+        lambda evidence: dict(evidence),
+    )
+    generation = silver.research_generation_evidence(validation)
+    calls = []
+
+    def read_once(_conn, sql, _params=None):
+        calls.append(sql)
+        return pd.DataFrame([{
+            "quality_run_id": "return-run",
+            "contract_status": "CERTIFIED",
+            "methodology_version": silver.TOTAL_RETURN_METHOD,
+            "dividend_treatment": silver.TOTAL_RETURN_DIVIDEND_TREATMENT,
+            "coverage_start": "2015-01-02",
+            "coverage_end": "2026-08-10",
+            "action_snapshot_run_id": "action-run",
+            "action_manifest_sha256": "a" * 64,
+            "action_body_digest": "b" * 64,
+            "return_quality_status": "CERTIFIED",
+            "action_quality_status": "CERTIFIED",
+            "action_schema_version": silver.TOTAL_RETURN_ACTION_SNAPSHOT_SCHEMA,
+            "persisted_action_manifest_sha256": "a" * 64,
+            "persisted_action_body_digest": "b" * 64,
+        }])
+
+    monkeypatch.setattr(silver, "read_frame", read_once)
+    assert silver.verify_live_research_generation(object(), generation) == generation
+    assert calls == [silver.RESEARCH_GENERATION_SQL]
+
+    tampered = dict(generation, quality_run_id="other-run")
+    with pytest.raises(RuntimeError, match="digest가 다릅니다"):
+        silver.verify_live_research_generation(object(), tampered)
+
+
 def test_abort_open_campaign_preserves_candidates_and_does_not_use_oos(tmp_path):
     root = tmp_path / "research"
     epochs.start_campaign(
@@ -516,6 +596,7 @@ def test_abort_open_campaign_preserves_candidates_and_does_not_use_oos(tmp_path)
         "epoch-001",
         [factor],
         strategy_digests={"candidate": "6" * 64},
+        input_feasibility=_input_feasibility([factor]),
     )
 
     epochs.abort_open_campaign(

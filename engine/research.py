@@ -20,6 +20,7 @@ from engine import research_policy
 
 
 _REGISTRY_SIGNAL_CACHE_SCHEMA = "registry-signal-cache-v1"
+_REGISTRY_SNAPSHOT_SCHEMA = "epoch-comparison-registry-v1"
 
 
 class RegistrySignalCacheError(ValueError):
@@ -487,6 +488,79 @@ def _read_history(path: Path) -> list[dict]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def attempted_factor_names(research_dir: str | Path = "research") -> frozenset[str]:
+    """Return factor names already committed to the append-only trial history."""
+    return frozenset(
+        str(row["factor"])
+        for row in _read_history(Path(research_dir) / "history.jsonl")
+        if isinstance(row.get("factor"), str) and row["factor"]
+    )
+
+
+def registry_snapshot(registry: Registry) -> dict:
+    """Freeze the exact novelty-comparison registry for one epoch.
+
+    Candidate files created for a later epoch must not expand an already
+    running epoch's comparison set or invalidate its signal cache.  Existing
+    definitions are still content-bound and may neither disappear nor change.
+    """
+    factors = [
+        {
+            "name": factor.name,
+            "definition_hash": factor.definition_hash,
+            "category": factor.category,
+            "predicted_sign": factor.predicted_sign,
+        }
+        for factor in sorted(registry, key=lambda item: item.name)
+    ]
+    payload = {
+        "schema_version": _REGISTRY_SNAPSHOT_SCHEMA,
+        "factors": factors,
+    }
+    payload["registry_digest"] = hashlib.sha256(
+        _canonical_json_bytes(payload)
+    ).hexdigest()
+    return payload
+
+
+def bind_registry_snapshot(snapshot: dict, registry: Registry) -> list[Factor]:
+    """Resolve only frozen definitions; ignore later additions, fail on drift."""
+    if not isinstance(snapshot, dict):
+        raise ValueError("epoch comparison registry snapshot이 없습니다")
+    payload = dict(snapshot)
+    observed_digest = payload.pop("registry_digest", None)
+    if (
+        payload.get("schema_version") != _REGISTRY_SNAPSHOT_SCHEMA
+        or not isinstance(payload.get("factors"), list)
+        or observed_digest != hashlib.sha256(
+            _canonical_json_bytes(payload)
+        ).hexdigest()
+    ):
+        raise ValueError("epoch comparison registry snapshot이 손상됐습니다")
+    resolved: list[Factor] = []
+    names: set[str] = set()
+    for row in payload["factors"]:
+        if not isinstance(row, dict) or set(row) != {
+            "name", "definition_hash", "category", "predicted_sign",
+        }:
+            raise ValueError("epoch comparison registry row schema가 다릅니다")
+        name = row.get("name")
+        if not isinstance(name, str) or name in names or name not in registry:
+            raise ValueError(f"epoch comparison registry factor가 없습니다: {name}")
+        factor = registry[name]
+        expected = {
+            "name": factor.name,
+            "definition_hash": factor.definition_hash,
+            "category": factor.category,
+            "predicted_sign": factor.predicted_sign,
+        }
+        if row != expected:
+            raise ValueError(f"epoch comparison registry 정의가 바뀌었습니다: {name}")
+        names.add(name)
+        resolved.append(factor)
+    return resolved
 
 
 def assert_new_candidate(

@@ -15,7 +15,7 @@
 ## 목적
 
 같은 후보의 OOS 결과를 본 뒤 정의를 바꾸는 과최적화와, 사람이 좋아 보이는 후보만
-confirmation에 보내는 선택 편향을 함께 막는다. 새 campaign은 `epoch-1.6`을 적용하며 역사적
+confirmation에 보내는 선택 편향을 함께 막는다. 새 campaign은 `epoch-1.7`을 적용하며 역사적
 cycle과 산출물은 원래 규칙의 기록으로 보존한다. 과거 결과를 본 후보에 새 경계를 소급 적용하지
 않는다. 공개 구간은 `research/oos-exposures/`에 영구 기록하며, 같은 달력 구간을 다시 쓰면
 manifest에 재사용 사실을 남긴다.
@@ -27,8 +27,8 @@ campaign OPEN
   └─ epoch OPEN → 사전등록 후보 discovery 평가 → epoch CLOSED
   └─ 필요하면 다음 epoch 반복
 campaign-finalize
-  ├─ 비REJECT ∩ discovery BY PASS 전체 → AWAITING_IMPLEMENTATION
-  └─ 해당 후보 없음                         → CLOSED_NO_QUALIFIED
+  ├─ 비REJECT ∩ discovery BY PASS ∩ batch 대표 → AWAITING_IMPLEMENTATION
+  └─ 해당 후보 없음                            → CLOSED_NO_QUALIFIED
 AWAITING_IMPLEMENTATION → 전 후보 SQL·hash·parity PASS → READY_FOR_CONFIRMATION
 READY_FOR_CONFIRMATION → 사용자 요청·readiness PASS → REVEALED(종료)
 입력 identity 불일치 → CLOSED_INVALIDATED_INPUT_IDENTITY / OOS NOT_USED
@@ -85,12 +85,22 @@ uv run python scripts/research.py epoch-start \
 
 후보 파일을 모두 작성한 뒤 결과를 보기 전에 한 번에 사전등록한다. manifest에는 이름, family,
 definition hash, `snapshot_cutoff`, discovery·embargo·OOS 경계와 ruleset을 저장한다. 소스가
-바뀌거나 목록에 없는 후보를 평가하면 중단한다.
+바뀌거나 목록에 없는 후보를 평가하면 중단한다. 등록 전에 결과를 쓰지 않는 구조 검사로 동일
+economic family 중복, net/pretax 동일 산식 변형, 과거 시행과 같은 구조, 5개 이상 batch의 category
+편중을 거부한다. 같은 discovery snapshot에서 forward-return label 없이 T1.1 전체·월별 입력
+커버리지도 미리 계산해 예정된 실행 불가능 후보를 등록 전에 차단한다.
 
 snapshot과 discovery에는 같은 범위의 월말 `(trade_date, asset_id, ticker)` identity digest를,
 historical OOS에는 비활성 종목 판정에 쓰는 closure월 identity digest도 동결한다. campaign
-시작·평가·Gold SQL parity·reveal은 동일한 read-only `REPEATABLE READ` snapshot의 live RDS와
-대조하며, 불일치나 PIT ticker 누락·중복은 결과를 만들기 전에 hard fail한다.
+시작 때 Silver lineage와 이 identity를 한 번 완전 대사하고 return/action run ID, action
+manifest/body digest, validation evidence digest를 generation artifact로 동결한다. 이후 평가·Gold
+SQL parity·null·reveal의 read-only 단계는 작은 metadata query로 같은 generation과 `CERTIFIED`
+상태를 fail-close 재확인한다. generation이 바뀌거나 PIT ticker binding을 로컬 snapshot에서
+재현하지 못하면 결과를 만들기 전에 중단하며, 최종 Gold transaction은 전체 검증을 다시 한다.
+epoch 시작 시 novelty 비교 registry의 이름·definition hash·방향·category도 동결한다. 다음 epoch
+후보 파일을 추가해도 열린 epoch는 이 frozen set만 사용하므로 signal cache가 무효화되지 않는다.
+귀무 계산은 generation·ruleset·Gold signal digest·family size·OOS 경계가 같은 content-addressed
+artifact만 재사용하고 campaign별 family digest는 출력 증거에 다시 묶는다.
 
 ## Discovery와 성찰
 
@@ -119,9 +129,10 @@ uv run python scripts/research.py campaign-finalize --campaign campaign-001
 ```
 
 모든 등록 정의를 하나의 family로 묶어 HAC p값에 BY를 한 번 적용한다. p값이 없으면 `p=1`로
-포함한다. 그 결과 **discovery 최종 판정이 `REJECT`가 아니고 BY가 `PASS`인 후보 전부**를
-`qualified_factors`로 자동 확정한다. 사람은 후보를 추가·제외하거나 일부만 골라 확인할 수 없다.
-정책 식별자는 `all_discovery_non_reject_by_pass_v1`이다.
+포함한다. 그 결과 discovery 최종 판정이 `REJECT`가 아니고 BY가 `PASS`인 후보끼리만, 결과를
+보지 않는 이름 사전순 대표 규칙과 월별 신호 상관 0.70 gate를 적용한다. 상관 conflict의 대표만
+`qualified_factors`로 자동 확정하며 사람은 후보를 추가·제외하거나 일부만 골라 확인할 수 없다.
+정책 식별자는 `by_pass_batch_orthogonal_lexical_v2`이다.
 
 결과와 family digest는 `multiple-testing.json`에 고정한다. 한 명도 통과하지 못하면
 `CLOSED_NO_QUALIFIED`로 끝내며 성공할 때까지 epoch을 추가하지 않는다. 후보 소스나 definition

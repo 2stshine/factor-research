@@ -363,6 +363,7 @@ def measure(
     verbose: bool = True,
     checkpoint_path: str | Path | None = None,
     timing_callback: Callable[..., None] | None = None,
+    input_generation_digest: str | None = None,
 ) -> pd.DataFrame:
     """Estimate family-wise false promotion with production-sized null campaigns.
 
@@ -459,13 +460,14 @@ def measure(
         checkpoint_entries: list[dict] = []
         signature = None
     else:
+        panel_digest = panel_engine.snapshot_digest(panel)
         legacy_signature = {
             "checkpoint_schema": 1,
             "n": n,
             "seed": seed,
             "trial_count": trial_count,
             "prior_sharpes": _json_ready(prior_sharpes),
-            "actual_panel_digest": panel_engine.snapshot_digest(panel),
+            "actual_panel_digest": panel_digest,
             "existing_signal_digest": _existing_signal_digest(existing),
             "gate_thresholds": _json_ready(gate.TH),
             "row_scope": _json_ready(row_scope),
@@ -474,6 +476,17 @@ def measure(
             key: value for key, value in legacy_signature.items()
             if key not in {"checkpoint_schema", "trial_count", "prior_sharpes"}
         }
+        if input_generation_digest is not None:
+            if (
+                not isinstance(input_generation_digest, str)
+                or len(input_generation_digest) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in input_generation_digest
+                )
+            ):
+                raise ValueError("귀무 보정 input generation digest가 잘못되었습니다")
+            signature["input_generation_digest"] = input_generation_digest
         signature["row_scope"] = _json_ready({
                 key: value for key, value in row_scope.items()
                 if key not in _REBOUND_EVIDENCE_FIELDS

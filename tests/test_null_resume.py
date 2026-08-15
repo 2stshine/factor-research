@@ -70,6 +70,7 @@ def _measure(
     seed=20260731,
     discovery_family_digest="standalone",
     oos_family_digest="standalone",
+    input_generation_digest="e" * 64,
 ):
     return null_engine.measure(
         panel,
@@ -83,6 +84,7 @@ def _measure(
         discovery_family_digest=discovery_family_digest,
         oos_family_digest=oos_family_digest,
         checkpoint_path=checkpoint_path,
+        input_generation_digest=input_generation_digest,
         verbose=False,
     )
 
@@ -186,6 +188,17 @@ def test_null_calculation_cache_rebinds_campaign_family_evidence(
         if column not in {"discovery_family_digest", "oos_family_digest"}
     ]
     pd.testing.assert_frame_equal(first[comparable], rebound[comparable])
+
+    control["calls"] = 0
+    _measure(
+        _confirmation_panel(),
+        checkpoint_path=cache_root,
+        discovery_family_digest="c" * 64,
+        oos_family_digest="d" * 64,
+        input_generation_digest="f" * 64,
+    )
+    assert control["calls"] == 16
+    assert len(list(cache_root.glob("*.jsonl"))) == 2
 
 
 def test_null_checkpoint_discards_only_an_incomplete_final_append(

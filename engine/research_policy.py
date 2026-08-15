@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import math
 import re
 from dataclasses import dataclass, field
@@ -21,6 +22,20 @@ COMMON_EVALUATION_START = pd.Period("2018-03", freq="M")
 MAX_FACTOR_LOOKBACK_MONTHS = 36
 RESEARCH_MARKETS = frozenset({"KOSPI", "KOSDAQ"})
 TRADING_DAYS_PER_MONTH = 21
+
+CANDIDATE_BATCH_POLICY_SCHEMA = "candidate-batch-policy-v1"
+INPUT_FEASIBILITY_SCHEMA = "candidate-input-feasibility-v1"
+MIN_BATCH_CATEGORY_COUNT = 3
+MIN_BATCH_SIZE_FOR_CATEGORY_DIVERSITY = 5
+
+# Net- and pretax-income variants are accounting presentations of the same
+# underlying formula shape.  Replacing only these explicitly reviewed aliases
+# catches the repeated variants that motivated this rule without pretending
+# unrelated accounting fields are economically interchangeable.
+_STRUCTURAL_FIELD_ALIASES = {
+    "net_income_ttm": "__income_ttm__",
+    "pretax_income_ttm": "__income_ttm__",
+}
 
 _HISTORY_METHODS = frozenset({"diff", "pct_change", "rolling", "shift"})
 _DIRECTIONAL_HISTORY_METHODS = frozenset({"diff", "pct_change", "shift"})
@@ -76,6 +91,229 @@ _FORBIDDEN_FACTOR_COLUMNS = _FORBIDDEN_CANDIDATE_INPUTS | frozenset({
     "ticker_match_count",
     "total_return_quality_run_id",
 })
+
+
+class _StructuralFieldNormalizer(ast.NodeTransformer):
+    def visit_FunctionDef(self, node: ast.FunctionDef):
+        node.name = "compute"
+        return self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant):
+        if isinstance(node.value, str) and node.value in _STRUCTURAL_FIELD_ALIASES:
+            return ast.copy_location(
+                ast.Constant(_STRUCTURAL_FIELD_ALIASES[node.value]), node,
+            )
+        return node
+
+
+def _canonical_digest(payload: dict) -> str:
+    body = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(body).hexdigest()
+
+
+def factor_structure_fingerprint(factor) -> str | None:
+    """Return an outcome-free fingerprint for reviewed formula equivalence.
+
+    Inline lambdas are deliberately excluded: their inspected source often
+    contains unrelated caller syntax. Production candidate files use a named
+    ``compute`` function, which gives a stable AST and exact declared inputs.
+    """
+    source = factor.source
+    if not source:
+        return None
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    if any(isinstance(node, ast.Lambda) for node in ast.walk(tree)):
+        return None
+    normalized = _StructuralFieldNormalizer().visit(tree)
+    ast.fix_missing_locations(normalized)
+    needs = [
+        _STRUCTURAL_FIELD_ALIASES.get(str(value), str(value))
+        for value in factor.needs
+    ]
+    payload = {
+        "ast": ast.dump(normalized, annotate_fields=True, include_attributes=False),
+        "needs": sorted(needs),
+        "params": factor.params,
+        "rebalance_months": factor.rebalance_months,
+    }
+    return _canonical_digest(payload)
+
+
+def candidate_batch_policy(factors, *, existing_factors=()) -> dict:
+    """Validate prospective candidate diversity without observing returns."""
+    ordered = sorted(factors, key=lambda factor: factor.name)
+    names = [factor.name for factor in ordered]
+    if len(names) != len(set(names)):
+        raise ValueError("candidate batch factor 이름은 고유해야 합니다")
+    existing = sorted(
+        (factor for factor in existing_factors if factor.name not in set(names)),
+        key=lambda factor: factor.name,
+    )
+    rows = []
+    signatures: dict[str, list[str]] = {}
+    for factor in ordered:
+        fingerprint = factor_structure_fingerprint(factor)
+        rows.append({
+            "factor": factor.name,
+            "family": factor.family or factor.name,
+            "category": factor.category,
+            "definition_hash": factor.definition_hash,
+            "structure_fingerprint": fingerprint,
+        })
+        if fingerprint is not None:
+            signatures.setdefault(fingerprint, []).append(factor.name)
+
+    violations: list[dict] = []
+    families: dict[str, list[str]] = {}
+    for row in rows:
+        families.setdefault(row["family"], []).append(row["factor"])
+    for family, members in sorted(families.items()):
+        if len(members) > 1:
+            violations.append({
+                "rule": "one_candidate_per_economic_family",
+                "family": family,
+                "factors": sorted(members),
+            })
+    for fingerprint, members in sorted(signatures.items()):
+        if len(members) > 1:
+            violations.append({
+                "rule": "no_same_formula_variants_in_batch",
+                "structure_fingerprint": fingerprint,
+                "factors": sorted(members),
+            })
+
+    existing_by_signature: dict[str, list[str]] = {}
+    for factor in existing:
+        fingerprint = factor_structure_fingerprint(factor)
+        if fingerprint is not None:
+            existing_by_signature.setdefault(fingerprint, []).append(factor.name)
+    for row in rows:
+        fingerprint = row["structure_fingerprint"]
+        matches = sorted(existing_by_signature.get(fingerprint, []))
+        if fingerprint is not None and matches:
+            violations.append({
+                "rule": "no_structural_retest_of_attempted_registry",
+                "factor": row["factor"],
+                "structure_fingerprint": fingerprint,
+                "existing_factors": matches,
+            })
+
+    categories = sorted({row["category"] for row in rows})
+    if (
+        len(rows) >= MIN_BATCH_SIZE_FOR_CATEGORY_DIVERSITY
+        and len(categories) < MIN_BATCH_CATEGORY_COUNT
+    ):
+        violations.append({
+            "rule": "minimum_mechanism_category_diversity",
+            "minimum_categories": MIN_BATCH_CATEGORY_COUNT,
+            "observed_categories": categories,
+        })
+    artifact = {
+        "schema_version": CANDIDATE_BATCH_POLICY_SCHEMA,
+        "policy": "outcome_free_structure_and_category_v1",
+        "candidates": rows,
+        "attempted_registry_factors": [factor.name for factor in existing],
+        "category_count": len(categories),
+        "violations": violations,
+        "status": "PASS" if not violations else "FAIL",
+    }
+    artifact["evidence_digest"] = _canonical_digest(artifact)
+    return artifact
+
+
+def assert_candidate_batch_policy(artifact: dict) -> None:
+    body = dict(artifact)
+    observed_digest = body.pop("evidence_digest", None)
+    valid = (
+        artifact.get("schema_version") == CANDIDATE_BATCH_POLICY_SCHEMA
+        and artifact.get("policy") == "outcome_free_structure_and_category_v1"
+        and observed_digest == _canonical_digest(body)
+    )
+    if not valid:
+        raise ValueError("candidate batch 구조 정책 artifact가 손상됐습니다")
+    if artifact.get("status") != "PASS" or artifact.get("violations"):
+        raise ValueError(
+            "candidate batch 구조·다양성 정책 위반: "
+            f"{artifact.get('violations')}"
+        )
+
+
+def input_feasibility_artifact(
+    factors,
+    *,
+    snapshot_digest: str,
+    signal_start: str,
+    signal_end: str,
+    metrics: dict[str, dict],
+    minimum_coverage: float,
+    minimum_monthly_p10: float,
+) -> dict:
+    """Bind label-free coverage checks to one immutable discovery snapshot."""
+    ordered = sorted(factors, key=lambda factor: factor.name)
+    rows = []
+    for factor in ordered:
+        observed = metrics.get(factor.name) or {}
+        coverage = float(observed.get("coverage", 0.0))
+        monthly_p10 = float(observed.get("monthly_coverage_p10", 0.0))
+        rows.append({
+            "factor": factor.name,
+            "definition_hash": factor.definition_hash,
+            "coverage": coverage,
+            "monthly_coverage_p10": monthly_p10,
+            "status": (
+                "PASS" if coverage >= minimum_coverage
+                and monthly_p10 >= minimum_monthly_p10 else "FAIL"
+            ),
+        })
+    artifact = {
+        "schema_version": INPUT_FEASIBILITY_SCHEMA,
+        "policy": "label_free_discovery_coverage_v1",
+        "snapshot_digest": snapshot_digest,
+        "signal_start": signal_start,
+        "signal_end": signal_end,
+        "minimum_coverage": minimum_coverage,
+        "minimum_monthly_coverage_p10": minimum_monthly_p10,
+        "factors": rows,
+        "status": "PASS" if all(row["status"] == "PASS" for row in rows) else "FAIL",
+    }
+    artifact["evidence_digest"] = _canonical_digest(artifact)
+    return artifact
+
+
+def assert_input_feasibility_artifact(
+    artifact: dict,
+    factors,
+    *,
+    snapshot_digest: str,
+) -> None:
+    body = dict(artifact)
+    observed_digest = body.pop("evidence_digest", None)
+    expected = sorted((factor.name, factor.definition_hash) for factor in factors)
+    observed = sorted(
+        (row.get("factor"), row.get("definition_hash"))
+        for row in artifact.get("factors", [])
+    )
+    valid = (
+        artifact.get("schema_version") == INPUT_FEASIBILITY_SCHEMA
+        and artifact.get("policy") == "label_free_discovery_coverage_v1"
+        and artifact.get("snapshot_digest") == snapshot_digest
+        and observed == expected
+        and observed_digest == _canonical_digest(body)
+    )
+    if not valid:
+        raise ValueError("candidate 입력 실행가능성 artifact가 손상됐습니다")
+    failed = [
+        row.get("factor") for row in artifact.get("factors", [])
+        if row.get("status") != "PASS"
+    ]
+    if artifact.get("status") != "PASS" or failed:
+        raise ValueError(f"candidate 입력 커버리지 사전검사 실패: {failed}")
 
 
 def _positive_int(value, *, label: str) -> int:

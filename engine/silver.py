@@ -295,6 +295,34 @@ WHERE source = 'KRX'
 """
 
 
+RESEARCH_GENERATION_SQL = """
+SELECT
+    p.quality_run_id::text AS quality_run_id,
+    p.status AS contract_status,
+    p.methodology_version,
+    p.dividend_treatment,
+    p.coverage_start,
+    p.coverage_end,
+    (p.metadata->>'action_snapshot_run_id') AS action_snapshot_run_id,
+    (p.metadata->'action_snapshot'->>'manifest_sha256') AS action_manifest_sha256,
+    (p.metadata->'action_snapshot'->>'body_digest') AS action_body_digest,
+    return_q.status AS return_quality_status,
+    action_q.status AS action_quality_status,
+    action.schema_version AS action_schema_version,
+    action.manifest_sha256 AS persisted_action_manifest_sha256,
+    action.body_digest AS persisted_action_body_digest
+FROM public.price_return_contract p
+JOIN public.dq_run return_q ON return_q.run_id = p.quality_run_id
+JOIN public.dart_action_snapshot_contract action
+  ON action.quality_run_id =
+     (p.metadata->>'action_snapshot_run_id')::uuid
+JOIN public.dq_run action_q ON action_q.run_id = action.quality_run_id
+WHERE p.source = 'KRX'
+  AND p.asset_type = 'stock'
+  AND p.field_name = 'total_return_close'
+"""
+
+
 TOTAL_RETURN_SCHEMA_AUDIT_SQL = """
 SELECT
     EXISTS (
@@ -4966,6 +4994,148 @@ def verify_live_total_return_contract(
             f"후 패널을 다시 build하세요: {mismatches}"
         )
     return actual
+
+
+def research_generation_evidence(
+    validation_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Reduce one fully authenticated Silver snapshot to its immutable IDs.
+
+    This artifact is created only after ``verify_live_total_return_contract``
+    and the complete asset-identity checks have passed.  Later read-only
+    campaign stages may then verify the certified generation with one small
+    metadata query instead of rescanning millions of price and lineage rows.
+    """
+    bound = verify_total_return_validation_evidence(validation_evidence)
+    payload = {
+        "schema_version": "research-input-generation-v1",
+        "quality_run_id": str(bound["quality_run_id"]),
+        "action_snapshot_run_id": str(bound["action_snapshot_run_id"]),
+        "methodology_version": str(bound["methodology_version"]),
+        "dividend_treatment": str(bound["dividend_treatment"]),
+        "coverage_start": _date_value(
+            bound["coverage_start"], label="generation coverage_start",
+        ).isoformat(),
+        "coverage_end": _date_value(
+            bound["coverage_end"], label="generation coverage_end",
+        ).isoformat(),
+        "action_snapshot_schema_version": str(
+            bound["action_snapshot_schema_version"]
+        ),
+        "action_snapshot_manifest_sha256": str(
+            bound["action_snapshot_manifest_sha256"]
+        ),
+        "action_snapshot_body_digest": str(
+            bound["action_snapshot_body_digest"]
+        ),
+        "asset_identity_digest": str(bound["asset_identity_digest"]),
+        "validation_evidence_sha256": str(bound["evidence_sha256"]),
+    }
+    payload["generation_digest"] = hashlib.sha256(json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    return payload
+
+
+def verify_research_generation_evidence(evidence: Any) -> dict[str, Any]:
+    """Authenticate the local campaign-level generation certificate."""
+    if not isinstance(evidence, dict):
+        raise RuntimeError("campaign Silver generation evidence가 없습니다")
+    payload = dict(evidence)
+    digest = _sha256_text(
+        payload.pop("generation_digest", None),
+        label="campaign generation_digest",
+    )
+    required = {
+        "schema_version", "quality_run_id", "action_snapshot_run_id",
+        "methodology_version", "dividend_treatment", "coverage_start",
+        "coverage_end", "action_snapshot_schema_version",
+        "action_snapshot_manifest_sha256", "action_snapshot_body_digest",
+        "asset_identity_digest", "validation_evidence_sha256",
+    }
+    if set(payload) != required or payload.get("schema_version") != (
+        "research-input-generation-v1"
+    ):
+        raise RuntimeError("campaign Silver generation evidence schema가 다릅니다")
+    for key in (
+        "action_snapshot_manifest_sha256", "action_snapshot_body_digest",
+        "asset_identity_digest", "validation_evidence_sha256",
+    ):
+        _sha256_text(payload.get(key), label=f"campaign {key}")
+    actual = hashlib.sha256(json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    if actual != digest:
+        raise RuntimeError("campaign Silver generation evidence digest가 다릅니다")
+    return dict(evidence)
+
+
+def verify_live_research_generation(
+    conn, expected: dict[str, Any],
+) -> dict[str, Any]:
+    """Fail closed if the live certified generation changed mid-campaign.
+
+    The complete lineage/identity scan is deliberately not repeated here; it
+    was bound when the campaign was created.  Certified run IDs plus the
+    content-addressed action manifest/body digests are the database generation
+    key.  Any rebuild or certification change therefore invalidates the
+    campaign before candidate SQL or sealed OOS is evaluated.
+    """
+    bound = verify_research_generation_evidence(expected)
+    row = _one_row(
+        read_frame(conn, RESEARCH_GENERATION_SQL),
+        label="현재 RDS research generation",
+    )
+    actual = {
+        "quality_run_id": str(row.get("quality_run_id") or ""),
+        "action_snapshot_run_id": str(
+            row.get("action_snapshot_run_id") or ""
+        ),
+        "methodology_version": str(row.get("methodology_version") or ""),
+        "dividend_treatment": str(row.get("dividend_treatment") or ""),
+        "coverage_start": _date_value(
+            row.get("coverage_start"), label="research generation coverage_start",
+        ).isoformat(),
+        "coverage_end": _date_value(
+            row.get("coverage_end"), label="research generation coverage_end",
+        ).isoformat(),
+        "action_snapshot_schema_version": str(
+            row.get("action_schema_version") or ""
+        ),
+        "action_snapshot_manifest_sha256": str(
+            row.get("persisted_action_manifest_sha256") or ""
+        ),
+        "action_snapshot_body_digest": str(
+            row.get("persisted_action_body_digest") or ""
+        ),
+    }
+    expected_live = {key: bound[key] for key in actual}
+    status = {
+        "contract": str(row.get("contract_status") or ""),
+        "return_quality": str(row.get("return_quality_status") or ""),
+        "action_quality": str(row.get("action_quality_status") or ""),
+    }
+    mirrored = {
+        "manifest": str(row.get("action_manifest_sha256") or "")
+        == actual["action_snapshot_manifest_sha256"],
+        "body": str(row.get("action_body_digest") or "")
+        == actual["action_snapshot_body_digest"],
+    }
+    if actual != expected_live or set(status.values()) != {"CERTIFIED"} or not all(
+        mirrored.values()
+    ):
+        raise RuntimeError(
+            "campaign 도중 Silver generation이 변경되었거나 인증이 해제됐습니다: "
+            f"expected={expected_live}, actual={actual}, status={status}, "
+            f"metadata_parity={mirrored}"
+        )
+    return bound
 
 
 def load_price_snapshot(conn) -> pd.DataFrame:

@@ -21,7 +21,7 @@ from engine import research_policy, silver
 from engine.research_policy import COMMON_EVALUATION_START
 
 
-RULESET_VERSION = "fr-3.13.0"
+RULESET_VERSION = "fr-3.14.0"
 RESEARCH_START = COMMON_EVALUATION_START
 EVALUATION_PHASES = {"discovery", "full"}
 

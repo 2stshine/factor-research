@@ -18,6 +18,7 @@ from engine import gate
 from engine import implementation
 from engine import null as null_engine
 from engine import research
+from engine import research_policy
 from engine import silver
 from engine.boundaries import (
     PROSPECTIVE_HOLDOUT_MODE,
@@ -361,6 +362,76 @@ def _strategy_sha(factor: Factor) -> str:
 
 def _strategy_digests(factors: list[Factor]) -> dict[str, str]:
     return {factor.name: _strategy_sha(factor) for factor in factors}
+
+
+def _net_income_ratio(frame):
+    return frame["net_income_ttm"] / frame["total_liabilities"]
+
+
+def _pretax_income_ratio(frame):
+    return frame["pretax_income_ttm"] / frame["total_liabilities"]
+
+
+def _input_feasibility(factors: list[Factor], snapshot_digest: str = "b" * 64):
+    return research_policy.input_feasibility_artifact(
+        factors,
+        snapshot_digest=snapshot_digest,
+        signal_start=str(gate.RESEARCH_START),
+        signal_end="2023-05",
+        metrics={
+            factor.name: {"coverage": 1.0, "monthly_coverage_p10": 1.0}
+            for factor in factors
+        },
+        minimum_coverage=gate.TH["coverage"],
+        minimum_monthly_p10=gate.TH["monthly_coverage_p10"],
+    )
+
+
+def _batch_orthogonality(factors: list[Factor]):
+    names = sorted(factor.name for factor in factors)
+    return {
+        "schema_version": "gold-batch-orthogonality-v1",
+        "policy": "lexical_first_independent_of_research_outcomes_v1",
+        "threshold": gate.TH["max_gold_corr"],
+        "minimum_comparison_months": gate.TH["min_gold_corr_months"],
+        "candidate_factors": names,
+        "pairs": [
+            {
+                "left": left,
+                "right": right,
+                "median_absolute_spearman": 0.0,
+                "comparison_months": gate.TH["min_gold_corr_months"],
+                "conflict": False,
+            }
+            for index, left in enumerate(names)
+            for right in names[index + 1:]
+        ],
+        "survivors": names,
+        "suppressed": [],
+    }
+
+
+def _conflicting_batch_orthogonality(factors: list[Factor]):
+    names = sorted(factor.name for factor in factors)
+    assert len(names) == 2
+    return {
+        "schema_version": "gold-batch-orthogonality-v1",
+        "policy": "lexical_first_independent_of_research_outcomes_v1",
+        "threshold": gate.TH["max_gold_corr"],
+        "minimum_comparison_months": gate.TH["min_gold_corr_months"],
+        "candidate_factors": names,
+        "pairs": [{
+            "left": names[0], "right": names[1],
+            "median_absolute_spearman": .95,
+            "comparison_months": gate.TH["min_gold_corr_months"],
+            "conflict": True,
+        }],
+        "survivors": [names[0]],
+        "suppressed": [{
+            "factor": names[1], "kept_factor": names[0],
+            "reason": "batch_signal_correlation_above_threshold",
+        }],
+    }
 
 
 def _implementation_evidence(factor: Factor, campaign: dict) -> dict:
@@ -743,7 +814,7 @@ def test_composite_rank_signals_are_rejected_but_single_ratio_is_allowed():
 
 
 def test_return_hurdles_are_not_part_of_ruleset_v3():
-    assert gate.RULESET_VERSION == "fr-3.13.0"
+    assert gate.RULESET_VERSION == "fr-3.14.0"
     assert "net_alpha" not in gate.TH
     assert "net_ir" not in gate.TH
     assert "dsr_probability" not in gate.TH
@@ -1004,6 +1075,16 @@ def test_frozen_discovery_result_authentication_skips_recompute_and_detects_tamp
     path.write_bytes(raw + b" ")
     with pytest.raises(ValueError, match="artifact SHA"):
         research.load_authenticated_discovery_result(frozen, factor)
+
+
+def test_authenticated_discovery_fast_path_uses_no_external_gold_trial_rows():
+    assert run_script.research is research
+    assert run_script._external_gold_trial_rows(None) == []
+    frame = pd.DataFrame({"definition_hash": ["a" * 16, "b" * 16]})
+    assert run_script._external_gold_trial_rows(frame) == [
+        ("a" * 16, None, None),
+        ("b" * 16, None, None),
+    ]
 
 
 def test_confirmation_reuses_authenticated_t0_and_binds_current_signal(monkeypatch):
@@ -1866,6 +1947,93 @@ def test_autonomous_cycle_rejects_retested_definition():
             )
 
 
+def test_candidate_batch_policy_blocks_family_formula_retests_and_low_diversity():
+    net = Factor(
+        name="net_variant", family="income_coverage", category="quality",
+        hypothesis="세후이익", predicted_sign=1,
+        needs=("net_income_ttm", "total_liabilities"),
+        compute=_net_income_ratio,
+    )
+    pretax = Factor(
+        name="pretax_variant", family="pretax_coverage", category="quality",
+        hypothesis="세전이익", predicted_sign=1,
+        needs=("pretax_income_ttm", "total_liabilities"),
+        compute=_pretax_income_ratio,
+    )
+    formula = research_policy.candidate_batch_policy([net, pretax])
+    assert "no_same_formula_variants_in_batch" in {
+        row["rule"] for row in formula["violations"]
+    }
+
+    retest = research_policy.candidate_batch_policy(
+        [pretax], existing_factors=[net],
+    )
+    assert retest["violations"][0]["rule"] == (
+        "no_structural_retest_of_attempted_registry"
+    )
+
+    same_family = research_policy.candidate_batch_policy([
+        net,
+        Factor(
+            name="same_family", family="income_coverage", category="value",
+            hypothesis="같은 family", predicted_sign=1,
+            compute=lambda frame: frame["market_cap"],
+        ),
+    ])
+    assert "one_candidate_per_economic_family" in {
+        row["rule"] for row in same_family["violations"]
+    }
+
+    narrow = [
+        Factor(
+            name=f"narrow_{index}", family=f"family_{index}",
+            category="quality" if index < 3 else "value",
+            hypothesis=str(index), predicted_sign=1,
+            params={"candidate": index},
+            compute=lambda frame: frame["market_cap"],
+        )
+        for index in range(5)
+    ]
+    artifact = research_policy.candidate_batch_policy(narrow)
+    assert "minimum_mechanism_category_diversity" in {
+        row["rule"] for row in artifact["violations"]
+    }
+
+
+def test_input_feasibility_fails_before_epoch_registration(tmp_path):
+    factor = Factor(
+        name="sparse_candidate", category="other", hypothesis="희소 입력",
+        predicted_sign=1, compute=lambda frame: frame["market_cap"],
+    )
+    _start_campaign(tmp_path)
+    failed = research_policy.input_feasibility_artifact(
+        [factor], snapshot_digest="b" * 64,
+        signal_start=str(gate.RESEARCH_START), signal_end="2023-05",
+        metrics={factor.name: {"coverage": .49, "monthly_coverage_p10": .29}},
+        minimum_coverage=gate.TH["coverage"],
+        minimum_monthly_p10=gate.TH["monthly_coverage_p10"],
+    )
+    with pytest.raises(ValueError, match="입력 커버리지 사전검사"):
+        epochs.start_epoch(
+            tmp_path, "campaign-001", "epoch-001", [factor],
+            strategy_digests=_strategy_digests([factor]),
+            input_feasibility=failed,
+        )
+    assert epochs.load_campaign(tmp_path, "campaign-001")["epochs"] == []
+
+
+def test_failure_bucket_distinguishes_wrong_sign_from_input_and_integrity():
+    assert epochs._failure_bucket({"failed_tiers": ["T1.2"]}) == (
+        "WRONG_SIGN_OR_NO_EDGE"
+    )
+    assert epochs._failure_bucket({"failed_tiers": ["T1.1"]}) == (
+        "DATA_OR_INPUT_FEASIBILITY"
+    )
+    assert epochs._failure_bucket({"failed_tiers": ["T1.3"]}) == (
+        "DATA_OR_INTEGRITY"
+    )
+
+
 def test_epoch_lifecycle_auto_qualifies_candidates_and_seals_oos(tmp_path):
     first = Factor(
         name="candidate_a", family="family_a", category="other",
@@ -1892,6 +2060,7 @@ def test_epoch_lifecycle_auto_qualifies_candidates_and_seals_oos(tmp_path):
     epochs.start_epoch(
         tmp_path, "campaign-001", "epoch-001", [first, second],
         strategy_digests=_strategy_digests([first, second]),
+        input_feasibility=_input_feasibility([first, second]),
     )
     epochs.assert_candidate_ready(
         tmp_path, "campaign-001", "epoch-001", first,
@@ -1939,7 +2108,10 @@ def test_epoch_lifecycle_auto_qualifies_candidates_and_seals_oos(tmp_path):
     reflection_payload = json.loads(reflection_json.read_text())
     assert reflection_payload["duplicates"] == ["candidate_b"]
     assert reflection_payload["discovery_fdr_status"] == "PENDING_UNTIL_CAMPAIGN_FINALIZE"
-    epochs.finalize_campaign(tmp_path, "campaign-001")
+    epochs.finalize_campaign(
+        tmp_path, "campaign-001",
+        batch_orthogonality=_batch_orthogonality([first]),
+    )
     finalized = epochs.load_campaign(tmp_path, "campaign-001")
     assert finalized["status"] == "AWAITING_IMPLEMENTATION"
     assert [row["name"] for row in finalized["qualified_factors"]] == ["candidate_a"]
@@ -2078,11 +2250,13 @@ def test_campaign_freezes_epoch_count_and_allows_only_one_open_epoch(tmp_path):
     epochs.start_epoch(
         tmp_path, "campaign-001", "epoch-001", [first],
         strategy_digests=_strategy_digests([first]),
+        input_feasibility=_input_feasibility([first]),
     )
     with pytest.raises(ValueError, match="동시에 둘 이상의 epoch"):
         epochs.start_epoch(
             tmp_path, "campaign-001", "epoch-002", [second],
             strategy_digests=_strategy_digests([second]),
+            input_feasibility=_input_feasibility([second]),
         )
     result = gate.Result(
         factor=first.name, definition_hash=first.definition_hash,
@@ -2095,10 +2269,13 @@ def test_campaign_freezes_epoch_count_and_allows_only_one_open_epoch(tmp_path):
     )
     epochs.close_epoch(tmp_path, "campaign-001", "epoch-001")
     with pytest.raises(ValueError, match="사전 고정한 epoch 수"):
-        epochs.finalize_campaign(tmp_path, "campaign-001")
+        epochs.finalize_campaign(
+            tmp_path, "campaign-001", batch_orthogonality=_batch_orthogonality([]),
+        )
     epochs.start_epoch(
         tmp_path, "campaign-001", "epoch-002", [second],
         strategy_digests=_strategy_digests([second]),
+        input_feasibility=_input_feasibility([second]),
     )
     second_result = gate.Result(
         factor=second.name, definition_hash=second.definition_hash,
@@ -2114,6 +2291,7 @@ def test_campaign_freezes_epoch_count_and_allows_only_one_open_epoch(tmp_path):
         epochs.start_epoch(
             tmp_path, "campaign-001", "epoch-003", [third],
             strategy_digests=_strategy_digests([third]),
+            input_feasibility=_input_feasibility([third]),
         )
 
 
@@ -2137,6 +2315,7 @@ def test_campaign_can_close_without_qualified_factors_instead_of_optional_stoppi
     epochs.start_epoch(
         tmp_path, "campaign-001", "epoch-001", [factor],
         strategy_digests=_strategy_digests([factor]),
+        input_feasibility=_input_feasibility([factor]),
     )
     rejected = gate.Result(
         factor=factor.name, definition_hash=factor.definition_hash,
@@ -2149,7 +2328,9 @@ def test_campaign_can_close_without_qualified_factors_instead_of_optional_stoppi
         report="research/runs/candidate_a/report.md", strongest_relationship=None,
     )
     epochs.close_epoch(tmp_path, "campaign-001", "epoch-001")
-    epochs.finalize_campaign(tmp_path, "campaign-001")
+    epochs.finalize_campaign(
+        tmp_path, "campaign-001", batch_orthogonality=_batch_orthogonality([]),
+    )
     campaign = epochs.load_campaign(tmp_path, "campaign-001")
     assert campaign["status"] == "CLOSED_NO_QUALIFIED"
     assert campaign["qualified_factors"] == []
@@ -2169,6 +2350,7 @@ def test_campaign_finalize_auto_qualifies_every_discovery_pass(tmp_path):
     epochs.start_epoch(
         tmp_path, "campaign-001", "epoch-001", factors,
         strategy_digests=_strategy_digests(factors),
+        input_feasibility=_input_feasibility(factors),
     )
     for factor, pvalue in zip(factors, (.01, .02, .90), strict=True):
         result = gate.Result(
@@ -2189,7 +2371,10 @@ def test_campaign_finalize_auto_qualifies_every_discovery_pass(tmp_path):
     assert [row["fdr_status"] for row in epoch["candidates"]] == [
         "PENDING", "PENDING", "PENDING",
     ]
-    epochs.finalize_campaign(tmp_path, "campaign-001")
+    epochs.finalize_campaign(
+        tmp_path, "campaign-001",
+        batch_orthogonality=_batch_orthogonality(factors[:2]),
+    )
     epoch = epochs.load_epoch(tmp_path, "campaign-001", "epoch-001")
     assert [row["fdr_status"] for row in epoch["candidates"]] == ["PASS", "PASS", "FAIL"]
     assert [row["verdict"] for row in epoch["candidates"]] == [
@@ -2200,6 +2385,55 @@ def test_campaign_finalize_auto_qualifies_every_discovery_pass(tmp_path):
         "candidate_a", "candidate_b",
     ]
     assert campaign["qualification_policy"] == QUALIFICATION_POLICY
+
+
+def test_campaign_suppresses_batch_duplicate_before_implementation(tmp_path):
+    factors = [
+        Factor(
+            name=name, family=name, category="other", hypothesis=name,
+            predicted_sign=1, params={"candidate": name},
+            compute=lambda frame: frame["market_cap"],
+        )
+        for name in ("alpha_candidate", "beta_candidate")
+    ]
+    _start_campaign(tmp_path)
+    epochs.start_epoch(
+        tmp_path, "campaign-001", "epoch-001", factors,
+        strategy_digests=_strategy_digests(factors),
+        input_feasibility=_input_feasibility(factors),
+    )
+    for factor in factors:
+        epochs.mark_evaluated(
+            tmp_path, "campaign-001", "epoch-001", factor,
+            gate.Result(
+                factor=factor.name, definition_hash=factor.definition_hash,
+                verdict=gate.Verdict.PROVISIONAL,
+                metrics={"ic_p_investable": .001},
+            ),
+            strategy_sha256=_strategy_sha(factor),
+            report=f"research/runs/{factor.name}/report.md",
+            strongest_relationship=None,
+        )
+    epochs.close_epoch(tmp_path, "campaign-001", "epoch-001")
+    epochs.finalize_campaign(
+        tmp_path, "campaign-001",
+        batch_orthogonality=_conflicting_batch_orthogonality(factors),
+    )
+    campaign = epochs.load_campaign(tmp_path, "campaign-001")
+    assert [row["name"] for row in campaign["qualified_factors"]] == [
+        "alpha_candidate",
+    ]
+    artifact = epochs.load_discovery_multiple_testing(
+        tmp_path, "campaign-001",
+    )
+    statuses = {
+        row["factor"]: row["qualification_status"]
+        for row in artifact["results"]
+    }
+    assert statuses == {
+        "alpha_candidate": "QUALIFIED",
+        "beta_candidate": "SUPPRESSED_BATCH_CORRELATION",
+    }
 
     current_history = {
             "cycle_id": "candidate_a", "factor": "candidate_a",
@@ -2232,7 +2466,7 @@ def test_campaign_finalize_auto_qualifies_every_discovery_pass(tmp_path):
     )
     context = research.write_context(panel, Registry(), research_dir=tmp_path).read_text()
     assert "| `candidate_a` | `candidate_a` | `candidate_a` |" in context
-    assert "| `fr-3.13.0` | PROVISIONAL | - |" in context
+    assert "| `fr-3.14.0` | PROVISIONAL | - |" in context
     assert "old-full-sample" in context
     assert "WITHHELD_POST_CUTOFF" in context
     assert "research/runs/old/report.md" not in context
@@ -2255,6 +2489,7 @@ def test_campaign_fdr_is_identical_when_epoch_order_is_reversed(tmp_path):
             epochs.start_epoch(
                 root, "campaign-001", epoch_id, [factor],
                 strategy_digests=_strategy_digests([factor]),
+                input_feasibility=_input_feasibility([factor]),
             )
             result = gate.Result(
                 factor=name, definition_hash=factor.definition_hash,
@@ -2269,7 +2504,10 @@ def test_campaign_fdr_is_identical_when_epoch_order_is_reversed(tmp_path):
                 strongest_relationship=None,
             )
             epochs.close_epoch(root, "campaign-001", epoch_id)
-        epochs.finalize_campaign(root, "campaign-001")
+        epochs.finalize_campaign(
+            root, "campaign-001",
+            batch_orthogonality=_batch_orthogonality(list(factors.values())),
+        )
         campaign = epochs.load_campaign(root, "campaign-001")
         artifact = json.loads(Path(campaign["discovery_multiple_testing"]).read_text())
         return {
@@ -2283,7 +2521,7 @@ def test_campaign_fdr_is_identical_when_epoch_order_is_reversed(tmp_path):
     assert forward == reverse
 
 
-def test_epoch_15_campaign_is_read_only_under_epoch_16(tmp_path):
+def test_epoch_16_campaign_is_read_only_under_epoch_17(tmp_path):
     factor = Factor(
         name="candidate_a", category="other", hypothesis="가설", predicted_sign=1,
         compute=lambda frame: frame["market_cap"],
@@ -2292,9 +2530,10 @@ def test_epoch_15_campaign_is_read_only_under_epoch_16(tmp_path):
     epochs.start_epoch(
         tmp_path, "campaign-001", "epoch-001", [factor],
         strategy_digests=_strategy_digests([factor]),
+        input_feasibility=_input_feasibility([factor]),
     )
     campaign = json.loads(campaign_path.read_text())
-    campaign["protocol_version"] = "epoch-1.5"
+    campaign["protocol_version"] = "epoch-1.6"
     campaign_path.write_text(json.dumps(campaign), encoding="utf-8")
     with pytest.raises(ValueError, match="protocol"):
         epochs.assert_candidate_ready(

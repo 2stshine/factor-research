@@ -34,7 +34,7 @@ from engine.gate import (
 )
 
 
-PROTOCOL_VERSION = "epoch-1.6"
+PROTOCOL_VERSION = "epoch-1.7"
 IDENTITY_INVALIDATION_SCHEMA_VERSION = "input-identity-invalidation-1"
 INVALIDATED_INPUT_IDENTITY_STATUS = "CLOSED_INVALIDATED_INPUT_IDENTITY"
 ABORTED_CAMPAIGN_STATUS = "CLOSED_ABORTED"
@@ -236,6 +236,7 @@ def start_campaign(
     mode: str = HISTORICAL_HOLDOUT_MODE,
     oos_start: str | pd.Period | None = None,
     planned_epoch_count: int = 1,
+    input_generation: dict | None = None,
 ) -> Path:
     """Create one historical or prospective holdout without exposing it."""
     campaign_id = _validate_id(campaign_id, "campaign id")
@@ -382,6 +383,8 @@ def start_campaign(
         "qualification_policy": QUALIFICATION_POLICY,
         "qualified_factors": [],
     }
+    if input_generation is not None:
+        payload["input_generation"] = input_generation
     _write(path, payload)
     return path
 
@@ -396,7 +399,7 @@ def migrate_open_campaign(
     """Never relabel already-observed evidence as a clean historical OOS."""
     del root, campaign_id, as_of_month, reason
     raise ValueError(
-        "epoch-1.6 holdout은 기존 campaign으로 migration할 수 없습니다. "
+        "epoch-1.7 holdout은 기존 campaign으로 migration할 수 없습니다. "
         "기존 증거는 legacy/retrospective로 보존하고 새 campaign을 시작하세요."
     )
 
@@ -582,6 +585,9 @@ def start_epoch(
     factors: list[Factor],
     *,
     strategy_digests: dict[str, str],
+    input_feasibility: dict,
+    existing_factors: list[Factor] | tuple[Factor, ...] = (),
+    comparison_registry: dict | None = None,
 ) -> Path:
     """Freeze every candidate name and definition hash before any result is seen."""
     epoch_id = _validate_id(epoch_id, "epoch id")
@@ -607,6 +613,15 @@ def start_epoch(
             )
     if not factors:
         raise ValueError("epoch에는 후보가 하나 이상 필요합니다")
+    batch_policy = research_policy.candidate_batch_policy(
+        factors, existing_factors=existing_factors,
+    )
+    research_policy.assert_candidate_batch_policy(batch_policy)
+    research_policy.assert_input_feasibility_artifact(
+        input_feasibility,
+        factors,
+        snapshot_digest=campaign["snapshot"]["discovery_input_digest"],
+    )
     lookbacks = {
         factor.name: research_policy.assert_allowed_lookback(
             name=factor.name, source=factor.source, params=factor.params,
@@ -656,6 +671,9 @@ def start_epoch(
         "ruleset_version": campaign["ruleset_version"],
         "discovery_data_cutoff": campaign["discovery"]["data_cutoff"],
         "oos_status": "SEALED",
+        "candidate_batch_policy": batch_policy,
+        "input_feasibility": input_feasibility,
+        "comparison_registry": comparison_registry,
         "candidates": [
             {
                 "name": factor.name,
@@ -778,6 +796,10 @@ def mark_evaluated(
 
 def _failure_bucket(candidate: dict) -> str:
     tiers = tuple(candidate.get("failed_tiers") or ())
+    if any(tier.startswith("T1.2") for tier in tiers):
+        return "WRONG_SIGN_OR_NO_EDGE"
+    if any(tier.startswith("T1.1") for tier in tiers):
+        return "DATA_OR_INPUT_FEASIBILITY"
     if any(tier.startswith(("T0", "T1")) for tier in tiers):
         return "DATA_OR_INTEGRITY"
     if any(tier.startswith("T2") for tier in tiers):
@@ -876,8 +898,118 @@ def close_epoch(
     return markdown_path, json_path
 
 
-def finalize_campaign(root: str | Path, campaign_id: str) -> Path:
-    """Finalize discovery and automatically qualify every criterion pass."""
+def _preliminary_by_qualified(candidates: dict[str, dict]) -> list[str]:
+    by_inputs = {
+        candidate["definition_hash"]: (
+            float(candidate["ic_p_investable"])
+            if candidate.get("ic_p_investable") is not None
+            and math.isfinite(float(candidate["ic_p_investable"]))
+            else 1.0
+        )
+        for candidate in candidates.values()
+    }
+    qvalues = by_qvalues(by_inputs)
+    return sorted(
+        name for name, candidate in candidates.items()
+        if candidate.get("pre_fdr_verdict") != "REJECT"
+        and candidate.get("ic_p_investable") is not None
+        and math.isfinite(float(candidate["ic_p_investable"]))
+        and qvalues[candidate["definition_hash"]] <= TH["fdr_q"]
+    )
+
+
+def preview_discovery_qualified(root: str | Path, campaign_id: str) -> list[str]:
+    """Preview the BY-pass exact set without mutating campaign evidence."""
+    campaign = load_campaign(root, campaign_id)
+    _assert_current_state(campaign)
+    if campaign.get("status") != "OPEN":
+        raise ValueError("OPEN campaign만 discovery qualification을 계산할 수 있습니다")
+    if not campaign.get("epochs") or any(
+        row.get("status") != "CLOSED" for row in campaign["epochs"]
+    ):
+        raise ValueError("모든 epoch을 닫은 뒤 qualification을 계산해야 합니다")
+    candidates = {
+        row["name"]: row
+        for reference in campaign["epochs"]
+        for row in load_epoch(root, campaign_id, reference["epoch_id"])["candidates"]
+    }
+    return _preliminary_by_qualified(candidates)
+
+
+def _validated_batch_survivors(
+    artifact: dict | None,
+    preliminary: list[str],
+) -> list[str]:
+    if artifact is None:
+        raise ValueError("Discovery 직후 batch 직교성 artifact가 필요합니다")
+    names = sorted(preliminary)
+    pairs = artifact.get("pairs") or []
+    suppressed = artifact.get("suppressed") or []
+    survivors = artifact.get("survivors") or []
+    suppressed_names = [row.get("factor") for row in suppressed]
+    expected_pairs = {
+        (left, right)
+        for index, left in enumerate(names)
+        for right in names[index + 1:]
+    }
+    observed_pairs = {
+        tuple(sorted((row.get("left"), row.get("right"))))
+        for row in pairs
+    }
+    conflicts = {name: set() for name in names}
+    pair_valid = len(observed_pairs) == len(pairs) and observed_pairs == expected_pairs
+    for row in pairs:
+        left, right = row.get("left"), row.get("right")
+        value = row.get("median_absolute_spearman")
+        months = row.get("comparison_months")
+        if (
+            left not in conflicts or right not in conflicts or left == right
+            or not isinstance(value, (int, float)) or not math.isfinite(float(value))
+            or not isinstance(months, int) or months < TH["min_gold_corr_months"]
+            or row.get("conflict") is not (float(value) > TH["max_gold_corr"])
+        ):
+            pair_valid = False
+            continue
+        if row["conflict"]:
+            conflicts[left].add(right)
+            conflicts[right].add(left)
+    expected_survivors: list[str] = []
+    expected_suppressed: list[dict] = []
+    for name in names:
+        blockers = sorted(conflicts[name].intersection(expected_survivors))
+        if blockers:
+            expected_suppressed.append({
+                "factor": name,
+                "kept_factor": blockers[0],
+                "reason": "batch_signal_correlation_above_threshold",
+            })
+        else:
+            expected_survivors.append(name)
+    valid = (
+        artifact.get("schema_version") == "gold-batch-orthogonality-v1"
+        and artifact.get("policy")
+        == "lexical_first_independent_of_research_outcomes_v1"
+        and artifact.get("threshold") == TH["max_gold_corr"]
+        and artifact.get("minimum_comparison_months")
+        == TH["min_gold_corr_months"]
+        and artifact.get("candidate_factors") == names
+        and pair_valid
+        and survivors == expected_survivors
+        and suppressed == expected_suppressed
+        and sorted(survivors + suppressed_names) == names
+    )
+    if not valid:
+        raise ValueError("Discovery batch 직교성 exact set/정책이 다릅니다")
+    return survivors
+
+
+def finalize_campaign(
+    root: str | Path,
+    campaign_id: str,
+    *,
+    batch_orthogonality: dict | None,
+) -> Path:
+    """Finalize BY, then qualify only outcome-independent batch survivors."""
     campaign = load_campaign(root, campaign_id)
     _assert_current_state(campaign)
     if campaign["status"] != "OPEN":
@@ -961,12 +1093,38 @@ def finalize_campaign(root: str | Path, campaign_id: str) -> Path:
                 "discovery_result_artifact_sha256"
             ),
         })
-    qualified_names = sorted(
+    preliminary_names = sorted(
         name for name, candidate in candidates.items()
         if candidate["verdict"] != "REJECT"
         and candidate["fdr_status"] == "PASS"
     )
+    qualified_names = _validated_batch_survivors(
+        batch_orthogonality, preliminary_names,
+    )
+    qualified_set = set(qualified_names)
+    preliminary_set = set(preliminary_names)
+    suppressed_by_name = {
+        row["factor"]: row for row in batch_orthogonality["suppressed"]
+    }
+    for name, candidate in candidates.items():
+        if name in qualified_set:
+            status = "QUALIFIED"
+            reason = None
+        elif name in preliminary_set:
+            status = "SUPPRESSED_BATCH_CORRELATION"
+            reason = suppressed_by_name[name]
+        else:
+            status = "NOT_BY_ELIGIBLE"
+            reason = None
+        candidate["qualification_status"] = status
+        candidate["qualification_reason"] = reason
+    for row in fdr_rows:
+        candidate = candidates[row["factor"]]
+        row["qualification_status"] = candidate["qualification_status"]
+        row["qualification_reason"] = candidate["qualification_reason"]
     multiple_testing_path = _campaign_dir(root, campaign_id) / "multiple-testing.json"
+    batch_path = _campaign_dir(root, campaign_id) / "batch-orthogonality.json"
+    _write(batch_path, batch_orthogonality)
     for epoch_id, epoch in epochs_by_id.items():
         epoch["discovery_fdr_status"] = "FINAL"
         epoch["campaign_multiple_testing"] = str(multiple_testing_path)
@@ -981,6 +1139,8 @@ def finalize_campaign(root: str | Path, campaign_id: str) -> Path:
         "qualification_policy": QUALIFICATION_POLICY,
         "family_digest": family_digest,
         "total_definitions": len(by_inputs),
+        "batch_orthogonality": batch_path.name,
+        "batch_orthogonality_digest": _payload_digest(batch_orthogonality),
         "results": fdr_rows,
     }
     _write(multiple_testing_path, multiple_testing)
@@ -1015,6 +1175,10 @@ def finalize_campaign(root: str | Path, campaign_id: str) -> Path:
     campaign["discovery_family_size"] = len(by_inputs)
     campaign["discovery_family_digest"] = family_digest
     campaign["qualification_policy"] = QUALIFICATION_POLICY
+    campaign["discovery_batch_orthogonality"] = str(batch_path)
+    campaign["discovery_batch_orthogonality_digest"] = _payload_digest(
+        batch_orthogonality,
+    )
     campaign["oos_family_digest"] = _family_digest([
         candidates[name]["definition_hash"] for name in qualified_names
     ])
@@ -1033,13 +1197,33 @@ def load_discovery_multiple_testing(root: str | Path, campaign_id: str) -> dict:
     artifact = _read(Path(artifact_path))
     rows = artifact.get("results") or []
     hashes = [row.get("definition_hash") for row in rows]
+    preliminary = sorted(
+        row.get("factor") for row in rows
+        if row.get("status") == "PASS" and row.get("verdict") != "REJECT"
+    )
+    batch_reference = artifact.get("batch_orthogonality")
+    if not isinstance(batch_reference, str):
+        raise ValueError("campaign discovery batch 직교성 artifact가 없습니다")
+    batch_path = Path(batch_reference)
+    if not batch_path.is_absolute():
+        batch_path = Path(artifact_path).parent / batch_path
+    batch = _read(batch_path)
+    batch_survivors = _validated_batch_survivors(batch, preliminary)
+    survivor_set = set(batch_survivors)
+    suppressed_set = {
+        row.get("factor") for row in batch.get("suppressed", [])
+    }
+    suppression_by_name = {
+        row.get("factor"): row for row in batch.get("suppressed", [])
+    }
     expected_qualified = sorted(
         (
             row.get("factor"), row.get("definition_hash"),
             row.get("strategy_sha256"),
         )
         for row in rows
-        if row.get("status") == "PASS" and row.get("verdict") != "REJECT"
+        if row.get("factor") in set(batch_survivors)
+        and row.get("qualification_status") == "QUALIFIED"
     )
     observed_qualified = _qualified_identity(campaign)
     expected_hashes = [
@@ -1064,6 +1248,21 @@ def load_discovery_multiple_testing(root: str | Path, campaign_id: str) -> dict:
         and artifact.get("threshold") == TH["fdr_q"]
         and artifact.get("qualification_policy") == QUALIFICATION_POLICY
         and campaign.get("qualification_policy") == QUALIFICATION_POLICY
+        and str(batch_path) == campaign.get("discovery_batch_orthogonality")
+        and artifact.get("batch_orthogonality_digest") == _payload_digest(batch)
+        and campaign.get("discovery_batch_orthogonality_digest")
+        == _payload_digest(batch)
+        and all(
+            row.get("qualification_status") == (
+                "QUALIFIED" if row.get("factor") in survivor_set
+                else "SUPPRESSED_BATCH_CORRELATION"
+                if row.get("factor") in suppressed_set
+                else "NOT_BY_ELIGIBLE"
+            )
+            and row.get("qualification_reason")
+            == suppression_by_name.get(row.get("factor"))
+            for row in rows
+        )
         and artifact.get("total_definitions") == len(expected_hashes)
         and len(hashes) == len(set(hashes))
         and set(hashes) == set(expected_hashes)

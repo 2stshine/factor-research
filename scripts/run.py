@@ -36,6 +36,7 @@ from engine import (
     null,
     panel as P,
     publish,
+    research,
     research_policy,
     silver,
     trials,
@@ -117,6 +118,20 @@ def _database_temp_usage(conn) -> tuple[int, int]:
     if row is None:
         raise RuntimeError("현재 DB의 temp I/O 통계를 읽을 수 없습니다")
     return int(row[0]), int(row[1])
+
+
+def _external_gold_trial_rows(
+    gold_trials: pd.DataFrame | None,
+) -> list[tuple[str, None, None]]:
+    """Normalize optional legacy Gold trials for the attempt ledger."""
+    if gold_trials is None:
+        return []
+    if "definition_hash" not in gold_trials.columns:
+        raise ValueError("Gold trial history에 definition_hash가 없습니다")
+    return [
+        (str(row.definition_hash), None, None)
+        for row in gold_trials.itertuples(index=False)
+    ]
 
 
 def _parity_query_windows(
@@ -531,6 +546,61 @@ def _ensure_factor_columns(pan, targets):
             _log_timing("discovery.factor_compute", started, factor=f.name)
     pan.monthly = df
     return df
+
+
+def preflight_candidate_inputs(
+    campaign: dict,
+    panel: P.Panel,
+    factors: list[F.Factor],
+) -> dict:
+    """Run T1.1's coverage contract before registering an epoch.
+
+    This check uses only the authenticated discovery snapshot, universe mask,
+    and candidate-visible PIT fields. Forward returns and investability labels
+    are absent from the frame, so it cannot adapt a definition to outcomes.
+    """
+    discovery = _scope_discovery_panel(
+        panel,
+        data_cutoff=campaign["discovery"]["data_cutoff"],
+        oos_start=campaign["oos"]["start"],
+    )
+    snapshot_digest = P.snapshot_digest(discovery)
+    expected_digest = campaign["snapshot"]["discovery_input_digest"]
+    if snapshot_digest != expected_digest:
+        raise ValueError(
+            "campaign 생성 당시 discovery Silver snapshot을 재현하지 못했습니다"
+        )
+    research_panel = _research_input_panel(discovery)
+    frame = _ensure_factor_columns(research_panel, factors)
+    signal_end = pd.Period(campaign["discovery"]["signal_end"], freq="M")
+    scope = (
+        research_panel.universe.reindex(frame.index).fillna(False)
+        & frame["ym"].ge(gate.RESEARCH_START)
+        & frame["ym"].le(signal_end)
+    )
+    metrics: dict[str, dict] = {}
+    for factor in factors:
+        values = pd.to_numeric(frame[f"f_{factor.name}"], errors="coerce")
+        scoped = pd.DataFrame({
+            "ym": frame.loc[scope, "ym"],
+            "available": values.loc[scope].notna(),
+        })
+        monthly = scoped.groupby("ym")["available"].mean()
+        metrics[factor.name] = {
+            "coverage": float(scoped["available"].mean()) if len(scoped) else 0.0,
+            "monthly_coverage_p10": (
+                float(monthly.quantile(.10)) if len(monthly) else 0.0
+            ),
+        }
+    return research_policy.input_feasibility_artifact(
+        factors,
+        snapshot_digest=snapshot_digest,
+        signal_start=str(gate.RESEARCH_START),
+        signal_end=str(signal_end),
+        metrics=metrics,
+        minimum_coverage=gate.TH["coverage"],
+        minimum_monthly_p10=gate.TH["monthly_coverage_p10"],
+    )
 
 
 def _reuse_factor_columns(
@@ -975,16 +1045,21 @@ def verify_implementations(campaign: dict, factors: list[F.Factor]) -> list[dict
             started = time.perf_counter()
             # This check and every parity query share one read-only transaction.
             # A re-keyed RDS therefore fails before candidate or Gold SQL runs.
-            silver.verify_live_total_return_contract(
-                conn,
-                discovery_panel.meta.get(
-                    "return_contract_validation_evidence"
-                ),
-            )
-            P.verify_live_asset_identity(
-                conn, discovery_panel,
-                cutoff=window.discovery_data_cutoff,
-            )
+            if campaign.get("input_generation") is not None:
+                silver.verify_live_research_generation(
+                    conn, campaign["input_generation"],
+                )
+            else:
+                silver.verify_live_total_return_contract(
+                    conn,
+                    discovery_panel.meta.get(
+                        "return_contract_validation_evidence"
+                    ),
+                )
+                P.verify_live_asset_identity(
+                    conn, discovery_panel,
+                    cutoff=window.discovery_data_cutoff,
+                )
             _log_timing("parity.live_identity", started)
             if prepared:
                 query_groups: dict[Path, list[tuple]] = {}
@@ -1866,6 +1941,7 @@ def _evaluate(
     closure_asset_identity_digest: str | None = None,
     confirmation_mode: str | None = None,
     preloaded_panel: P.Panel | None = None,
+    input_generation: dict | None = None,
 ):
     total_started = time.perf_counter()
     if phase == "discovery" and (
@@ -1875,7 +1951,7 @@ def _evaluate(
         or discovery_asset_identity_digest is None
     ):
         raise ValueError(
-            "epoch-1.6 discovery는 campaign의 동결 cutoff·OOS 시작월·discovery "
+            "epoch-1.7 discovery는 campaign의 동결 cutoff·OOS 시작월·discovery "
             "snapshot digest와 asset identity digest가 필수입니다. "
             "scripts/research.py campaign workflow를 "
             "사용하세요."
@@ -1977,19 +2053,24 @@ def _evaluate(
     ledger = trials.TrialLedger(TRIAL_DB)
     started = time.perf_counter()
     with silver.connect(read_only=True) as conn:
-        silver.verify_live_total_return_contract(
-            conn,
-            authenticated_pan.meta.get(
-                "return_contract_validation_evidence"
-            ),
-        )
-        if phase == "full" and oos_end is not None:
-            _verify_confirmation_live_identity(conn, authenticated_pan)
+        if input_generation is not None:
+            silver.verify_live_research_generation(conn, input_generation)
         else:
-            P.verify_live_asset_identity(
-                conn, authenticated_pan,
-                cutoff=str(pd.Timestamp(authenticated_df["trade_date"].max()).date()),
+            silver.verify_live_total_return_contract(
+                conn,
+                authenticated_pan.meta.get(
+                    "return_contract_validation_evidence"
+                ),
             )
+            if phase == "full" and oos_end is not None:
+                _verify_confirmation_live_identity(conn, authenticated_pan)
+            else:
+                P.verify_live_asset_identity(
+                    conn, authenticated_pan,
+                    cutoff=str(pd.Timestamp(
+                        authenticated_df["trade_date"].max(),
+                    ).date()),
+                )
         # Only after the complete cache/live identity has matched do we derive
         # the 2015+ frame that factor code and gates are allowed to inspect.
         pan = _research_input_panel(authenticated_pan)
@@ -2008,7 +2089,7 @@ def _evaluate(
             else None
         )
         gold_trials = (
-            [] if frozen_artifacts_bound
+            None if frozen_artifacts_bound
             else silver.load_gold_trial_history(conn)
         )
     _log_timing("evaluation.live_inputs", started, phase=phase)
@@ -2041,10 +2122,7 @@ def _evaluate(
     )
     # Gold's legacy trial rows contain return Sharpe/p-values.  They still count
     # as attempted definitions, but must not enter v3's IC multiple testing.
-    external = [
-        (str(row.definition_hash), None, None)
-        for row in gold_trials.itertuples(index=False)
-    ]
+    external = _external_gold_trial_rows(gold_trials)
     summary = ledger.summary(
         [factor.definition_hash for factor in targets], external=external,
         ruleset_version=gate.RULESET_VERSION,
@@ -2211,7 +2289,7 @@ def _evaluate(
 def cmd_gate(args):
     del args
     raise SystemExit(
-        "전체 패널 gate는 봉인 OOS를 노출하므로 epoch-1.6에서 비활성화했습니다. "
+        "전체 패널 gate는 봉인 OOS를 노출하므로 epoch-1.7에서 비활성화했습니다. "
         "scripts/research.py의 campaign-start → epoch-start → evaluate를 사용하세요."
     )
 
@@ -2259,10 +2337,15 @@ def cmd_null(args):
     ledger = trials.TrialLedger(TRIAL_DB)
     confirmation_snapshot_digest = P.snapshot_digest(pan)
     with silver.connect(read_only=True) as conn:
-        silver.verify_live_total_return_contract(
-            conn, pan.meta.get("return_contract_validation_evidence"),
-        )
-        _verify_confirmation_live_identity(conn, pan)
+        if campaign.get("input_generation") is not None:
+            silver.verify_live_research_generation(
+                conn, campaign["input_generation"],
+            )
+        else:
+            silver.verify_live_total_return_contract(
+                conn, pan.meta.get("return_contract_validation_evidence"),
+            )
+            _verify_confirmation_live_identity(conn, pan)
         gold_trials = silver.load_gold_trial_history(conn)
         pan = _research_input_panel(pan)
         approved = _approved_signals(conn, pan.monthly)
@@ -2289,6 +2372,9 @@ def cmd_null(args):
         # JSONL filename and rebinds only the campaign family evidence digests.
         checkpoint_path=CACHE / "null-checkpoints" / "by-calculation",
         timing_callback=_log_timing,
+        input_generation_digest=(
+            (campaign.get("input_generation") or {}).get("generation_digest")
+        ),
     )
     out.to_parquet(CACHE / "null_dist.parquet", index=False)
     _log_timing("null.total", total_started, family_count=len(out))
