@@ -619,25 +619,38 @@ def gold_signal_preflight(
         for name, values in collection.items():
             if not values.index.equals(df.index):
                 raise ValueError(f"{label} signal index가 다릅니다: {name}")
-    sample = df.loc[eligible.fillna(False).astype(bool), ["ym"]].copy()
+    mask = eligible.fillna(False).astype(bool)
+    months = df.loc[mask, "ym"].to_numpy()
     candidate_names = sorted(signals)
     gold_names = sorted(existing)
-    for name, values in {**signals, **existing}.items():
-        sample[name] = pd.to_numeric(values, errors="coerce").reindex(sample.index)
+    candidate_values = {
+        name: pd.to_numeric(values, errors="coerce").loc[mask].to_numpy(dtype=float)
+        for name, values in signals.items()
+    }
+    gold_values = {
+        name: pd.to_numeric(values, errors="coerce").loc[mask].to_numpy(dtype=float)
+        for name, values in existing.items()
+    }
+    month_positions = [
+        np.flatnonzero(months == month)
+        for month in sorted(pd.unique(months))
+    ]
 
     rows: list[dict] = []
     for candidate in candidate_names:
         comparisons: list[dict] = []
         for approved in gold_names:
             monthly: list[float] = []
-            for _, group in sample.groupby("ym", sort=True):
-                valid = group[[candidate, approved]].replace(
-                    [np.inf, -np.inf], np.nan,
-                ).dropna()
-                if len(valid) < 30:
+            left = candidate_values[candidate]
+            right = gold_values[approved]
+            for positions in month_positions:
+                left_month = left[positions]
+                right_month = right[positions]
+                valid = np.isfinite(left_month) & np.isfinite(right_month)
+                if int(valid.sum()) < 30:
                     continue
                 rho = stats.spearmanr(
-                    valid[candidate], valid[approved],
+                    left_month[valid], right_month[valid],
                 ).statistic
                 if pd.notna(rho):
                     monthly.append(abs(float(rho)))

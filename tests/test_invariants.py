@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+from scipy import stats
 
 from engine import epochs
 from engine import fundamentals as FU
@@ -2192,6 +2193,41 @@ def test_result_blind_gold_signal_preflight_rejects_exact_duplicate():
             threshold=gate.TH["max_gold_corr"],
             minimum_comparison_months=gate.TH["min_gold_corr_months"],
         )
+
+
+def test_gold_signal_preflight_preserves_pairwise_nan_spearman_contract():
+    months = pd.period_range("2019-01", periods=40, freq="M")
+    rows = []
+    for month_index, month in enumerate(months):
+        for asset in range(45):
+            candidate = float((asset * 7 + month_index) % 43)
+            approved = float((asset * 11 - month_index) % 47)
+            if asset % 13 == 0:
+                candidate = float("nan")
+            if asset % 17 == 0:
+                approved = float("inf")
+            rows.append((month, candidate, approved))
+    frame = pd.DataFrame(rows, columns=["ym", "candidate", "approved"])
+    eligible = pd.Series(True, index=frame.index)
+
+    observed = gate.gold_signal_preflight(
+        frame, {"candidate": frame["candidate"]},
+        {"approved": frame["approved"]}, eligible=eligible,
+    )[0]["comparisons"][0]
+    expected = []
+    for _, group in frame.groupby("ym", sort=True):
+        valid = group[["candidate", "approved"]].replace(
+            [np.inf, -np.inf], np.nan,
+        ).dropna()
+        if len(valid) >= 30:
+            expected.append(abs(float(stats.spearmanr(
+                valid["candidate"], valid["approved"],
+            ).statistic)))
+
+    assert observed["comparison_months"] == len(expected)
+    assert observed["median_absolute_spearman"] == pytest.approx(
+        float(np.median(expected)), abs=1e-15,
+    )
 
 
 def test_input_feasibility_fails_before_epoch_registration(tmp_path):
