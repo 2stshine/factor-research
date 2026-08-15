@@ -23,7 +23,7 @@ MAX_FACTOR_LOOKBACK_MONTHS = 36
 RESEARCH_MARKETS = frozenset({"KOSPI", "KOSDAQ"})
 TRADING_DAYS_PER_MONTH = 21
 
-CANDIDATE_BATCH_POLICY_SCHEMA = "candidate-batch-policy-v2"
+CANDIDATE_BATCH_POLICY_SCHEMA = "candidate-batch-policy-v3"
 INPUT_FEASIBILITY_SCHEMA = "candidate-input-feasibility-v1"
 GOLD_SIGNAL_PREFLIGHT_SCHEMA = "candidate-gold-signal-preflight-v1"
 MIN_BATCH_CATEGORY_COUNT = 3
@@ -31,6 +31,23 @@ MIN_BATCH_SIZE_FOR_CATEGORY_DIVERSITY = 5
 STRICT_DIVERSITY_BATCH_SIZE = 10
 MAX_CANDIDATES_PER_CATEGORY = 3
 MAX_CANDIDATES_PER_INPUT_COMBINATION = 2
+MIN_EXPLORATION_DOMAINS = 3
+STRICT_MIN_EXPLORATION_DOMAINS = 5
+MAX_CANDIDATES_PER_EXPLORATION_DOMAIN = 2
+
+# ``category`` remains the stable evaluator/neutralization label.  This
+# separate, result-blind axis is deliberately more granular and configurable
+# per candidate so a research batch can cover distinct economic mechanisms.
+EXPLORATION_DOMAINS = frozenset({
+    "value",
+    "profitability_quality",
+    "investment_capital_allocation",
+    "momentum_trend_reversal",
+    "low_risk",
+    "liquidity_trading",
+    "financing_issuance",
+    "size",
+})
 
 # Net- and pretax-income variants are accounting presentations of the same
 # underlying formula shape.  Replacing only these explicitly reviewed aliases
@@ -289,6 +306,7 @@ def candidate_batch_policy(factors, *, existing_factors=()) -> dict:
             "factor": factor.name,
             "family": factor.family or factor.name,
             "category": factor.category,
+            "exploration_domain": factor.exploration_domain,
             "definition_hash": factor.definition_hash,
             "structure_fingerprint": fingerprint,
             "input_fields": list(factor_input_fields(factor)),
@@ -333,6 +351,10 @@ def candidate_batch_policy(factors, *, existing_factors=()) -> dict:
             })
 
     categories = sorted({row["category"] for row in rows})
+    exploration_domains = sorted({
+        row["exploration_domain"] for row in rows
+        if row["exploration_domain"] is not None
+    })
     if (
         len(rows) >= MIN_BATCH_SIZE_FOR_CATEGORY_DIVERSITY
         and len(categories) < MIN_BATCH_CATEGORY_COUNT
@@ -342,12 +364,39 @@ def candidate_batch_policy(factors, *, existing_factors=()) -> dict:
             "minimum_categories": MIN_BATCH_CATEGORY_COUNT,
             "observed_categories": categories,
         })
+    if len(rows) >= MIN_BATCH_SIZE_FOR_CATEGORY_DIVERSITY:
+        missing_domains = sorted(
+            row["factor"] for row in rows
+            if row["exploration_domain"] is None
+        )
+        if missing_domains:
+            violations.append({
+                "rule": "explicit_exploration_domain_required",
+                "allowed_domains": sorted(EXPLORATION_DOMAINS),
+                "factors": missing_domains,
+            })
+        minimum_domains = (
+            STRICT_MIN_EXPLORATION_DOMAINS
+            if len(rows) >= STRICT_DIVERSITY_BATCH_SIZE
+            else MIN_EXPLORATION_DOMAINS
+        )
+        if len(exploration_domains) < minimum_domains:
+            violations.append({
+                "rule": "minimum_exploration_domain_diversity",
+                "minimum_domains": minimum_domains,
+                "observed_domains": exploration_domains,
+            })
     if len(rows) >= STRICT_DIVERSITY_BATCH_SIZE:
         category_members: dict[str, list[str]] = {}
+        domain_members: dict[str, list[str]] = {}
         input_members: dict[str, list[str]] = {}
         input_fields_by_digest: dict[str, list[str]] = {}
         for row in rows:
             category_members.setdefault(row["category"], []).append(row["factor"])
+            if row["exploration_domain"] is not None:
+                domain_members.setdefault(row["exploration_domain"], []).append(
+                    row["factor"]
+                )
             input_members.setdefault(row["input_combination"], []).append(
                 row["factor"]
             )
@@ -358,6 +407,14 @@ def candidate_batch_policy(factors, *, existing_factors=()) -> dict:
                     "rule": "maximum_candidates_per_category",
                     "category": category,
                     "maximum": MAX_CANDIDATES_PER_CATEGORY,
+                    "factors": sorted(members),
+                })
+        for domain, members in sorted(domain_members.items()):
+            if len(members) > MAX_CANDIDATES_PER_EXPLORATION_DOMAIN:
+                violations.append({
+                    "rule": "maximum_candidates_per_exploration_domain",
+                    "exploration_domain": domain,
+                    "maximum": MAX_CANDIDATES_PER_EXPLORATION_DOMAIN,
                     "factors": sorted(members),
                 })
         for combination, members in sorted(input_members.items()):
@@ -371,10 +428,12 @@ def candidate_batch_policy(factors, *, existing_factors=()) -> dict:
                 })
     artifact = {
         "schema_version": CANDIDATE_BATCH_POLICY_SCHEMA,
-        "policy": "outcome_free_structure_input_and_category_v2",
+        "policy": "outcome_free_structure_input_category_and_domain_v3",
         "candidates": rows,
         "attempted_registry_factors": [factor.name for factor in existing],
         "category_count": len(categories),
+        "exploration_domains": exploration_domains,
+        "exploration_domain_count": len(exploration_domains),
         "violations": violations,
         "status": "PASS" if not violations else "FAIL",
     }
@@ -388,7 +447,7 @@ def assert_candidate_batch_policy(artifact: dict) -> None:
     valid = (
         artifact.get("schema_version") == CANDIDATE_BATCH_POLICY_SCHEMA
         and artifact.get("policy")
-        == "outcome_free_structure_input_and_category_v2"
+        == "outcome_free_structure_input_category_and_domain_v3"
         and observed_digest == _canonical_digest(body)
     )
     if not valid:

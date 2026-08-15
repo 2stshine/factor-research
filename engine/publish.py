@@ -76,7 +76,9 @@ def build_row(factor: Factor, result: Result, *, implementation: ImplementationR
               null_family_error_rate: float | None = None, data_cutoff: str | None = None,
               approved_by: str | None = None, campaign_id: str | None = None,
               strategy_sha256: str | None = None,
-              manifest_entry_digest: str | None = None) -> dict:
+              manifest_entry_digest: str | None = None,
+              confirmation_evidence_grade: str | None = None,
+              prospective_shadow_required: bool = False) -> dict:
     """gold.factor 한 행. 판정 근거를 재검토 가능한 형태로 전부 담는다."""
     if not KEY_RE.match(factor.name):
         raise ValueError(f"factor_key 규칙 위반(^[a-z][a-z0-9_]*$): {factor.name}")
@@ -112,6 +114,8 @@ def build_row(factor: Factor, result: Result, *, implementation: ImplementationR
             "revealed_promote_batch_orthogonal_atomic_v2"
             if campaign_id else None
         ),
+        "confirmation_evidence_grade": confirmation_evidence_grade,
+        "prospective_shadow_required": prospective_shadow_required,
     }
     config = {
         "hypothesis": factor.hypothesis,
@@ -132,6 +136,8 @@ def build_row(factor: Factor, result: Result, *, implementation: ImplementationR
         "strategy_sha256": strategy_sha256,
         "implementation_manifest_digest": manifest_entry_digest,
         "campaign_id": campaign_id,
+        "confirmation_evidence_grade": confirmation_evidence_grade,
+        "prospective_shadow_required": prospective_shadow_required,
         "value_contract": {
             "id": VALUE_CONTRACT_ID,
             "value": "raw",
@@ -211,6 +217,16 @@ def upsert_approved_metadata_atomic(conn, rows: list[dict]) -> list[dict]:
     if any(row.get("status") != "APPROVED" for row in rows):
         raise ValueError("Gold 자동 게시에는 최종 PROMOTE만 허용됩니다")
     output: list[dict] = []
+
+    def research_config(value: dict) -> dict:
+        # The generation binding belongs to the complete live Gold set, not to
+        # one factor definition.  Ignore it when checking idempotent metadata;
+        # the publisher rebinds every APPROVED row atomically after values pass.
+        return {
+            key: item for key, item in value.items()
+            if key != "gold_generation_digest"
+        }
+
     for row in rows:
         payload = dict(
             row,
@@ -237,7 +253,8 @@ def upsert_approved_metadata_atomic(conn, rows: list[dict]) -> list[dict]:
                 current["description"] == row["description"]
                 and current["implementation_uri"] == row["implementation_uri"]
                 and current["implementation_hash"] == row["implementation_hash"]
-                and current["config"] == row["config"]
+                and research_config(current["config"])
+                == research_config(row["config"])
                 and current["evaluation"] == row["evaluation"]
             )
             if same:

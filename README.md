@@ -38,7 +38,7 @@ uv run python scripts/research.py identity-audit  # 활성 캐시 ↔ live RDS �
 ```
 
 `scripts/run.py gate`와 `publish`는 전체 패널이 봉인 OOS를 우회해 노출하지 않도록
-`epoch-1.8`에서 비활성화했다. 평가는 아래 campaign workflow로만 실행한다.
+`epoch-1.9`에서 비활성화했다. 평가는 아래 campaign workflow로만 실행한다.
 
 모든 팩터의 공통 평가 시작일은 `2018-03`으로 고정한다. 허용하는 최대 룩백은 36개월이므로
 `2015-01~2018-02`는 공통 준비 구간이다. 60개월 정의는 새 연구 registry에 등록하지 않으며,
@@ -157,12 +157,22 @@ discovery 자동 확인 대상은 OOS가 봉인되어 있으므로 soft fail이 
 강제 부여하고 세 시나리오 전부에서 부호가 유지되어야 한다. 안 하면 롱레그의 최악 실현값만
 표본에서 증발한다.
 
-## 현재 판정 기준: `fr-3.15.0`
+## 현재 판정 기준: `fr-3.16.0`
 
 판정은 IC 효과크기·시간 강건성·다중검정·표본 무결성·기존 Gold와의 비중복을 함께 본다.
 절대 포트폴리오 수익률과 비용 지표는 운용 진단이며 팩터 승격선이 아니다. 지표 정의, 모든
 임계값과 근거는 [좋은 주식 팩터의 판정 기준](docs/factor-promotion-criteria.md)을 단일 설명
 문서로 사용한다.
+
+`T3.2` 중립화 IC 유지율은 이 버전부터 필수 gate다. Discovery에서 30%를
+유지하지 못한 후보는 parity·Null·OOS로 보내지 않는다. 한 연구 요청의 후보가
+여러 epoch에 나뉘면 `campaign-start --program ... --expected-candidates ...`로
+전체 후보 수를 사전 고정하고, 한 campaign 안에서 BY와 batch 중복 제거를 각각
+한 번만 수행한다.
+
+기존 APPROVED 집합은 배포 후 한 번 `uv run python scripts/research.py
+gold-cache-bootstrap`을 실행해 값·status 변경 없이 generation digest와 wide
+cache를 만든다. 이후 publication은 같은 binding을 transaction 안에서 갱신한다.
 
 ## 단일 팩터 계약
 
@@ -273,7 +283,11 @@ REGISTRY.add(Factor(
   연구자의 시행을 합산할 수 있다
 - 귀무 보정은 같은 Silver snapshot·ruleset·campaign family, Gold 신호 digest에 결박한다. 필요한
   생성 수와 오류율 기준은 [판정 기준](docs/factor-promotion-criteria.md)을 따른다
-- 현재 ruleset이 `fr-3.15.0`으로 변경됐으므로 이 버전의 귀무 보정을 새로 만들기 전에는
+- 현재 ruleset이 `fr-3.16.0`으로 변경됐으므로 이 버전의 귀무 보정을 새로 만들기 전에는
   안전장치상 `PROMOTE`가 나오지 않는다
-- `epoch-1.8`은 campaign 시작 때 분리한 36개월 OOS를 후보 family에 한 번만 공개하며, 구현 parity·campaign reveal·별도 사람 검토 전
+- `epoch-1.9`은 campaign 시작 때 분리한 36개월 OOS를 후보 family에 한 번만 공개한다.
+  역사적 OOS로 승인된 새 Gold는 증거 등급을 보존하고 게시 다음 달부터 36개월
+  prospective shadow 원장에 자동 등록한다. Gold 신호는 승인 metadata 전체에
+  원자적으로 결박한 generation digest별 wide cache를 사용한다
+- 구현 parity·campaign reveal·별도 사람 검토 전
   `publish --apply`를 차단한다

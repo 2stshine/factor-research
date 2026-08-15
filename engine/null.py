@@ -24,6 +24,7 @@ _GENERATOR_SUITE = "null-v2"
 _GENERATOR_KINDS = ("random", "ar1_095", "ar1_0999", "frozen")
 _REBOUND_EVIDENCE_FIELDS = {
     "discovery_family_digest",
+    "oos_family_size",
     "oos_family_digest",
 }
 _OUTPUT_COLUMNS = (

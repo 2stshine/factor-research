@@ -18,6 +18,7 @@ FACTOR = Factor(
     name="operating_roa",
     family="operating_roa",
     category="quality",
+    exploration_domain="profitability_quality",
     hypothesis="영업 수익성이 높은 기업은 자산 효율성의 지속성이 과소평가된다.",
     predicted_sign=1,
     params={},
@@ -51,6 +52,8 @@ RESEARCH_SPEC = {
 - Direct dividend features remain disabled until Silver certifies a separate historical-vintage/known-at action contract. The latest-corrected ex-post action ledger must never be upgraded into feature evidence by locally synthesized metadata.
 - Commodity inputs require a separately certified point-in-time, roll-adjusted contract and a new preregistered single-exposure definition. Do not add the current historical-backfill continuous-futures series to an existing stock factor.
 - Declare financial inputs in `needs`. They must already be PIT-materialized in the panel.
+- Declare one `exploration_domain` for every new candidate. Allowed values are `value`, `profitability_quality`, `investment_capital_allocation`, `momentum_trend_reversal`, `low_risk`, `liquidity_trading`, `financing_issuance`, and `size`. This metadata describes the preregistered economic mechanism; it must not be selected or changed after seeing IC or OOS results.
+- For batches of at least five candidates, cover at least three explicit exploration domains. A ten-candidate batch covers at least five domains and contains no more than two candidates from one domain. If an intended domain lacks certified PIT inputs, submit fewer candidates instead of using a proxy or relabeling another accounting ratio.
 - Avoid masks that redefine the universe. Use denominator validity guards only to prevent undefined ratios.
 - Do not winsorize, neutralize, or select a sample inside the factor; the shared gate owns those decisions.
 - Use a new candidate file for any post-result revision. Preserve the original source and report.

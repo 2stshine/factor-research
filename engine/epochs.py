@@ -34,10 +34,11 @@ from engine.gate import (
 )
 
 
-PROTOCOL_VERSION = "epoch-1.8"
+PROTOCOL_VERSION = "epoch-1.9"
 _PUBLICATION_COMPATIBLE_STATES = {
     ("epoch-1.6", "fr-3.13.0"),
     ("epoch-1.7", "fr-3.14.0"),
+    ("epoch-1.8", "fr-3.15.0"),
     (PROTOCOL_VERSION, RULESET_VERSION),
 }
 IDENTITY_INVALIDATION_SCHEMA_VERSION = "input-identity-invalidation-1"
@@ -74,6 +75,23 @@ def _epoch_path(root: str | Path, campaign_id: str, epoch_id: str) -> Path:
 
 def _exposure_dir(root: str | Path) -> Path:
     return Path(root) / "oos-exposures"
+
+
+def _prospective_shadow_dir(root: str | Path) -> Path:
+    return Path(root) / "prospective-shadow"
+
+
+def oos_evidence_grade(campaign: dict) -> str:
+    evidence_class = campaign.get("oos", {}).get("evidence_class")
+    mapping = {
+        "PROSPECTIVE_PRISTINE_OOS": "PROSPECTIVE_PRISTINE",
+        "HISTORICAL_HIDDEN_OOS": "HISTORICAL_SINGLE_USE",
+        "HISTORICAL_REUSED_WINDOW": "HISTORICAL_REUSED",
+    }
+    try:
+        return mapping[evidence_class]
+    except KeyError as exc:
+        raise ValueError(f"지원하지 않는 OOS evidence class입니다: {evidence_class}") from exc
 
 
 def _read(path: Path) -> dict:
@@ -251,6 +269,8 @@ def start_campaign(
     mode: str = HISTORICAL_HOLDOUT_MODE,
     oos_start: str | pd.Period | None = None,
     planned_epoch_count: int = 1,
+    program_id: str | None = None,
+    expected_candidate_count: int | None = None,
     input_generation: dict | None = None,
 ) -> Path:
     """Create one historical or prospective holdout without exposing it."""
@@ -264,6 +284,19 @@ def start_campaign(
         )
     if not isinstance(planned_epoch_count, int) or planned_epoch_count < 1:
         raise ValueError("planned_epoch_count는 1 이상의 정수여야 합니다")
+    if program_id is not None:
+        program_id = _validate_id(program_id, "program id")
+        if expected_candidate_count is None:
+            raise ValueError("program_id에는 expected_candidate_count가 필요합니다")
+    if expected_candidate_count is not None:
+        if program_id is None:
+            raise ValueError("expected_candidate_count에는 program_id가 필요합니다")
+        if (
+            isinstance(expected_candidate_count, bool)
+            or not isinstance(expected_candidate_count, int)
+            or expected_candidate_count < 1
+        ):
+            raise ValueError("expected_candidate_count는 1 이상의 정수여야 합니다")
     for label, digest in (
         ("snapshot_digest", snapshot_digest),
         ("discovery_snapshot_digest", discovery_snapshot_digest),
@@ -394,6 +427,15 @@ def start_campaign(
             "prior_exposure_ids": prior_exposures,
         },
         "planned_epoch_count": planned_epoch_count,
+        "program": (
+            {
+                "program_id": program_id,
+                "expected_candidate_count": expected_candidate_count,
+                "multiplicity_scope": "all_program_candidates_once",
+                "deduplication_scope": "all_program_survivors_once",
+            }
+            if program_id is not None else None
+        ),
         "epochs": [],
         "qualification_policy": QUALIFICATION_POLICY,
         "qualified_factors": [],
@@ -414,7 +456,7 @@ def migrate_open_campaign(
     """Never relabel already-observed evidence as a clean historical OOS."""
     del root, campaign_id, as_of_month, reason
     raise ValueError(
-        "epoch-1.8 holdout은 기존 campaign으로 migration할 수 없습니다. "
+        "epoch-1.9 holdout은 기존 campaign으로 migration할 수 없습니다. "
         "기존 증거는 legacy/retrospective로 보존하고 새 campaign을 시작하세요."
     )
 
@@ -957,6 +999,14 @@ def preview_discovery_qualified(root: str | Path, campaign_id: str) -> list[str]
         for reference in campaign["epochs"]
         for row in load_epoch(root, campaign_id, reference["epoch_id"])["candidates"]
     }
+    program = campaign.get("program")
+    if program is not None:
+        expected = int(program["expected_candidate_count"])
+        if len(candidates) != expected:
+            raise ValueError(
+                "program 사전 고정 후보 수를 모두 등록·평가해야 합니다: "
+                f"expected={expected}, observed={len(candidates)}"
+            )
     return _preliminary_by_qualified(candidates)
 
 
@@ -1064,6 +1114,14 @@ def finalize_campaign(
         for epoch in epochs_by_id.values()
         for row in epoch["candidates"]
     }
+    program = campaign.get("program")
+    if program is not None:
+        expected = int(program["expected_candidate_count"])
+        if len(candidates) != expected:
+            raise ValueError(
+                "program 사전 고정 후보 수를 모두 등록·평가해야 합니다: "
+                f"expected={expected}, observed={len(candidates)}"
+            )
     # The campaign is the immutable discovery family.  Epoch-close decisions
     # stay pending so later epochs cannot retroactively change an earlier final
     # verdict.  Every registered definition enters exactly once; candidates
@@ -1159,7 +1217,12 @@ def finalize_campaign(
         "campaign_id": campaign_id,
         "method": "Benjamini-Yekutieli",
         "threshold": TH["fdr_q"],
-        "family": "all preregistered definitions in this campaign",
+        "family": (
+            "all preregistered definitions in this program"
+            if program is not None
+            else "all preregistered definitions in this campaign"
+        ),
+        "program": program,
         "qualification_policy": QUALIFICATION_POLICY,
         "family_digest": family_digest,
         "total_definitions": len(by_inputs),
@@ -1270,6 +1333,12 @@ def load_discovery_multiple_testing(root: str | Path, campaign_id: str) -> dict:
         and artifact.get("campaign_id") == campaign_id
         and artifact.get("method") == "Benjamini-Yekutieli"
         and artifact.get("threshold") == TH["fdr_q"]
+        and artifact.get("program") == campaign.get("program")
+        and artifact.get("family") == (
+            "all preregistered definitions in this program"
+            if campaign.get("program") is not None
+            else "all preregistered definitions in this campaign"
+        )
         and artifact.get("qualification_policy") == QUALIFICATION_POLICY
         and campaign.get("qualification_policy") == QUALIFICATION_POLICY
         and str(batch_path) == campaign.get("discovery_batch_orthogonality")
@@ -1749,6 +1818,45 @@ def record_gold_publication(
         )
         if not batch_valid:
             raise ValueError("Gold publication batch 직교성 exact set이 다릅니다")
+    expected_grade = oos_evidence_grade(campaign)
+    if evidence.get("confirmation_evidence_grade") != expected_grade:
+        raise ValueError("Gold publication OOS evidence grade가 campaign과 다릅니다")
+    shadow_required = expected_grade != "PROSPECTIVE_PRISTINE"
+    if evidence.get("prospective_shadow_required") is not shadow_required:
+        raise ValueError("Gold publication prospective shadow 정책이 다릅니다")
+    evidence = dict(evidence)
+    if status == "APPROVED_ATOMIC" and published and shadow_required:
+        observed = pd.Timestamp(campaign["oos"]["silver_as_of"])
+        if pd.isna(observed):
+            raise ValueError("prospective shadow 등록 기준일이 없습니다")
+        start_month = observed.to_period("M") + 1
+        shadow = {
+            "schema_version": "prospective-shadow-v1",
+            "campaign_id": campaign_id,
+            "source_evidence_grade": expected_grade,
+            "status": "COLLECTING",
+            "result_fields_visible": False,
+            "start_month": str(start_month),
+            "required_months": TH["min_oos_months"],
+            "eligible_reveal_month": str(start_month + TH["min_oos_months"]),
+            "factors": published,
+            "factor_bindings": [
+                {
+                    "name": row["name"],
+                    "definition_hash": row["definition_hash"],
+                    "strategy_sha256": row["strategy_sha256"],
+                }
+                for row in campaign["qualified_factors"]
+                if row["name"] in set(published)
+            ],
+            "confirmation_result_digest": campaign[
+                "confirmation_result_digest"
+            ],
+        }
+        shadow_path = _prospective_shadow_dir(root) / f"{campaign_id}.json"
+        _write(shadow_path, shadow)
+        evidence["prospective_shadow"] = str(shadow_path)
+        evidence["prospective_shadow_digest"] = _payload_digest(shadow)
     path = _campaign_dir(root, campaign_id) / "gold-publication.json"
     _write(path, evidence)
     campaign["gold_publication"] = str(path)

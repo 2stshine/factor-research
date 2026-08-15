@@ -333,6 +333,8 @@ def _start_campaign(
     snapshot_cutoff: str = "2026-07-31",
     min_oos_months: int = 36,
     planned_epoch_count: int = 1,
+    program_id: str | None = None,
+    expected_candidate_count: int | None = None,
 ):
     closure_cutoff = str(
         (pd.Timestamp(snapshot_cutoff).to_period("M") + 1)
@@ -351,7 +353,32 @@ def _start_campaign(
         closure_asset_identity_cutoff=closure_cutoff,
         min_oos_months=min_oos_months,
         planned_epoch_count=planned_epoch_count,
+        program_id=program_id,
+        expected_candidate_count=expected_candidate_count,
     )
+
+
+def test_program_preregisters_one_global_by_and_dedup_scope(tmp_path):
+    path = _start_campaign(
+        tmp_path,
+        planned_epoch_count=5,
+        program_id="program-20260816-001",
+        expected_candidate_count=50,
+    )
+    manifest = json.loads(path.read_text())
+    assert manifest["planned_epoch_count"] == 5
+    assert manifest["program"] == {
+        "program_id": "program-20260816-001",
+        "expected_candidate_count": 50,
+        "multiplicity_scope": "all_program_candidates_once",
+        "deduplication_scope": "all_program_survivors_once",
+    }
+
+    with pytest.raises(ValueError, match="expected_candidate_count"):
+        _start_campaign(
+            tmp_path, campaign_id="campaign-002",
+            program_id="program-20260816-002",
+        )
 
 
 def _strategy_sha(factor: Factor) -> str:
@@ -843,7 +870,7 @@ def test_composite_rank_signals_are_rejected_but_single_ratio_is_allowed():
 
 
 def test_return_hurdles_are_not_part_of_ruleset_v3():
-    assert gate.RULESET_VERSION == "fr-3.15.0"
+    assert gate.RULESET_VERSION == "fr-3.16.0"
     assert "net_alpha" not in gate.TH
     assert "net_ir" not in gate.TH
     assert "dsr_probability" not in gate.TH
@@ -1174,6 +1201,18 @@ def test_gold_publication_materializes_sql_once_then_verifies_staging():
     assert source.count("_populate_gold_value_temp(") == 1
     assert '"campaign_gold_values"' in source
     assert '"campaign_gold_verify"' not in source
+    assert "bind_gold_generation" in source
+
+
+@pytest.mark.parametrize(("evidence_class", "grade"), [
+    ("PROSPECTIVE_PRISTINE_OOS", "PROSPECTIVE_PRISTINE"),
+    ("HISTORICAL_HIDDEN_OOS", "HISTORICAL_SINGLE_USE"),
+    ("HISTORICAL_REUSED_WINDOW", "HISTORICAL_REUSED"),
+])
+def test_oos_evidence_grade_is_explicit(evidence_class, grade):
+    assert epochs.oos_evidence_grade({
+        "oos": {"evidence_class": evidence_class},
+    }) == grade
 
 
 def test_neutralized_ic_requires_thirty_percent_of_investable_ic(monkeypatch):
@@ -1223,6 +1262,7 @@ def test_neutralized_ic_requires_thirty_percent_of_investable_ic(monkeypatch):
     assert below.metrics["neutral_ic"] > gate.TH["neutral_ic"]
     assert below.metrics["neutral_ic_retention"] < .30
     assert below_check.passed is False
+    assert below.verdict == gate.Verdict.REJECT
 
     at_floor = evaluate_with(.03)
     at_floor_check = next(
@@ -1230,6 +1270,7 @@ def test_neutralized_ic_requires_thirty_percent_of_investable_ic(monkeypatch):
     )
     assert at_floor.metrics["neutral_ic_retention"] == pytest.approx(.30)
     assert at_floor_check.passed is True
+    assert not any(check.tier == "T3.2" for check in at_floor.failed)
 
 
 def test_gold_signal_overlap_accepts_point_seven_and_rejects_above(monkeypatch):
@@ -1327,6 +1368,9 @@ def test_approved_catalog_without_values_fails_t5_closed(monkeypatch):
         "ym": pd.PeriodIndex(["2023-01", "2023-01"], freq="M"),
     })
     monkeypatch.setattr(
+        run_script.silver, "load_gold_generation", lambda _conn: None,
+    )
+    monkeypatch.setattr(
         run_script.silver, "load_approved_factor_keys",
         lambda _conn: ["approved_without_values"],
     )
@@ -1341,6 +1385,47 @@ def test_approved_catalog_without_values_fails_t5_closed(monkeypatch):
 
     assert list(signals) == ["approved_without_values"]
     assert signals["approved_without_values"].isna().all()
+
+
+def test_gold_generation_wide_cache_loads_values_once(tmp_path, monkeypatch):
+    frame = pd.DataFrame({
+        "asset_id": [1, 2],
+        "ym": pd.PeriodIndex(["2023-01", "2023-01"], freq="M"),
+    })
+    generation = {
+        "gold_generation_digest": "a" * 64,
+        "approved_factor_count": 2,
+        "approved_factor_keys": ["alpha", "beta"],
+    }
+    calls = {"values": 0}
+    values = pd.DataFrame({
+        "factor_key": ["alpha", "alpha", "beta"],
+        "asset_id": [1, 2, 1],
+        "as_of_date": pd.to_datetime([
+            "2023-01-31", "2023-01-31", "2023-01-31",
+        ]),
+        "value": [1.0, 2.0, 3.0],
+    })
+
+    monkeypatch.setattr(run_script, "GOLD_SIGNAL_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        run_script.silver, "load_gold_generation", lambda _conn: generation,
+    )
+
+    def load_values(_conn):
+        calls["values"] += 1
+        return values.copy()
+
+    monkeypatch.setattr(run_script.silver, "load_approved_values", load_values)
+    first = run_script._approved_signals(object(), frame)
+    second = run_script._approved_signals(object(), frame)
+
+    assert calls["values"] == 1
+    pd.testing.assert_series_equal(first["alpha"], second["alpha"])
+    assert first["beta"].iloc[0] == 3.0
+    assert np.isnan(first["beta"].iloc[1])
+    assert list(tmp_path.rglob("signals.parquet"))
+    assert list(tmp_path.rglob("manifest.json"))
 
 
 def test_deferred_fdr_is_pending_not_a_false_failure():
@@ -2584,7 +2669,7 @@ def test_campaign_suppresses_batch_duplicate_before_implementation(tmp_path):
     )
     context = research.write_context(panel, Registry(), research_dir=tmp_path).read_text()
     assert "| `candidate_a` | `candidate_a` | `candidate_a` |" in context
-    assert "| `fr-3.15.0` | PROVISIONAL | - |" in context
+    assert f"| `{gate.RULESET_VERSION}` | PROVISIONAL | - |" in context
     assert "old-full-sample" in context
     assert "WITHHELD_POST_CUTOFF" in context
     assert "research/runs/old/report.md" not in context

@@ -70,6 +70,7 @@ def _measure(
     seed=20260731,
     discovery_family_digest="standalone",
     oos_family_digest="standalone",
+    oos_family_size=2,
     input_generation_digest="e" * 64,
 ):
     return null_engine.measure(
@@ -80,7 +81,7 @@ def _measure(
         oos_end=pd.Period("2028-12", freq="M"),
         research_data_cutoff="2025-12-31",
         discovery_family_size=2,
-        oos_family_size=2,
+        oos_family_size=oos_family_size,
         discovery_family_digest=discovery_family_digest,
         oos_family_digest=oos_family_digest,
         checkpoint_path=checkpoint_path,
@@ -179,13 +180,17 @@ def test_null_calculation_cache_rebinds_campaign_family_evidence(
         checkpoint_path=cache_root,
         discovery_family_digest="c" * 64,
         oos_family_digest="d" * 64,
+        oos_family_size=1,
     )
     assert control["calls"] == 0
     assert rebound["discovery_family_digest"].eq("c" * 64).all()
     assert rebound["oos_family_digest"].eq("d" * 64).all()
+    assert rebound["oos_family_size"].eq(1).all()
     comparable = [
         column for column in first.columns
-        if column not in {"discovery_family_digest", "oos_family_digest"}
+        if column not in {
+            "discovery_family_digest", "oos_family_digest", "oos_family_size",
+        }
     ]
     pd.testing.assert_frame_equal(first[comparable], rebound[comparable])
 

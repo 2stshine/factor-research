@@ -346,6 +346,8 @@ def cmd_campaign_start(args) -> None:
         mode=args.mode,
         oos_start=window.oos_signal_start,
         planned_epoch_count=args.epochs,
+        program_id=args.program,
+        expected_candidate_count=args.expected_candidates,
         input_generation=input_generation,
     )
     memory = _refresh_research_memory()
@@ -353,6 +355,11 @@ def cmd_campaign_start(args) -> None:
     print(f"campaign 생성: {path}")
     print(f"OOS mode: {window.mode}")
     print(f"사전 고정 epoch 수: {args.epochs}")
+    if args.program is not None:
+        print(
+            f"program: {args.program}; 전체 후보 exact set: "
+            f"{args.expected_candidates}"
+        )
     print(
         f"Discovery signal 종료 {window.discovery_signal_end}; "
         f"OOS signal {window.oos_signal_start}~{window.oos_signal_end} (SEALED)"
@@ -868,6 +875,21 @@ def cmd_campaign_reconcile_gold_batch(args) -> None:
     )
 
 
+def cmd_gold_cache_bootstrap(_args) -> None:
+    """Create the first generation/cache for legacy APPROVED rows."""
+    try:
+        evidence = run.bootstrap_gold_signal_cache()
+    except Exception as exc:
+        raise SystemExit(f"Gold generation/cache bootstrap 실패: {exc}") from exc
+    generation = evidence["gold_generation"]
+    print(
+        "Gold generation/cache bootstrap 완료: "
+        f"factors={generation['approved_factor_count']}, "
+        f"digest={generation['gold_generation_digest']}, "
+        f"rows={evidence['cache_row_count']}"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -902,6 +924,14 @@ def main() -> None:
     campaign_start.add_argument(
         "--epochs", type=int, default=1,
         help="campaign에서 결과 전에 고정할 전체 epoch 수",
+    )
+    campaign_start.add_argument(
+        "--program",
+        help="여러 epoch의 전체 후보를 하나의 BY·중복제거 family로 묶는 program id",
+    )
+    campaign_start.add_argument(
+        "--expected-candidates", type=int,
+        help="program 시작 전에 고정하는 전체 후보 수",
     )
     epoch_start = commands.add_parser("epoch-start", help="후보 배치 사전등록")
     epoch_start.add_argument("--campaign", required=True)
@@ -942,6 +972,10 @@ def main() -> None:
         help="기존 Gold 배치의 0.70 초과 상관 후보를 결정론적으로 RETIRED",
     )
     campaign_reconcile.add_argument("--campaign", required=True)
+    commands.add_parser(
+        "gold-cache-bootstrap",
+        help="기존 APPROVED 값은 바꾸지 않고 generation과 wide cache를 1회 생성",
+    )
     args = parser.parse_args()
     {
         "context": cmd_context,
@@ -958,6 +992,7 @@ def main() -> None:
         "campaign-reveal": cmd_campaign_reveal,
         "campaign-publish": cmd_campaign_publish,
         "campaign-reconcile-gold-batch": cmd_campaign_reconcile_gold_batch,
+        "gold-cache-bootstrap": cmd_gold_cache_bootstrap,
     }[args.command](args)
 
 

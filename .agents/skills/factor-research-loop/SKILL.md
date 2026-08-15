@@ -34,12 +34,13 @@ Agent는 가설을 만들고 상태에 맞는 다음 행동을 선택한다. 판
 10. 전체 패널 `scripts/run.py gate|publish`와 Gold 자동 write·발행은 금지한다. 앞 단계 hard fail 뒤 검사는 `통과`가 아니라 `미검증`이며 수익률·IR·회전율은 진단값이다.
 11. 자동 확인 대상·구현 검증·36개월 OOS readiness가 고정된 뒤 사용자가 요청할 때만 해당 campaign 후보의 OOS를 한 번 공개하고 campaign을 종료한다. 미래 prospective OOS는 사용자가 명시적으로 장기 추적을 원할 때만 선택한다.
 12. 원자재는 신호시점의 `available_at`과 롤 조정·총수익 방법론이 인증된 별도 PIT 패널일 때만 사전등록된 단일 노출 팩터로 쓴다. 2026년에 일괄 수집된 과거 연속선물 가격은 retrospective 참고자료일 뿐 hidden OOS나 Gold 후보 입력으로 쓰지 않는다.
+13. 후보 배치의 탐색 영역은 성과·IC·OOS가 아닌 정의·입력·Gold 신호 정체성만으로 고른다. 새 후보는 `value`, `profitability_quality`, `investment_capital_allocation`, `momentum_trend_reversal`, `low_risk`, `liquidity_trading`, `financing_issuance`, `size` 중 하나의 `exploration_domain`을 명시한다. 5개 이상 배치는 최소 3개 영역, 10개 배치는 최소 5개 영역·영역당 최대 2개를 지킨다. 현재 Gold에서 적은 영역을 우선하되, 인증된 PIT 입력이 없으면 proxy로 채우지 말고 후보 수를 줄인다.
 
 ## 실행
 
 1. `pyproject.toml`과 작업 트리를 확인하고 사용자 변경을 보존한다. 캐시가 없거나 identity 계약이 낡았을 때만 Silver에서 다시 build한 뒤 `identity-audit`을 통과시킨다. build는 원시·PIT 입력만 캐시하고 팩터를 선계산하지 않는다.
 2. campaign manifest와 OOS 공개 원장을 먼저 확인한다. 현재 protocol의 비종료 campaign이 없으면 최신 reveal-ready 과거 36개월 OOS를 먼저 고정하고 그 직전 수익률 지원월까지만 discovery로 동결한다. 그 뒤 `uv run python scripts/research.py context`를 실행해 cutoff 뒤 데이터·결과가 가려진 `latest.md`, manifest와 최신 reflection을 읽는다.
-3. 전략 계약에 맞는 서로 다른 단일 신호 후보를 모두 작성하고 룩백이 36개월 이하임을 확인한 뒤, 결과를 보기 전에 한 epoch으로 사전등록한다.
+3. 결과를 보지 않고 현재 Gold·시행 원장의 영역 분포를 먼저 세어 부족한 `exploration_domain`을 배치에 배정한다. 그 계획에 맞는 서로 다른 단일 신호 후보를 작성하고 룩백이 36개월 이하임을 확인한 뒤, 결과를 보기 전에 한 epoch으로 사전등록한다. 산식 family·대수적 fingerprint·원시 입력 조합·탐색 영역 게이트가 실행 전에 배치를 fail-close한다.
 4. 테스트를 통과시킨 뒤 사전등록 후보를 각각 한 번 evaluate한다. 연결·캐시·구현 오류만 **결과가 생기기 전 동일 hash**로 재시도한다.
 5. 모든 후보 평가 후 epoch을 닫아 구조적 교훈만 남긴다. 다음 epoch에는 family 중복·데이터 병목·무결성 교훈만 전달하고 성과 수치나 파라미터 수정안은 전달하지 않는다.
 6. 모든 epoch을 닫은 뒤 `campaign-finalize`로 전체 BY와 자동 확인 대상을 확정한다. 후보가 있으면 `AWAITING_IMPLEMENTATION`에서 전 대상의 Gold SQL·manifest binding·Python/SQL parity를 검증해 `READY_FOR_CONFIRMATION`으로 전환한다.

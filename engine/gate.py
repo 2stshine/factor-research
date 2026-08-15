@@ -21,7 +21,7 @@ from engine import research_policy, silver
 from engine.research_policy import COMMON_EVALUATION_START
 
 
-RULESET_VERSION = "fr-3.15.0"
+RULESET_VERSION = "fr-3.16.0"
 RESEARCH_START = COMMON_EVALUATION_START
 EVALUATION_PHASES = {"discovery", "full"}
 
@@ -970,8 +970,15 @@ def _validate_factor(factor: Factor, df: pd.DataFrame, cached: str) -> list[Chec
 
 
 def _finalize(result: Result) -> None:
-    hard = [c for c in result.failed if c.tier.startswith(("T0", "T1", "T2", "T4", "T5"))]
-    soft = [c for c in result.failed if c.tier.startswith("T3")]
+    hard = [
+        c for c in result.failed
+        if c.tier.startswith(("T0", "T1", "T2", "T4", "T5"))
+        or c.tier == "T3.2"
+    ]
+    soft = [
+        c for c in result.failed
+        if c.tier.startswith("T3") and c.tier != "T3.2"
+    ]
     pending = [c for c in result.pending if c.tier.startswith(("T0", "T1", "T2", "T4", "T5"))]
     if hard or len(soft) > 1:
         result.verdict = Verdict.REJECT

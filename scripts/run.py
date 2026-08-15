@@ -53,6 +53,7 @@ TRIAL_DB = CACHE / "trials.sqlite3"
 PANEL_CACHE = CACHE / "panel.pkl"
 PANEL_ARCHIVE = CACHE / "panels"
 PARITY_CHECKPOINT_ROOT = CACHE / "implementation-parity-checkpoints"
+GOLD_SIGNAL_CACHE_ROOT = CACHE / "gold-signals"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _PARITY_CHECKPOINT_SCHEMA = "implementation-parity-sql-checkpoint-v1"
 
@@ -720,7 +721,135 @@ def _reuse_factor_columns(
     return target
 
 
+def _gold_signal_frame_digest(frame: pd.DataFrame) -> str:
+    normalized = frame.sort_values(["asset_id", "ym"]).reset_index(drop=True)
+    digest = hashlib.sha256()
+    digest.update(_canonical_json_bytes(list(normalized.columns)))
+    digest.update(pd.util.hash_pandas_object(
+        normalized, index=False, categorize=True,
+    ).values.tobytes())
+    return digest.hexdigest()
+
+
+def _gold_signal_cache_paths(generation_digest: str) -> tuple[Path, Path]:
+    directory = GOLD_SIGNAL_CACHE_ROOT / generation_digest
+    return directory / "signals.parquet", directory / "manifest.json"
+
+
+def _load_gold_signal_cache(generation: dict) -> pd.DataFrame | None:
+    data_path, manifest_path = _gold_signal_cache_paths(
+        generation["gold_generation_digest"],
+    )
+    if not data_path.exists() and not manifest_path.exists():
+        return None
+    if not data_path.is_file() or not manifest_path.is_file():
+        raise RuntimeError("Gold signal cache가 부분적으로만 존재합니다")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema_version") != "gold-signal-wide-cache-v1":
+        raise RuntimeError("Gold signal cache schema가 다릅니다")
+    if manifest.get("generation") != generation:
+        raise RuntimeError("Gold signal cache generation binding이 다릅니다")
+    if manifest.get("parquet_sha256") != _file_sha256(data_path):
+        raise RuntimeError("Gold signal cache Parquet SHA-256이 다릅니다")
+    frame = pd.read_parquet(data_path)
+    expected_columns = [
+        "asset_id", "ym", *generation["approved_factor_keys"],
+    ]
+    if list(frame.columns) != expected_columns:
+        raise RuntimeError("Gold signal cache wide columns가 승인 exact set과 다릅니다")
+    if int(manifest.get("row_count", -1)) != len(frame):
+        raise RuntimeError("Gold signal cache row_count가 다릅니다")
+    if manifest.get("frame_digest") != _gold_signal_frame_digest(frame):
+        raise RuntimeError("Gold signal cache frame digest가 다릅니다")
+    return frame
+
+
+def _write_gold_signal_cache(generation: dict, frame: pd.DataFrame) -> None:
+    data_path, manifest_path = _gold_signal_cache_paths(
+        generation["gold_generation_digest"],
+    )
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    if data_path.exists() or manifest_path.exists():
+        raise RuntimeError("기존 Gold signal cache를 덮어쓸 수 없습니다")
+    temporary_data: Path | None = None
+    temporary_manifest: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=".signals-", suffix=".parquet", dir=data_path.parent,
+            delete=False,
+        ) as handle:
+            temporary_data = Path(handle.name)
+        frame.to_parquet(temporary_data, index=False)
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=".manifest-", suffix=".json",
+            dir=data_path.parent, delete=False,
+        ) as handle:
+            manifest = {
+                "schema_version": "gold-signal-wide-cache-v1",
+                "generation": generation,
+                "row_count": len(frame),
+                "frame_digest": _gold_signal_frame_digest(frame),
+                "parquet_sha256": _file_sha256(temporary_data),
+            }
+            handle.write(_canonical_json_bytes(manifest))
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary_manifest = Path(handle.name)
+        temporary_data.replace(data_path)
+        temporary_data = None
+        temporary_manifest.replace(manifest_path)
+        temporary_manifest = None
+    finally:
+        if temporary_data is not None:
+            temporary_data.unlink(missing_ok=True)
+        if temporary_manifest is not None:
+            temporary_manifest.unlink(missing_ok=True)
+
+
+def _wide_gold_signal_frame(values: pd.DataFrame, approved_keys: list[str]) -> pd.DataFrame:
+    if values.empty:
+        return pd.DataFrame(columns=["asset_id", "ym", *approved_keys])
+    source = values.copy()
+    source["ym"] = pd.to_datetime(source["as_of_date"]).dt.to_period("M").astype(str)
+    if source.duplicated(["factor_key", "asset_id", "ym"]).any():
+        raise RuntimeError("Gold approved values에 월별 identity 중복이 있습니다")
+    unknown = set(source["factor_key"].astype(str)) - set(approved_keys)
+    if unknown:
+        raise RuntimeError(f"Gold generation 밖의 value가 있습니다: {sorted(unknown)}")
+    wide = source.pivot(
+        index=["asset_id", "ym"], columns="factor_key", values="value",
+    ).reset_index()
+    wide.columns.name = None
+    for key in approved_keys:
+        if key not in wide:
+            wide[key] = float("nan")
+    return wide[["asset_id", "ym", *approved_keys]].sort_values(
+        ["asset_id", "ym"],
+    ).reset_index(drop=True)
+
+
 def _approved_signals(conn, df: pd.DataFrame) -> dict[str, pd.Series]:
+    generation = silver.load_gold_generation(conn)
+    if generation is not None:
+        approved_keys = generation["approved_factor_keys"]
+        wide = _load_gold_signal_cache(generation)
+        if wide is None:
+            values = silver.load_approved_values(conn)
+            wide = _wide_gold_signal_frame(values, approved_keys)
+            _write_gold_signal_cache(generation, wide)
+        source = wide.copy()
+        source["ym"] = pd.PeriodIndex(source["ym"], freq="M")
+        keyed = source.set_index(["asset_id", "ym"])
+        target = pd.MultiIndex.from_arrays([df["asset_id"], df["ym"]])
+        return {
+            name: pd.Series(
+                keyed[name].reindex(target).to_numpy(dtype=float), index=df.index,
+            )
+            for name in approved_keys
+        }
+
+    # Legacy rows are intentionally not cached: without an atomically bound
+    # generation a local cache cannot be proven current.
     approved_keys = silver.load_approved_factor_keys(conn)
     values = silver.load_approved_values(conn)
     target = pd.MultiIndex.from_arrays([df["asset_id"], df["ym"]])
@@ -737,6 +866,40 @@ def _approved_signals(conn, df: pd.DataFrame) -> dict[str, pd.Series]:
                  .set_index(["asset_id", "ym"])["value"])
         output[str(name)] = pd.Series(keyed.reindex(target).to_numpy(dtype=float), index=df.index)
     return output
+
+
+def bootstrap_gold_signal_cache() -> dict:
+    """Bind/cache legacy APPROVED rows without changing values or statuses."""
+    conn = silver.connect(read_only=False)
+    try:
+        conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                ("factor-research:gold-generation-bootstrap",),
+            )
+        keys = silver.load_approved_factor_keys(conn)
+        values = silver.load_approved_values(conn)
+        wide = _wide_gold_signal_frame(values, keys)
+        digest = _gold_signal_frame_digest(wide)
+        generation = silver.bind_gold_generation(conn, digest)
+        cached = _load_gold_signal_cache(generation)
+        if cached is None:
+            _write_gold_signal_cache(generation, wide)
+        conn.commit()
+        return {
+            "status": "GOLD_GENERATION_BOUND",
+            "gold_generation": generation,
+            "cache_schema": "gold-signal-wide-cache-v1",
+            "cache_row_count": len(wide),
+            "factor_values_changed": False,
+            "factor_status_changed": False,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _signal_family_digest(signals: dict[str, pd.Series]) -> str:
@@ -1626,6 +1789,8 @@ def publish_revealed_campaign(
         name for name, result in results.items()
         if result.verdict == gate.Verdict.PROMOTE
     )
+    evidence_grade = epochs.oos_evidence_grade(campaign)
+    prospective_shadow_required = evidence_grade != "PROSPECTIVE_PRISTINE"
     if set(promote_names) != {
         row["factor"] for row in confirmations["confirmations"]
         if row.get("verdict") == gate.Verdict.PROMOTE.value
@@ -1640,6 +1805,8 @@ def publish_revealed_campaign(
             "promote_factors": [],
             "published_factors": [],
             "database_mutated": False,
+            "confirmation_evidence_grade": evidence_grade,
+            "prospective_shadow_required": prospective_shadow_required,
         }
     for name in promote_names:
         _assert_promote_confirmation(results[name])
@@ -1670,6 +1837,8 @@ def publish_revealed_campaign(
             campaign_id=campaign_id,
             strategy_sha256=binding["strategy_sha256"],
             manifest_entry_digest=binding["manifest_entry_digest"],
+            confirmation_evidence_grade=evidence_grade,
+            prospective_shadow_required=prospective_shadow_required,
         ))
     conn = silver.connect(read_only=False)
     try:
@@ -1762,6 +1931,16 @@ def publish_revealed_campaign(
             )
         ):
             raise ValueError("Gold APPROVED/row/date/duplicate 사후 검증에 실패했습니다")
+        post_keys = silver.load_approved_factor_keys(conn)
+        post_values = silver.load_approved_values(conn)
+        post_wide = _wide_gold_signal_frame(post_values, post_keys)
+        gold_generation_digest = _gold_signal_frame_digest(post_wide)
+        gold_generation = silver.bind_gold_generation(
+            conn, gold_generation_digest,
+        )
+        cached = _load_gold_signal_cache(gold_generation)
+        if cached is None:
+            _write_gold_signal_cache(gold_generation, post_wide)
         evidence = {
             "schema_version": "gold-auto-publication-v2",
             "campaign_id": campaign_id,
@@ -1771,6 +1950,8 @@ def publish_revealed_campaign(
             "published_factors": publish_names,
             "batch_orthogonality": batch_orthogonality,
             "database_mutated": True,
+            "confirmation_evidence_grade": evidence_grade,
+            "prospective_shadow_required": prospective_shadow_required,
             "gold_staging_contract": (
                 "single_repeatable_read_temp_sql_materialization_v1"
             ),
@@ -1782,6 +1963,7 @@ def publish_revealed_campaign(
                 "confirmation_result_digest"
             ],
             "gold_family_digest_before": gold_family_digest,
+            "gold_generation": gold_generation,
             "source_recompute_difference_count": source_difference,
             "persisted_recompute_difference_count": persisted_difference,
             "factors": [
@@ -2038,7 +2220,7 @@ def _evaluate(
         or discovery_asset_identity_digest is None
     ):
         raise ValueError(
-            "epoch-1.8 discovery는 campaign의 동결 cutoff·OOS 시작월·discovery "
+            "epoch-1.9 discovery는 campaign의 동결 cutoff·OOS 시작월·discovery "
             "snapshot digest와 asset identity digest가 필수입니다. "
             "scripts/research.py campaign workflow를 "
             "사용하세요."
@@ -2376,7 +2558,7 @@ def _evaluate(
 def cmd_gate(args):
     del args
     raise SystemExit(
-        "전체 패널 gate는 봉인 OOS를 노출하므로 epoch-1.8에서 비활성화했습니다. "
+        "전체 패널 gate는 봉인 OOS를 노출하므로 epoch-1.9에서 비활성화했습니다. "
         "scripts/research.py의 campaign-start → epoch-start → evaluate를 사용하세요."
     )
 

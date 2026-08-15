@@ -36,12 +36,21 @@ class Factor:
     rebalance_months: int = 1
     needs: tuple[str, ...] = ()        # 필요한 재무 컬럼
     family: str | None = None          # 변형 팩터의 trial lineage
+    exploration_domain: str | None = None  # 결과와 무관한 경제 메커니즘 축
 
     def __post_init__(self):
         if not _NAME.fullmatch(self.name):
             raise ValueError(f"{self.name}: name 은 ^[a-z][a-z0-9_]*$ 형식이어야 한다")
         if self.category not in _CATEGORIES:
             raise ValueError(f"{self.name}: 지원하지 않는 category={self.category!r}")
+        if (
+            self.exploration_domain is not None
+            and self.exploration_domain not in research_policy.EXPLORATION_DOMAINS
+        ):
+            raise ValueError(
+                f"{self.name}: 지원하지 않는 exploration_domain="
+                f"{self.exploration_domain!r}"
+            )
         if not self.hypothesis.strip():
             raise ValueError(f"{self.name}: hypothesis 없이는 등록할 수 없다 (T0.5)")
         if self.predicted_sign not in (1, -1):
@@ -70,6 +79,11 @@ class Factor:
             "rebalance_months": self.rebalance_months,
             "needs": list(self.needs),
         }
+        # Existing definitions predate exploration-domain metadata. Omitting
+        # the null field preserves their frozen hashes; every newly declared
+        # domain is nevertheless content-bound to the new candidate.
+        if self.exploration_domain is not None:
+            payload["exploration_domain"] = self.exploration_domain
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
         return hashlib.sha256(encoded.encode()).hexdigest()[:16]
 

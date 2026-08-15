@@ -1179,6 +1179,18 @@ ORDER BY factor_key
 """
 
 
+GOLD_GENERATION_SQL = """
+SELECT count(*)::bigint AS approved_factor_count,
+       count(DISTINCT nullif(config->>'gold_generation_digest', ''))::integer
+           AS generation_digest_count,
+       min(nullif(config->>'gold_generation_digest', ''))
+           AS gold_generation_digest,
+       array_agg(factor_key ORDER BY factor_key) AS approved_factor_keys
+FROM gold.factor
+WHERE status = 'APPROVED'
+"""
+
+
 GOLD_TRIAL_HISTORY_SQL = """
 SELECT coalesce(
            nullif(btrim(config->>'research_definition_hash'), ''),
@@ -5202,6 +5214,70 @@ def load_approved_factor_keys(conn) -> list[str]:
         conn.rollback()
         return []
     return sorted({str(value) for value in frame["factor_key"].dropna()})
+
+
+def load_gold_generation(conn) -> dict | None:
+    """Load the O(number of approved metadata rows) Gold cache generation.
+
+    Legacy Gold rows do not carry the generation binding.  In that case the
+    caller must load values directly and must not reuse a local cache.
+    """
+    try:
+        frame = read_frame(conn, GOLD_GENERATION_SQL)
+    except psycopg.errors.UndefinedTable:
+        conn.rollback()
+        return None
+    if len(frame) != 1:
+        raise RuntimeError("Gold generation query는 정확히 한 행이어야 합니다")
+    row = frame.iloc[0]
+    count = int(row["approved_factor_count"])
+    digest_count = int(row["generation_digest_count"])
+    raw_keys = row["approved_factor_keys"]
+    keys = [] if raw_keys is None else sorted(str(value) for value in raw_keys)
+    if len(keys) != count or len(set(keys)) != count:
+        raise RuntimeError("Gold generation approved factor exact set이 잘못되었습니다")
+    if count == 0:
+        return {
+            "gold_generation_digest": hashlib.sha256(b"[]").hexdigest(),
+            "approved_factor_count": 0,
+            "approved_factor_keys": [],
+        }
+    digest = row["gold_generation_digest"]
+    if digest_count == 0 and digest is None:
+        return None
+    if (
+        digest_count != 1
+        or not isinstance(digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+    ):
+        raise RuntimeError("Gold generation digest가 승인 집합 전체에 일치하지 않습니다")
+    return {
+        "gold_generation_digest": digest,
+        "approved_factor_count": count,
+        "approved_factor_keys": keys,
+    }
+
+
+def bind_gold_generation(conn, digest: str) -> dict:
+    """Bind every APPROVED metadata row to one generation in the transaction."""
+    if not re.fullmatch(r"[0-9a-f]{64}", str(digest)):
+        raise ValueError("gold_generation_digest는 64자리 소문자 hex여야 합니다")
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE gold.factor
+               SET config = jsonb_set(
+                   coalesce(config, '{}'::jsonb),
+                   '{gold_generation_digest}', to_jsonb(%s::text), true
+               )
+             WHERE status = 'APPROVED'
+            """,
+            (digest,),
+        )
+    observed = load_gold_generation(conn)
+    if observed is None or observed["gold_generation_digest"] != digest:
+        raise RuntimeError("Gold generation digest 원자 binding 검증에 실패했습니다")
+    return observed
 
 
 def load_gold_trial_history(conn) -> pd.DataFrame:
