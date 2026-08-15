@@ -31,8 +31,11 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import os
 import re
+import stat
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -62,6 +65,14 @@ JKP_THEMES = (
 )
 CAT_DATA = ("Accounting", "Price", "Trading", "Event", "Analyst", "Options", "13F", "Other")
 UNMATCHED = "(미매칭)"
+
+LABEL_FIELDS = (
+    "cycle_id", "factor", "ruleset_version", "cat_economic", "cat_data",
+    "cat_data_source", "jkp_theme", "jkp_evidence", "osap_acronym",
+    "paper_authors", "paper_year", "paper_journal", "paper_cites",
+    "paper_cites_suspect", "variant_of", "analysis", "confidence",
+    "evidence",
+)
 
 # 봉인된 시행의 자리에 남기는 표시. `latest.md` 의 WITHHELD_POST_CUTOFF 와 같은 뜻이지만
 # 그 문자열 자체가 판정 어휘라서 쓰지 않는다.
@@ -124,6 +135,104 @@ def read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Replace one generated memory artifact only after durable full write."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+    )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, mode)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _placeholder_label(history_row: dict) -> dict:
+    """Create an identity-only label without guessing an external taxonomy."""
+    report = history_row.get("report")
+    strategy = history_row.get("strategy_file")
+    evidence = "; ".join(
+        str(value) for value in (report, strategy) if isinstance(value, str) and value
+    )
+    return {
+        "cycle_id": history_row["cycle_id"],
+        "factor": history_row["factor"],
+        "ruleset_version": history_row.get("ruleset_version"),
+        "cat_economic": None,
+        "cat_data": None,
+        "cat_data_source": "unreviewed",
+        "jkp_theme": None,
+        "jkp_evidence": None,
+        "osap_acronym": None,
+        "paper_authors": None,
+        "paper_year": None,
+        "paper_journal": None,
+        "paper_cites": None,
+        "paper_cites_suspect": False,
+        "variant_of": None,
+        "analysis": None,
+        "confidence": "low",
+        "evidence": evidence,
+    }
+
+
+def sync_identity_labels(root: Path) -> Path:
+    """Keep labels lossless while leaving unreviewed taxonomy fields empty.
+
+    Curated OSAP/JKP rows are preserved byte-for-value. New trials receive an
+    identity-only placeholder in history order; no result or inferred theme is
+    copied into the label. A later reviewed ``build_labels.py`` run may enrich
+    those rows.
+    """
+    history = read_jsonl(root / "history.jsonl")
+    labels_path = root / "memory" / "labels.jsonl"
+    labels = read_jsonl(labels_path)
+    history_cycles = [row.get("cycle_id") for row in history]
+    if any(not isinstance(cycle_id, str) for cycle_id in history_cycles):
+        raise ValueError("시행 원장 cycle_id가 비어 있습니다")
+    if len(history_cycles) != len(set(history_cycles)):
+        raise ValueError("시행 원장 cycle_id가 중복됐습니다")
+    label_by_cycle: dict[str, dict] = {}
+    for row in labels:
+        cycle_id = row.get("cycle_id")
+        if not isinstance(cycle_id, str) or cycle_id in label_by_cycle:
+            raise ValueError("라벨 cycle_id가 비어 있거나 중복됐습니다")
+        if set(row) != set(LABEL_FIELDS):
+            raise ValueError(f"라벨 schema가 다릅니다: {cycle_id}")
+        label_by_cycle[cycle_id] = row
+    history_by_cycle = {row["cycle_id"]: row for row in history}
+    extras = sorted(set(label_by_cycle) - set(history_by_cycle))
+    if extras:
+        raise ValueError(f"원장에 없는 라벨이 있습니다: {extras}")
+
+    synchronized = []
+    for history_row in history:
+        current = label_by_cycle.get(history_row["cycle_id"])
+        if current is None:
+            current = _placeholder_label(history_row)
+        elif (
+            current.get("factor") != history_row.get("factor")
+            or current.get("ruleset_version") != history_row.get("ruleset_version")
+        ):
+            raise ValueError(
+                f"라벨 identity가 원장과 다릅니다: {history_row['cycle_id']}"
+            )
+        synchronized.append(current)
+    encoded = "".join(
+        json.dumps(row, ensure_ascii=False) + "\n" for row in synchronized
+    )
+    if not labels_path.exists() or labels_path.read_text(encoding="utf-8") != encoded:
+        _atomic_write_text(labels_path, encoded)
+    return labels_path
 
 
 def load(root: Path) -> tuple[list[dict], dict[str, dict], list[dict]]:
@@ -431,6 +540,60 @@ def render_before_after(rows: list[dict], latest: Path) -> str:
     ])
 
 
+def _validate_rendered_memory(text: str, sealed: set[tuple]) -> None:
+    """Reject result fields and sealed result-derived vocabulary."""
+    leaked = sorted(
+        word for word in FORBIDDEN
+        if re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(word)}(?![A-Za-z0-9_])", text,
+        )
+    )
+    if leaked:
+        raise ValueError(f"금지 필드가 출력에 들어갔다: {', '.join(leaked)}")
+    for name in sorted(factor for _, _, factor in sealed):
+        for line in text.splitlines():
+            if f"`{name}`" not in line:
+                continue
+            hit = sorted(
+                word for word in RESULT_VOCABULARY
+                if re.search(
+                    rf"(?<![A-Za-z0-9_]){re.escape(word)}(?![A-Za-z0-9_])",
+                    line,
+                )
+            )
+            if hit:
+                raise ValueError(
+                    f"봉인된 시행 {name} 의 평가 파생 라벨이 출력에 들어갔다: "
+                    f"{', '.join(hit)}"
+                )
+
+
+def refresh_lessons(
+    root: Path | str = "research", *, context_cutoff: str | None = None,
+) -> Path:
+    """Synchronize lossless identity labels and atomically refresh lessons."""
+    root = Path(root)
+    sync_identity_labels(root)
+    history, labels, reflections = load(root)
+    rows = identity_rows(history, labels)
+    visible_cutoff, active_campaign_id = seal_state(root, context_cutoff)
+    sealed_ids = sealed_cycles(history, visible_cutoff, active_campaign_id)
+    sealed = sealed_lessons(history, reflections, sealed_ids)
+    released_epochs = {
+        (reflection.get("campaign_id"), reflection.get("epoch_id"))
+        for reflection in reflections
+        if directives_released(reflection, history, sealed_ids)
+    }
+    text = render_lessons(
+        rows, reflections, omitted=0, sealed=sealed,
+        released_epochs=released_epochs,
+    )
+    _validate_rendered_memory(text, sealed)
+    path = root / "memory" / "lessons.md"
+    _atomic_write_text(path, text)
+    return path
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="누적 시행 컨텍스트를 만든다")
     ap.add_argument("--research-dir", default="research", help="기본 research")
@@ -443,6 +606,7 @@ def main() -> None:
     args = ap.parse_args()
 
     root = Path(args.research_dir)
+    sync_identity_labels(root)
     history, labels, reflections = load(root)
     rows = identity_rows(history, labels)
 
@@ -471,36 +635,17 @@ def main() -> None:
             released_epochs=released_epochs,
         )
 
-    # 부분 문자열이 아니라 독립 식별자로만 잡는다. `net_roa` 의 net, `trading_turnover_20d` 의
-    # turnover 는 팩터명의 일부이지 metrics 키가 아니다.
-    leaked = sorted(
-        w for w in FORBIDDEN
-        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(w)}(?![A-Za-z0-9_])", text)
-    )
-    if leaked:
-        raise SystemExit(f"금지 필드가 출력에 들어갔다: {', '.join(leaked)}")
-
-    # 평가 파생 라벨의 **값**은 위 필드명 가드에 안 걸린다 — 이름이 바뀌어 있기 때문이다.
-    # 봉인된 시행을 언급하는 줄에 그 어휘가 있으면 막는다. 봉인 밖 시행은 실어도 된다.
-    for name in sorted(factor for _, _, factor in sealed):
-        for line in text.splitlines():
-            if f"`{name}`" not in line:
-                continue
-            hit = sorted(
-                w for w in RESULT_VOCABULARY
-                if re.search(rf"(?<![A-Za-z0-9_]){re.escape(w)}(?![A-Za-z0-9_])", line)
-            )
-            if hit:
-                raise SystemExit(
-                    f"봉인된 시행 {name} 의 평가 파생 라벨이 출력에 들어갔다: {', '.join(hit)}"
-                )
+    try:
+        _validate_rendered_memory(text, sealed)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     if args.out:
-        Path(args.out).write_text(text, encoding="utf-8")
+        _atomic_write_text(Path(args.out), text)
         print(f"wrote {args.out}")
     elif args.view == "lessons":
         path = root / "memory" / "lessons.md"
-        path.write_text(text, encoding="utf-8")
+        _atomic_write_text(path, text)
         print(f"wrote {path}")
     else:
         print(text)

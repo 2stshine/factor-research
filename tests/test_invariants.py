@@ -372,6 +372,18 @@ def _pretax_income_ratio(frame):
     return frame["pretax_income_ttm"] / frame["total_liabilities"]
 
 
+def _current_assets_over_liabilities(frame):
+    denominator = frame["current_liabilities"].where(
+        frame["current_liabilities"] > 0
+    )
+    return frame["current_assets"] / denominator
+
+
+def _liabilities_over_current_assets(frame):
+    positive_assets = frame["current_assets"].where(frame["current_assets"] > 0)
+    return frame["current_liabilities"] / positive_assets
+
+
 def _input_feasibility(factors: list[Factor], snapshot_digest: str = "b" * 64):
     return research_policy.input_feasibility_artifact(
         factors,
@@ -384,6 +396,23 @@ def _input_feasibility(factors: list[Factor], snapshot_digest: str = "b" * 64):
         },
         minimum_coverage=gate.TH["coverage"],
         minimum_monthly_p10=gate.TH["monthly_coverage_p10"],
+    )
+
+
+def _gold_preflight(factors: list[Factor], snapshot_digest: str = "b" * 64):
+    return research_policy.gold_signal_preflight_artifact(
+        factors,
+        snapshot_digest=snapshot_digest,
+        gold_family_digest="7" * 64,
+        approved_factors=[],
+        relationships=[{
+            "factor": factor.name,
+            "max_gold_signal_corr": 0.0,
+            "comparisons": [],
+            "status": "PASS",
+        } for factor in factors],
+        threshold=gate.TH["max_gold_corr"],
+        minimum_comparison_months=gate.TH["min_gold_corr_months"],
     )
 
 
@@ -814,7 +843,7 @@ def test_composite_rank_signals_are_rejected_but_single_ratio_is_allowed():
 
 
 def test_return_hurdles_are_not_part_of_ruleset_v3():
-    assert gate.RULESET_VERSION == "fr-3.14.0"
+    assert gate.RULESET_VERSION == "fr-3.15.0"
     assert "net_alpha" not in gate.TH
     assert "net_ir" not in gate.TH
     assert "dsr_probability" not in gate.TH
@@ -2000,6 +2029,86 @@ def test_candidate_batch_policy_blocks_family_formula_retests_and_low_diversity(
     }
 
 
+def test_structure_fingerprint_treats_reciprocal_ratio_as_one_exposure():
+    direct = Factor(
+        name="direct_ratio", family="direct", category="quality",
+        hypothesis="direct", predicted_sign=1,
+        needs=("current_assets", "current_liabilities"),
+        compute=_current_assets_over_liabilities,
+    )
+    reciprocal = Factor(
+        name="reciprocal_ratio", family="reciprocal", category="quality",
+        hypothesis="reciprocal", predicted_sign=-1,
+        needs=("current_liabilities", "current_assets"),
+        compute=_liabilities_over_current_assets,
+    )
+
+    assert research_policy.factor_structure_fingerprint(direct) == (
+        research_policy.factor_structure_fingerprint(reciprocal)
+    )
+    artifact = research_policy.candidate_batch_policy([direct, reciprocal])
+    assert "no_same_formula_variants_in_batch" in {
+        row["rule"] for row in artifact["violations"]
+    }
+
+
+def test_ten_candidate_batch_caps_category_and_shared_input_combination():
+    categories = (
+        "quality", "quality", "quality", "quality", "value",
+        "value", "momentum", "momentum", "other", "earnings",
+    )
+    factors = [
+        Factor(
+            name=f"batch_{index}", family=f"batch_family_{index}",
+            category=category, hypothesis=f"batch {index}", predicted_sign=1,
+            params={"candidate": index},
+            needs=("shared_a", "shared_b") if index < 3 else (f"field_{index}",),
+            compute=lambda frame: frame["market_cap"],
+        )
+        for index, category in enumerate(categories)
+    ]
+
+    artifact = research_policy.candidate_batch_policy(factors)
+    rules = {row["rule"] for row in artifact["violations"]}
+    assert "maximum_candidates_per_category" in rules
+    assert "maximum_candidates_per_input_combination" in rules
+
+
+def test_result_blind_gold_signal_preflight_rejects_exact_duplicate():
+    months = pd.period_range("2019-01", periods=40, freq="M")
+    frame = pd.DataFrame({
+        "ym": np.repeat(months, 40),
+        "candidate": np.tile(np.arange(40, dtype=float), len(months)),
+    })
+    eligible = pd.Series(True, index=frame.index)
+    duplicate = frame["candidate"].copy()
+    rows = gate.gold_signal_preflight(
+        frame,
+        {"candidate": frame["candidate"]},
+        {"approved": duplicate},
+        eligible=eligible,
+    )
+    factor = Factor(
+        name="candidate", family="candidate", category="other",
+        hypothesis="candidate", predicted_sign=1,
+        compute=lambda values: values["candidate"],
+    )
+    artifact = research_policy.gold_signal_preflight_artifact(
+        [factor], snapshot_digest="b" * 64, gold_family_digest="7" * 64,
+        approved_factors=["approved"], relationships=rows,
+        threshold=gate.TH["max_gold_corr"],
+        minimum_comparison_months=gate.TH["min_gold_corr_months"],
+    )
+
+    assert rows[0]["max_gold_signal_corr"] == pytest.approx(1.0)
+    with pytest.raises(ValueError, match="0.70 상관 사전검사 실패"):
+        research_policy.assert_gold_signal_preflight_artifact(
+            artifact, [factor], snapshot_digest="b" * 64,
+            threshold=gate.TH["max_gold_corr"],
+            minimum_comparison_months=gate.TH["min_gold_corr_months"],
+        )
+
+
 def test_input_feasibility_fails_before_epoch_registration(tmp_path):
     factor = Factor(
         name="sparse_candidate", category="other", hypothesis="희소 입력",
@@ -2018,6 +2127,7 @@ def test_input_feasibility_fails_before_epoch_registration(tmp_path):
             tmp_path, "campaign-001", "epoch-001", [factor],
             strategy_digests=_strategy_digests([factor]),
             input_feasibility=failed,
+            gold_signal_preflight=_gold_preflight([factor]),
         )
     assert epochs.load_campaign(tmp_path, "campaign-001")["epochs"] == []
 
@@ -2061,6 +2171,7 @@ def test_epoch_lifecycle_auto_qualifies_candidates_and_seals_oos(tmp_path):
         tmp_path, "campaign-001", "epoch-001", [first, second],
         strategy_digests=_strategy_digests([first, second]),
         input_feasibility=_input_feasibility([first, second]),
+        gold_signal_preflight=_gold_preflight([first, second]),
     )
     epochs.assert_candidate_ready(
         tmp_path, "campaign-001", "epoch-001", first,
@@ -2251,12 +2362,14 @@ def test_campaign_freezes_epoch_count_and_allows_only_one_open_epoch(tmp_path):
         tmp_path, "campaign-001", "epoch-001", [first],
         strategy_digests=_strategy_digests([first]),
         input_feasibility=_input_feasibility([first]),
+        gold_signal_preflight=_gold_preflight([first]),
     )
     with pytest.raises(ValueError, match="동시에 둘 이상의 epoch"):
         epochs.start_epoch(
             tmp_path, "campaign-001", "epoch-002", [second],
             strategy_digests=_strategy_digests([second]),
             input_feasibility=_input_feasibility([second]),
+            gold_signal_preflight=_gold_preflight([second]),
         )
     result = gate.Result(
         factor=first.name, definition_hash=first.definition_hash,
@@ -2276,6 +2389,7 @@ def test_campaign_freezes_epoch_count_and_allows_only_one_open_epoch(tmp_path):
         tmp_path, "campaign-001", "epoch-002", [second],
         strategy_digests=_strategy_digests([second]),
         input_feasibility=_input_feasibility([second]),
+        gold_signal_preflight=_gold_preflight([second]),
     )
     second_result = gate.Result(
         factor=second.name, definition_hash=second.definition_hash,
@@ -2292,6 +2406,7 @@ def test_campaign_freezes_epoch_count_and_allows_only_one_open_epoch(tmp_path):
             tmp_path, "campaign-001", "epoch-003", [third],
             strategy_digests=_strategy_digests([third]),
             input_feasibility=_input_feasibility([third]),
+            gold_signal_preflight=_gold_preflight([third]),
         )
 
 
@@ -2316,6 +2431,7 @@ def test_campaign_can_close_without_qualified_factors_instead_of_optional_stoppi
         tmp_path, "campaign-001", "epoch-001", [factor],
         strategy_digests=_strategy_digests([factor]),
         input_feasibility=_input_feasibility([factor]),
+        gold_signal_preflight=_gold_preflight([factor]),
     )
     rejected = gate.Result(
         factor=factor.name, definition_hash=factor.definition_hash,
@@ -2351,6 +2467,7 @@ def test_campaign_finalize_auto_qualifies_every_discovery_pass(tmp_path):
         tmp_path, "campaign-001", "epoch-001", factors,
         strategy_digests=_strategy_digests(factors),
         input_feasibility=_input_feasibility(factors),
+        gold_signal_preflight=_gold_preflight(factors),
     )
     for factor, pvalue in zip(factors, (.01, .02, .90), strict=True):
         result = gate.Result(
@@ -2401,6 +2518,7 @@ def test_campaign_suppresses_batch_duplicate_before_implementation(tmp_path):
         tmp_path, "campaign-001", "epoch-001", factors,
         strategy_digests=_strategy_digests(factors),
         input_feasibility=_input_feasibility(factors),
+        gold_signal_preflight=_gold_preflight(factors),
     )
     for factor in factors:
         epochs.mark_evaluated(
@@ -2466,7 +2584,7 @@ def test_campaign_suppresses_batch_duplicate_before_implementation(tmp_path):
     )
     context = research.write_context(panel, Registry(), research_dir=tmp_path).read_text()
     assert "| `candidate_a` | `candidate_a` | `candidate_a` |" in context
-    assert "| `fr-3.14.0` | PROVISIONAL | - |" in context
+    assert "| `fr-3.15.0` | PROVISIONAL | - |" in context
     assert "old-full-sample" in context
     assert "WITHHELD_POST_CUTOFF" in context
     assert "research/runs/old/report.md" not in context
@@ -2490,6 +2608,7 @@ def test_campaign_fdr_is_identical_when_epoch_order_is_reversed(tmp_path):
                 root, "campaign-001", epoch_id, [factor],
                 strategy_digests=_strategy_digests([factor]),
                 input_feasibility=_input_feasibility([factor]),
+                gold_signal_preflight=_gold_preflight([factor]),
             )
             result = gate.Result(
                 factor=name, definition_hash=factor.definition_hash,
@@ -2531,6 +2650,7 @@ def test_epoch_16_campaign_is_read_only_under_epoch_17(tmp_path):
         tmp_path, "campaign-001", "epoch-001", [factor],
         strategy_digests=_strategy_digests([factor]),
         input_feasibility=_input_feasibility([factor]),
+        gold_signal_preflight=_gold_preflight([factor]),
     )
     campaign = json.loads(campaign_path.read_text())
     campaign["protocol_version"] = "epoch-1.6"
@@ -2553,6 +2673,7 @@ def test_epoch_16_finalized_evidence_is_publish_compatible_but_not_reopened(tmp_
         tmp_path, "campaign-001", "epoch-001", [factor],
         strategy_digests=_strategy_digests([factor]),
         input_feasibility=_input_feasibility([factor]),
+        gold_signal_preflight=_gold_preflight([factor]),
     )
     epochs.mark_evaluated(
         tmp_path, "campaign-001", "epoch-001", factor,

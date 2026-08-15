@@ -13,34 +13,50 @@ MANIFEST_PATH = ROOT / "implementations/gold/manifest.json"
 MANIFEST = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 
 EXPECTED_DEFINITIONS = {
+    "adv20_change_12m": (-1, "d9a4ee93f1d820c6"),
+    "adv20_to_book_equity": (-1, "8df24f36d7bb6745"),
     "amihud_illiquidity_1m": (1, "72bd57d66a5cb84d"),
+    "asset_to_market": (1, "8b1db811b2216526"),
     "book_to_market_change_12m": (1, "e73b53f0ffaaf3c5"),
     "capital_stock_growth_12m": (-1, "e09f61de6fa86d70"),
     "capital_stock_to_assets": (-1, "dd1d0d32a2a49a3c"),
     "current_asset_turnover": (1, "05c6633ec72d4e6a"),
+    "current_liabilities_to_sales": (-1, "8ee67f572f89d053"),
+    "daily_volatility_change_12m": (-1, "29e6a2dd45feac4d"),
     "idiosyncratic_volatility_24m": (-1, "af24645c3a81a842"),
     "max_daily_return_1m": (-1, "e29c3da27f06a3ba"),
+    "max_daily_return_change_12m": (-1, "ce0680b52ff03580"),
     "net_equity_issuance_price_adjusted_12m": (-1, "01ee73e28cd8f170"),
     "net_income_to_liabilities": (1, "0cb38fb5ad3db869"),
     "net_working_capital_yield": (1, "0c14cdb6457bdf0a"),
+    "nonoperating_burden_margin": (-1, "3334a4ac95f88b68"),
     "operating_earnings_yield": (1, "692110a461d94df5"),
     "operating_income_to_current_liabilities": (1, "eaf7784cd83b4082"),
     "operating_income_to_liabilities": (1, "5ff8c69343b28a3f"),
     "paid_in_capital_ratio": (-1, "8c82db0117290bcd"),
     "pretax_income_to_liabilities": (1, "47ef014a02b341ff"),
+    "price_range_12m": (-1, "b564b360f33b0dca"),
     "realized_volatility_252d": (-1, "e0668fb0e7c0eb69"),
     "revenue_to_noncurrent_assets": (1, "29eedb3de737a6f9"),
     "revenue_to_total_liabilities": (1, "50c3bd228268077e"),
     "retained_earnings_to_equity": (1, "ede7286f5e5ca082"),
     "short_term_reversal_3m": (-1, "bb5c9a621d0bd540"),
     "trading_turnover_20d": (-1, "c03efb8638407bd6"),
+    "trading_value_volatility_12m": (-1, "74ce4f67d200762d"),
+    "turnover_change_6m": (-1, "f21fb281d5313d01"),
 }
 
 EXPECTED_BATCH_SQL = {
+    "adv20_to_book_equity": "campaign_20260815_011_activity_value_coverage.sql",
+    "asset_to_market": "campaign_20260815_011_activity_value_coverage.sql",
     "book_to_market_change_12m": "campaign_20260815_007_value_capital.sql",
     "capital_stock_to_assets": "campaign_20260815_007_value_capital.sql",
     "current_asset_turnover": "campaign_20260814_002_batch.sql",
+    "current_liabilities_to_sales": "campaign_20260815_011_activity_value_coverage.sql",
+    "daily_volatility_change_12m": "campaign_20260815_013_risk_attention_changes.sql",
     "net_income_to_liabilities": "campaign_20260815_004_income_coverage.sql",
+    "nonoperating_burden_margin": "campaign_20260815_014_activity_burden.sql",
+    "max_daily_return_change_12m": "campaign_20260815_013_risk_attention_changes.sql",
     "operating_earnings_yield": "campaign_20260814_002_batch.sql",
     "operating_income_to_current_liabilities": "campaign_20260814_002_batch.sql",
     "pretax_income_to_liabilities": "campaign_20260815_004_income_coverage.sql",
@@ -48,6 +64,8 @@ EXPECTED_BATCH_SQL = {
     "revenue_to_noncurrent_assets": "campaign_20260815_009_revenue_reversal.sql",
     "revenue_to_total_liabilities": "revenue_to_total_liabilities.sql",
     "short_term_reversal_3m": "campaign_20260815_009_revenue_reversal.sql",
+    "trading_value_volatility_12m": "campaign_20260815_014_activity_burden.sql",
+    "turnover_change_6m": "campaign_20260815_013_risk_attention_changes.sql",
 }
 
 
@@ -89,10 +107,16 @@ def test_campaign_batch_implementation_has_exact_factor_discriminators():
         if "result_factor" in spec
     }
     assert batch == {
+        "adv20_to_book_equity": "adv20_to_book_equity",
+        "asset_to_market": "asset_to_market",
         "book_to_market_change_12m": "book_to_market_change_12m",
         "capital_stock_to_assets": "capital_stock_to_assets",
         "current_asset_turnover": "current_asset_turnover",
+        "current_liabilities_to_sales": "current_liabilities_to_sales",
+        "daily_volatility_change_12m": "daily_volatility_change_12m",
         "net_income_to_liabilities": "net_income_to_liabilities",
+        "nonoperating_burden_margin": "nonoperating_burden_margin",
+        "max_daily_return_change_12m": "max_daily_return_change_12m",
         "operating_earnings_yield": "operating_earnings_yield",
         "operating_income_to_current_liabilities": (
             "operating_income_to_current_liabilities"
@@ -102,6 +126,8 @@ def test_campaign_batch_implementation_has_exact_factor_discriminators():
         "revenue_to_total_liabilities": "revenue_to_total_liabilities",
         "retained_earnings_to_equity": "retained_earnings_to_equity",
         "short_term_reversal_3m": "short_term_reversal_3m",
+        "trading_value_volatility_12m": "trading_value_volatility_12m",
+        "turnover_change_6m": "turnover_change_6m",
     }
 
 
@@ -190,6 +216,7 @@ def test_accounting_implementations_are_point_in_time():
         "operating_earnings_yield",
         "operating_income_to_current_liabilities",
         "operating_income_to_liabilities",
+        "nonoperating_burden_margin",
         "paid_in_capital_ratio",
         "retained_earnings_to_equity",
     ):
@@ -207,6 +234,20 @@ def test_accounting_implementations_are_point_in_time():
         assert "fundamental_current" not in body
 
 
+def test_campaign_014_reuses_monthly_activity_and_fundamental_pit_streams():
+    sql = _sql("trading_value_volatility_12m")
+    assert "trading_value / nullif(market_cap, 0) AS scaled_activity" in sql
+    assert "stddev_samp(scaled_activity) OVER asset_months" in sql
+    assert "scaled_activity_count = 12" in sql
+    assert "oldest_signal_month + INTERVAL '11 months'" in sql
+    assert "fundamental_candidates AS MATERIALIZED" in sql
+    assert "'revenue', 'operating_income', 'net_income'" in sql
+    assert "(f.operating_income_ttm - f.net_income_ttm) / f.revenue_ttm" in sql
+    assert MANIFEST["nonoperating_burden_margin"]["sql"] == (
+        MANIFEST["trading_value_volatility_12m"]["sql"]
+    )
+
+
 def test_net_equity_issuance_uses_price_adjusted_exact_calendar_lag():
     sql = _sql("net_equity_issuance_price_adjusted_12m")
     assert "market_cap::double precision / adj_close::double precision" in sql
@@ -220,3 +261,13 @@ def test_turnover_uses_current_plus_previous_nineteen_rows():
     sql = _sql("trading_turnover_20d")
     assert "ROWS BETWEEN 19 PRECEDING AND CURRENT ROW" in sql
     assert "adv20 > 0" not in sql
+
+
+def test_adv20_change_uses_exact_calendar_lag_after_one_month_warmup():
+    sql = _sql("adv20_change_12m")
+    assert "INTERVAL '13 months'" in sql
+    assert "ROWS BETWEEN 19 PRECEDING AND CURRENT ROW" in sql
+    assert "lag(adv20, 12)" in sql
+    assert "lag(signal_month, 12)" in sql
+    assert "prior_adv20 > 0" in sql
+    assert "prior_signal_month + INTERVAL '12 months'" in sql

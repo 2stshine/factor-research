@@ -268,7 +268,7 @@ class CampaignWindow:
 
 
 def validate_manifest(campaign: dict, *, expected_oos_months: int) -> CampaignWindow:
-    """Authenticate every stored epoch-1.7 boundary from its frozen inputs."""
+    """Authenticate every stored current-protocol boundary from frozen inputs."""
     snapshot = campaign.get("snapshot") or {}
     discovery = campaign.get("discovery") or {}
     oos = campaign.get("oos") or {}

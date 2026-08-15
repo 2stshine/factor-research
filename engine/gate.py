@@ -21,7 +21,7 @@ from engine import research_policy, silver
 from engine.research_policy import COMMON_EVALUATION_START
 
 
-RULESET_VERSION = "fr-3.14.0"
+RULESET_VERSION = "fr-3.15.0"
 RESEARCH_START = COMMON_EVALUATION_START
 EVALUATION_PHASES = {"discovery", "full"}
 
@@ -603,6 +603,72 @@ def batch_signal_orthogonality(
         "survivors": survivors,
         "suppressed": suppressed,
     }
+
+
+def gold_signal_preflight(
+    df: pd.DataFrame,
+    signals: dict[str, pd.Series],
+    existing: dict[str, pd.Series],
+    *,
+    eligible: pd.Series,
+) -> list[dict]:
+    """Run T5's result-blind signal statistic before epoch registration."""
+    if "ym" not in df.columns or not eligible.index.equals(df.index):
+        raise ValueError("Gold 상관 사전검사 frame/mask가 다릅니다")
+    for collection, label in ((signals, "candidate"), (existing, "Gold")):
+        for name, values in collection.items():
+            if not values.index.equals(df.index):
+                raise ValueError(f"{label} signal index가 다릅니다: {name}")
+    sample = df.loc[eligible.fillna(False).astype(bool), ["ym"]].copy()
+    candidate_names = sorted(signals)
+    gold_names = sorted(existing)
+    for name, values in {**signals, **existing}.items():
+        sample[name] = pd.to_numeric(values, errors="coerce").reindex(sample.index)
+
+    rows: list[dict] = []
+    for candidate in candidate_names:
+        comparisons: list[dict] = []
+        for approved in gold_names:
+            monthly: list[float] = []
+            for _, group in sample.groupby("ym", sort=True):
+                valid = group[[candidate, approved]].replace(
+                    [np.inf, -np.inf], np.nan,
+                ).dropna()
+                if len(valid) < 30:
+                    continue
+                rho = stats.spearmanr(
+                    valid[candidate], valid[approved],
+                ).statistic
+                if pd.notna(rho):
+                    monthly.append(abs(float(rho)))
+            comparisons.append({
+                "gold_factor": approved,
+                "median_absolute_spearman": (
+                    float(np.median(monthly)) if monthly else None
+                ),
+                "comparison_months": len(monthly),
+                "status": (
+                    "PASS" if len(monthly) >= TH["min_gold_corr_months"]
+                    and float(np.median(monthly)) <= TH["max_gold_corr"]
+                    else "FAIL"
+                ),
+            })
+        failed = [row for row in comparisons if row["status"] != "PASS"]
+        maximum = max(
+            (
+                float(row["median_absolute_spearman"])
+                for row in comparisons
+                if row["median_absolute_spearman"] is not None
+            ),
+            default=0.0,
+        )
+        rows.append({
+            "factor": candidate,
+            "max_gold_signal_corr": maximum,
+            "comparisons": comparisons,
+            "status": "PASS" if not failed else "FAIL",
+        })
+    return rows
 
 
 def _weights(group: pd.DataFrame, weighting: str) -> dict[int, float]:

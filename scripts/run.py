@@ -548,16 +548,15 @@ def _ensure_factor_columns(pan, targets):
     return df
 
 
-def preflight_candidate_inputs(
+def _candidate_preflight_frame(
     campaign: dict,
     panel: P.Panel,
     factors: list[F.Factor],
-) -> dict:
-    """Run T1.1's coverage contract before registering an epoch.
+) -> tuple[P.Panel, P.Panel, pd.DataFrame, pd.Series, str, pd.Period]:
+    """Build one label-free candidate frame shared by registration gates.
 
-    This check uses only the authenticated discovery snapshot, universe mask,
-    and candidate-visible PIT fields. Forward returns and investability labels
-    are absent from the frame, so it cannot adapt a definition to outcomes.
+    Forward returns are never read. Investability is used only as T5's fixed
+    comparison universe, exactly as in the final Gold signal gate.
     """
     discovery = _scope_discovery_panel(
         panel,
@@ -578,6 +577,17 @@ def preflight_candidate_inputs(
         & frame["ym"].ge(gate.RESEARCH_START)
         & frame["ym"].le(signal_end)
     )
+    return discovery, research_panel, frame, scope, snapshot_digest, signal_end
+
+
+def _candidate_input_feasibility(
+    factors: list[F.Factor],
+    *,
+    frame: pd.DataFrame,
+    scope: pd.Series,
+    snapshot_digest: str,
+    signal_end: pd.Period,
+) -> dict:
     metrics: dict[str, dict] = {}
     for factor in factors:
         values = pd.to_numeric(frame[f"f_{factor.name}"], errors="coerce")
@@ -601,6 +611,82 @@ def preflight_candidate_inputs(
         minimum_coverage=gate.TH["coverage"],
         minimum_monthly_p10=gate.TH["monthly_coverage_p10"],
     )
+
+
+def preflight_candidate_inputs(
+    campaign: dict,
+    panel: P.Panel,
+    factors: list[F.Factor],
+) -> dict:
+    """Run T1.1's label-free coverage contract before registration."""
+    _discovery, _research_panel, frame, scope, snapshot_digest, signal_end = (
+        _candidate_preflight_frame(campaign, panel, factors)
+    )
+    return _candidate_input_feasibility(
+        factors,
+        frame=frame,
+        scope=scope,
+        snapshot_digest=snapshot_digest,
+        signal_end=signal_end,
+    )
+
+
+def preflight_candidate_registration(
+    campaign: dict,
+    panel: P.Panel,
+    factors: list[F.Factor],
+) -> tuple[dict, dict]:
+    """Run coverage and result-blind Gold correlation on one computed frame."""
+    discovery, research_panel, frame, scope, snapshot_digest, signal_end = (
+        _candidate_preflight_frame(campaign, panel, factors)
+    )
+    feasibility = _candidate_input_feasibility(
+        factors,
+        frame=frame,
+        scope=scope,
+        snapshot_digest=snapshot_digest,
+        signal_end=signal_end,
+    )
+    with silver.connect(read_only=True) as conn:
+        if campaign.get("input_generation") is not None:
+            silver.verify_live_research_generation(
+                conn, campaign["input_generation"],
+            )
+        else:
+            silver.verify_live_total_return_contract(
+                conn, research_panel.meta.get(
+                    "return_contract_validation_evidence"
+                ),
+            )
+            P.verify_live_asset_identity(
+                conn,
+                discovery,
+                cutoff=str(pd.Timestamp(discovery.monthly["trade_date"].max()).date()),
+            )
+        approved = _approved_signals(conn, frame)
+    eligible = (
+        scope
+        & research_panel.investable.reindex(frame.index).fillna(False)
+    )
+    relationships = gate.gold_signal_preflight(
+        frame,
+        {
+            factor.name: frame[f"f_{factor.name}"]
+            for factor in factors
+        },
+        approved,
+        eligible=eligible,
+    )
+    gold_preflight = research_policy.gold_signal_preflight_artifact(
+        factors,
+        snapshot_digest=snapshot_digest,
+        gold_family_digest=_signal_family_digest(approved),
+        approved_factors=sorted(approved),
+        relationships=relationships,
+        threshold=gate.TH["max_gold_corr"],
+        minimum_comparison_months=gate.TH["min_gold_corr_months"],
+    )
+    return feasibility, gold_preflight
 
 
 def _reuse_factor_columns(
@@ -1952,7 +2038,7 @@ def _evaluate(
         or discovery_asset_identity_digest is None
     ):
         raise ValueError(
-            "epoch-1.7 discovery는 campaign의 동결 cutoff·OOS 시작월·discovery "
+            "epoch-1.8 discovery는 campaign의 동결 cutoff·OOS 시작월·discovery "
             "snapshot digest와 asset identity digest가 필수입니다. "
             "scripts/research.py campaign workflow를 "
             "사용하세요."
@@ -2290,7 +2376,7 @@ def _evaluate(
 def cmd_gate(args):
     del args
     raise SystemExit(
-        "전체 패널 gate는 봉인 OOS를 노출하므로 epoch-1.7에서 비활성화했습니다. "
+        "전체 패널 gate는 봉인 OOS를 노출하므로 epoch-1.8에서 비활성화했습니다. "
         "scripts/research.py의 campaign-start → epoch-start → evaluate를 사용하세요."
     )
 

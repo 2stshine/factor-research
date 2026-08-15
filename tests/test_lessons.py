@@ -298,6 +298,102 @@ def test_labels_cover_every_trial(history):
     assert label_keys == history_keys
 
 
+def test_identity_label_sync_appends_unreviewed_rows_without_guessing(tmp_path):
+    module = _lessons_module()
+    root = tmp_path / "research"
+    (root / "memory").mkdir(parents=True)
+    history = [
+        {
+            "cycle_id": "cycle-reviewed", "factor": "reviewed_factor",
+            "ruleset_version": "fr-test", "report": "runs/reviewed/report.md",
+            "strategy_file": "factors/candidates/reviewed_factor.py",
+        },
+        {
+            "cycle_id": "cycle-new", "factor": "new_factor",
+            "ruleset_version": "fr-test", "report": "runs/new/report.md",
+            "strategy_file": "factors/candidates/new_factor.py",
+        },
+    ]
+    (root / "history.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in history), encoding="utf-8",
+    )
+    reviewed = module._placeholder_label(history[0])
+    reviewed.update({
+        "jkp_theme": "Quality", "jkp_evidence": "op_at",
+        "confidence": "high",
+    })
+    (root / "memory" / "labels.jsonl").write_text(
+        json.dumps(reviewed) + "\n", encoding="utf-8",
+    )
+
+    module.sync_identity_labels(root)
+    labels = module.read_jsonl(root / "memory" / "labels.jsonl")
+
+    assert [row["cycle_id"] for row in labels] == [
+        "cycle-reviewed", "cycle-new",
+    ]
+    assert labels[0] == reviewed
+    assert labels[1]["factor"] == "new_factor"
+    assert labels[1]["jkp_theme"] is None
+    assert labels[1]["cat_economic"] is None
+    assert labels[1]["confidence"] == "low"
+    assert labels[1]["cat_data_source"] == "unreviewed"
+
+
+def test_refresh_lessons_includes_every_unreviewed_history_identity(tmp_path):
+    module = _lessons_module()
+    root = tmp_path / "research"
+    (root / "memory").mkdir(parents=True)
+    history = [
+        {
+            "cycle_id": "cycle-a", "factor": "factor_a", "family": "family_a",
+            "ruleset_version": "fr-test", "report": "runs/a/report.md",
+            "strategy_file": "factors/candidates/factor_a.py",
+        },
+        {
+            "cycle_id": "cycle-b", "factor": "factor_b", "family": "family_b",
+            "ruleset_version": "fr-test", "report": "runs/b/report.md",
+            "strategy_file": "factors/candidates/factor_b.py",
+        },
+    ]
+    (root / "history.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in history), encoding="utf-8",
+    )
+
+    path = module.refresh_lessons(root)
+    text = path.read_text(encoding="utf-8")
+
+    assert "시행 2건 · 생략 없음" in text
+    assert "`cycle-a`" in text and "`factor_a`" in text
+    assert "`cycle-b`" in text and "`factor_b`" in text
+    assert len(module.read_jsonl(root / "memory" / "labels.jsonl")) == 2
+
+
+def test_atomic_refresh_preserves_existing_artifact_permissions(tmp_path):
+    module = _lessons_module()
+    path = tmp_path / "lessons.md"
+    path.write_text("before", encoding="utf-8")
+    path.chmod(0o644)
+
+    module._atomic_write_text(path, "after")
+
+    assert path.read_text(encoding="utf-8") == "after"
+    assert path.stat().st_mode & 0o777 == 0o644
+
+
+def test_campaign_lifecycle_refreshes_lessons_automatically():
+    from scripts import research as research_cli
+
+    for function in (
+        research_cli.cmd_context,
+        research_cli.cmd_campaign_start,
+        research_cli.cmd_epoch_close,
+        research_cli.cmd_campaign_finalize,
+        research_cli.cmd_campaign_reveal,
+    ):
+        assert "_refresh_research_memory" in inspect.getsource(function)
+
+
 def test_label_themes_are_within_the_closed_vocabulary():
     path = RESEARCH / "memory" / "labels.jsonl"
     labels = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]

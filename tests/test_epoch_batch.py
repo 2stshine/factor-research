@@ -46,6 +46,23 @@ def _input_feasibility(factors):
     )
 
 
+def _gold_preflight(factors):
+    return research_policy.gold_signal_preflight_artifact(
+        factors,
+        snapshot_digest="2" * 64,
+        gold_family_digest="7" * 64,
+        approved_factors=[],
+        relationships=[{
+            "factor": factor.name,
+            "max_gold_signal_corr": 0.0,
+            "comparisons": [],
+            "status": "PASS",
+        } for factor in factors],
+        threshold=gate.TH["max_gold_corr"],
+        minimum_comparison_months=gate.TH["min_gold_corr_months"],
+    )
+
+
 def test_operational_timing_is_stderr_and_append_log_without_outcome(
     monkeypatch, capsys, tmp_path,
 ):
@@ -597,6 +614,7 @@ def test_abort_open_campaign_preserves_candidates_and_does_not_use_oos(tmp_path)
         [factor],
         strategy_digests={"candidate": "6" * 64},
         input_feasibility=_input_feasibility([factor]),
+        gold_signal_preflight=_gold_preflight([factor]),
     )
 
     epochs.abort_open_campaign(

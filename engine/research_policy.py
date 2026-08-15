@@ -23,10 +23,14 @@ MAX_FACTOR_LOOKBACK_MONTHS = 36
 RESEARCH_MARKETS = frozenset({"KOSPI", "KOSDAQ"})
 TRADING_DAYS_PER_MONTH = 21
 
-CANDIDATE_BATCH_POLICY_SCHEMA = "candidate-batch-policy-v1"
+CANDIDATE_BATCH_POLICY_SCHEMA = "candidate-batch-policy-v2"
 INPUT_FEASIBILITY_SCHEMA = "candidate-input-feasibility-v1"
+GOLD_SIGNAL_PREFLIGHT_SCHEMA = "candidate-gold-signal-preflight-v1"
 MIN_BATCH_CATEGORY_COUNT = 3
 MIN_BATCH_SIZE_FOR_CATEGORY_DIVERSITY = 5
+STRICT_DIVERSITY_BATCH_SIZE = 10
+MAX_CANDIDATES_PER_CATEGORY = 3
+MAX_CANDIDATES_PER_INPUT_COMBINATION = 2
 
 # Net- and pretax-income variants are accounting presentations of the same
 # underlying formula shape.  Replacing only these explicitly reviewed aliases
@@ -106,6 +110,122 @@ class _StructuralFieldNormalizer(ast.NodeTransformer):
         return node
 
 
+_MECHANICAL_INPUT_FIELDS = frozenset({"asset_id", "ym"})
+
+
+def _normalized_field(value: str) -> str:
+    return _STRUCTURAL_FIELD_ALIASES.get(value, value)
+
+
+def factor_input_fields(factor) -> tuple[str, ...]:
+    """Return result-blind economic inputs referenced by one definition."""
+    fields = {_normalized_field(str(value)) for value in factor.needs}
+    source = factor.source
+    if source:
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            tree = None
+        if tree is not None:
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Subscript):
+                    continue
+                key = node.slice
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    fields.add(_normalized_field(key.value))
+    return tuple(sorted(fields - _MECHANICAL_INPUT_FIELDS))
+
+
+def _inline_formula_name(
+    node: ast.AST,
+    assignments: dict[str, ast.AST],
+    *,
+    resolving: frozenset[str] = frozenset(),
+) -> ast.AST:
+    if isinstance(node, ast.Name) and node.id in assignments and node.id not in resolving:
+        return _inline_formula_name(
+            assignments[node.id], assignments,
+            resolving=resolving | {node.id},
+        )
+    for field, value in ast.iter_fields(node):
+        if isinstance(value, list):
+            setattr(node, field, [
+                _inline_formula_name(item, assignments, resolving=resolving)
+                if isinstance(item, ast.AST) else item
+                for item in value
+            ])
+        elif isinstance(value, ast.AST):
+            setattr(
+                node, field,
+                _inline_formula_name(value, assignments, resolving=resolving),
+            )
+    return node
+
+
+def _formula_expression(tree: ast.Module) -> ast.AST | None:
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
+    if len(functions) != 1:
+        return None
+    assignments: dict[str, ast.AST] = {}
+    returned: ast.AST | None = None
+    for statement in functions[0].body:
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        ):
+            assignments[statement.targets[0].id] = statement.value
+        elif isinstance(statement, ast.Return):
+            returned = statement.value
+    if returned is None:
+        return None
+    return _inline_formula_name(returned, assignments)
+
+
+def _canonical_formula(node: ast.AST):
+    """Canonicalize formula shape, treating a ratio and its reciprocal alike."""
+    if isinstance(node, ast.Subscript):
+        key = node.slice
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            return ("field", _normalized_field(key.value))
+    if isinstance(node, ast.Constant):
+        value = node.value
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        return ("constant", value)
+    if isinstance(node, ast.Name):
+        return ("name", node.id)
+    if isinstance(node, ast.UnaryOp):
+        return (type(node.op).__name__, _canonical_formula(node.operand))
+    if isinstance(node, ast.BinOp):
+        left = _canonical_formula(node.left)
+        right = _canonical_formula(node.right)
+        if isinstance(node.op, ast.Div):
+            # A/B and B/A are monotone inverses with |Spearman|=1.  They are
+            # one structural exposure for novelty and diversity purposes.
+            return ("unordered_ratio", *sorted((left, right), key=repr))
+        if isinstance(node.op, (ast.Add, ast.Mult)):
+            return (type(node.op).__name__, *sorted((left, right), key=repr))
+        return (type(node.op).__name__, left, right)
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Attribute) and node.func.attr in {
+            "where", "reindex", "astype", "fillna",
+        }:
+            # Validity and alignment wrappers do not change the exposure.
+            return _canonical_formula(node.func.value)
+        return (
+            "call", _canonical_formula(node.func),
+            tuple(_canonical_formula(value) for value in node.args),
+            tuple(sorted(
+                (keyword.arg, _canonical_formula(keyword.value))
+                for keyword in node.keywords
+            )),
+        )
+    if isinstance(node, ast.Attribute):
+        return ("attribute", _canonical_formula(node.value), node.attr)
+    return ast.dump(node, annotate_fields=True, include_attributes=False)
+
+
 def _canonical_digest(payload: dict) -> str:
     body = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -130,19 +250,25 @@ def factor_structure_fingerprint(factor) -> str | None:
         return None
     if any(isinstance(node, ast.Lambda) for node in ast.walk(tree)):
         return None
+    expression = _formula_expression(tree)
     normalized = _StructuralFieldNormalizer().visit(tree)
     ast.fix_missing_locations(normalized)
-    needs = [
-        _STRUCTURAL_FIELD_ALIASES.get(str(value), str(value))
-        for value in factor.needs
-    ]
     payload = {
-        "ast": ast.dump(normalized, annotate_fields=True, include_attributes=False),
-        "needs": sorted(needs),
+        "formula": (
+            _canonical_formula(expression)
+            if expression is not None else
+            ast.dump(normalized, annotate_fields=True, include_attributes=False)
+        ),
+        "input_fields": factor_input_fields(factor),
         "params": factor.params,
         "rebalance_months": factor.rebalance_months,
     }
     return _canonical_digest(payload)
+
+
+def factor_input_combination(factor) -> str:
+    """Digest the exact raw input set, independently of candidate outcomes."""
+    return _canonical_digest({"input_fields": factor_input_fields(factor)})
 
 
 def candidate_batch_policy(factors, *, existing_factors=()) -> dict:
@@ -165,6 +291,8 @@ def candidate_batch_policy(factors, *, existing_factors=()) -> dict:
             "category": factor.category,
             "definition_hash": factor.definition_hash,
             "structure_fingerprint": fingerprint,
+            "input_fields": list(factor_input_fields(factor)),
+            "input_combination": factor_input_combination(factor),
         })
         if fingerprint is not None:
             signatures.setdefault(fingerprint, []).append(factor.name)
@@ -214,9 +342,36 @@ def candidate_batch_policy(factors, *, existing_factors=()) -> dict:
             "minimum_categories": MIN_BATCH_CATEGORY_COUNT,
             "observed_categories": categories,
         })
+    if len(rows) >= STRICT_DIVERSITY_BATCH_SIZE:
+        category_members: dict[str, list[str]] = {}
+        input_members: dict[str, list[str]] = {}
+        input_fields_by_digest: dict[str, list[str]] = {}
+        for row in rows:
+            category_members.setdefault(row["category"], []).append(row["factor"])
+            input_members.setdefault(row["input_combination"], []).append(
+                row["factor"]
+            )
+            input_fields_by_digest[row["input_combination"]] = row["input_fields"]
+        for category, members in sorted(category_members.items()):
+            if len(members) > MAX_CANDIDATES_PER_CATEGORY:
+                violations.append({
+                    "rule": "maximum_candidates_per_category",
+                    "category": category,
+                    "maximum": MAX_CANDIDATES_PER_CATEGORY,
+                    "factors": sorted(members),
+                })
+        for combination, members in sorted(input_members.items()):
+            if len(members) > MAX_CANDIDATES_PER_INPUT_COMBINATION:
+                violations.append({
+                    "rule": "maximum_candidates_per_input_combination",
+                    "input_combination": combination,
+                    "input_fields": input_fields_by_digest[combination],
+                    "maximum": MAX_CANDIDATES_PER_INPUT_COMBINATION,
+                    "factors": sorted(members),
+                })
     artifact = {
         "schema_version": CANDIDATE_BATCH_POLICY_SCHEMA,
-        "policy": "outcome_free_structure_and_category_v1",
+        "policy": "outcome_free_structure_input_and_category_v2",
         "candidates": rows,
         "attempted_registry_factors": [factor.name for factor in existing],
         "category_count": len(categories),
@@ -232,7 +387,8 @@ def assert_candidate_batch_policy(artifact: dict) -> None:
     observed_digest = body.pop("evidence_digest", None)
     valid = (
         artifact.get("schema_version") == CANDIDATE_BATCH_POLICY_SCHEMA
-        and artifact.get("policy") == "outcome_free_structure_and_category_v1"
+        and artifact.get("policy")
+        == "outcome_free_structure_input_and_category_v2"
         and observed_digest == _canonical_digest(body)
     )
     if not valid:
@@ -242,6 +398,93 @@ def assert_candidate_batch_policy(artifact: dict) -> None:
             "candidate batch 구조·다양성 정책 위반: "
             f"{artifact.get('violations')}"
         )
+
+
+def gold_signal_preflight_artifact(
+    factors,
+    *,
+    snapshot_digest: str,
+    gold_family_digest: str,
+    approved_factors: list[str],
+    relationships: list[dict],
+    threshold: float,
+    minimum_comparison_months: int,
+) -> dict:
+    """Bind result-blind candidate/Gold correlations before registration."""
+    definitions = {
+        factor.name: factor.definition_hash for factor in factors
+    }
+    relationship_by_name = {
+        row.get("factor"): row for row in relationships
+    }
+    if set(relationship_by_name) != set(definitions):
+        raise ValueError("Gold 상관 사전검사 candidate exact set이 다릅니다")
+    rows = []
+    for name in sorted(definitions):
+        relationship = relationship_by_name[name]
+        comparisons = relationship.get("comparisons") or []
+        if sorted(row.get("gold_factor") for row in comparisons) != sorted(
+            approved_factors
+        ):
+            raise ValueError(f"Gold 상관 사전검사 APPROVED set이 다릅니다: {name}")
+        rows.append({
+            **relationship,
+            "definition_hash": definitions[name],
+        })
+    artifact = {
+        "schema_version": GOLD_SIGNAL_PREFLIGHT_SCHEMA,
+        "policy": "result_blind_gold_signal_correlation_v1",
+        "snapshot_digest": snapshot_digest,
+        "gold_family_digest": gold_family_digest,
+        "approved_factors": sorted(approved_factors),
+        "threshold": threshold,
+        "minimum_comparison_months": minimum_comparison_months,
+        "candidates": rows,
+        "status": "PASS" if all(
+            row.get("status") == "PASS" for row in rows
+        ) else "FAIL",
+    }
+    artifact["evidence_digest"] = _canonical_digest(artifact)
+    return artifact
+
+
+def assert_gold_signal_preflight_artifact(
+    artifact: dict,
+    factors,
+    *,
+    snapshot_digest: str,
+    threshold: float,
+    minimum_comparison_months: int,
+) -> None:
+    body = dict(artifact)
+    observed_digest = body.pop("evidence_digest", None)
+    expected = sorted(
+        (factor.name, factor.definition_hash) for factor in factors
+    )
+    observed = sorted(
+        (row.get("factor"), row.get("definition_hash"))
+        for row in artifact.get("candidates", [])
+    )
+    valid = (
+        artifact.get("schema_version") == GOLD_SIGNAL_PREFLIGHT_SCHEMA
+        and artifact.get("policy") == "result_blind_gold_signal_correlation_v1"
+        and artifact.get("snapshot_digest") == snapshot_digest
+        and artifact.get("threshold") == threshold
+        and artifact.get("minimum_comparison_months")
+        == minimum_comparison_months
+        and observed == expected
+        and isinstance(artifact.get("gold_family_digest"), str)
+        and len(artifact["gold_family_digest"]) == 64
+        and observed_digest == _canonical_digest(body)
+    )
+    if not valid:
+        raise ValueError("candidate/Gold 상관 사전검사 artifact가 손상됐습니다")
+    failed = [
+        row.get("factor") for row in artifact.get("candidates", [])
+        if row.get("status") != "PASS"
+    ]
+    if artifact.get("status") != "PASS" or failed:
+        raise ValueError(f"candidate/Gold 0.70 상관 사전검사 실패: {failed}")
 
 
 def input_feasibility_artifact(

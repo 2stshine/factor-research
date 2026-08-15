@@ -34,9 +34,10 @@ from engine.gate import (
 )
 
 
-PROTOCOL_VERSION = "epoch-1.7"
+PROTOCOL_VERSION = "epoch-1.8"
 _PUBLICATION_COMPATIBLE_STATES = {
     ("epoch-1.6", "fr-3.13.0"),
+    ("epoch-1.7", "fr-3.14.0"),
     (PROTOCOL_VERSION, RULESET_VERSION),
 }
 IDENTITY_INVALIDATION_SCHEMA_VERSION = "input-identity-invalidation-1"
@@ -413,7 +414,7 @@ def migrate_open_campaign(
     """Never relabel already-observed evidence as a clean historical OOS."""
     del root, campaign_id, as_of_month, reason
     raise ValueError(
-        "epoch-1.7 holdout은 기존 campaign으로 migration할 수 없습니다. "
+        "epoch-1.8 holdout은 기존 campaign으로 migration할 수 없습니다. "
         "기존 증거는 legacy/retrospective로 보존하고 새 campaign을 시작하세요."
     )
 
@@ -600,6 +601,7 @@ def start_epoch(
     *,
     strategy_digests: dict[str, str],
     input_feasibility: dict,
+    gold_signal_preflight: dict,
     existing_factors: list[Factor] | tuple[Factor, ...] = (),
     comparison_registry: dict | None = None,
 ) -> Path:
@@ -635,6 +637,13 @@ def start_epoch(
         input_feasibility,
         factors,
         snapshot_digest=campaign["snapshot"]["discovery_input_digest"],
+    )
+    research_policy.assert_gold_signal_preflight_artifact(
+        gold_signal_preflight,
+        factors,
+        snapshot_digest=campaign["snapshot"]["discovery_input_digest"],
+        threshold=TH["max_gold_corr"],
+        minimum_comparison_months=TH["min_gold_corr_months"],
     )
     lookbacks = {
         factor.name: research_policy.assert_allowed_lookback(
@@ -687,6 +696,7 @@ def start_epoch(
         "oos_status": "SEALED",
         "candidate_batch_policy": batch_policy,
         "input_feasibility": input_feasibility,
+        "gold_signal_preflight": gold_signal_preflight,
         "comparison_registry": comparison_registry,
         "candidates": [
             {

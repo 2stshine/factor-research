@@ -22,10 +22,21 @@ from engine.boundaries import (
 )
 from engine import factors as F
 from factors.candidate_loader import RESEARCH_SPECS
+from scripts import lessons as research_lessons
 from scripts import run
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _refresh_research_memory(*, context_cutoff: str | None = None) -> Path:
+    """Refresh lossless identity memory without exposing sealed outcomes."""
+    try:
+        return research_lessons.refresh_lessons(
+            REPO_ROOT / "research", context_cutoff=context_cutoff,
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"연구 메모리 갱신 실패: {exc}") from exc
 
 
 def cmd_context(_args) -> None:
@@ -40,11 +51,15 @@ def cmd_context(_args) -> None:
         next_window = _campaign_snapshot_boundary(panel)
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
+    memory = _refresh_research_memory(
+        context_cutoff=next_window.discovery_data_cutoff,
+    )
     path = research.write_context(
         panel, F.REGISTRY,
         context_cutoff=next_window.discovery_data_cutoff,
     )
     print(f"연구 컨텍스트 갱신: {path}")
+    print(f"시행 전량 메모리 갱신: {memory}")
 
 
 def cmd_identity_audit(_args) -> None:
@@ -333,6 +348,7 @@ def cmd_campaign_start(args) -> None:
         planned_epoch_count=args.epochs,
         input_generation=input_generation,
     )
+    memory = _refresh_research_memory()
     context = research.write_context(panel, F.REGISTRY)
     print(f"campaign 생성: {path}")
     print(f"OOS mode: {window.mode}")
@@ -343,6 +359,7 @@ def cmd_campaign_start(args) -> None:
     )
     print(f"마지막 OOS 수익률 월: {window.oos_return_end}")
     print(f"campaign 전용 컨텍스트: {context}")
+    print(f"시행 전량 메모리: {memory}")
 
 
 def cmd_epoch_start(args) -> None:
@@ -374,13 +391,22 @@ def cmd_epoch_start(args) -> None:
         )
         research_policy.assert_candidate_batch_policy(batch_policy)
         campaign = epochs.load_campaign("research", args.campaign)
-        input_feasibility = run.preflight_candidate_inputs(
-            campaign, run._load(), factors,
+        input_feasibility, gold_signal_preflight = (
+            run.preflight_candidate_registration(
+                campaign, run._load(), factors,
+            )
         )
         research_policy.assert_input_feasibility_artifact(
             input_feasibility,
             factors,
             snapshot_digest=campaign["snapshot"]["discovery_input_digest"],
+        )
+        research_policy.assert_gold_signal_preflight_artifact(
+            gold_signal_preflight,
+            factors,
+            snapshot_digest=campaign["snapshot"]["discovery_input_digest"],
+            threshold=gate.TH["max_gold_corr"],
+            minimum_comparison_months=gate.TH["min_gold_corr_months"],
         )
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
@@ -392,6 +418,7 @@ def cmd_epoch_start(args) -> None:
                 for factor in factors
             },
             input_feasibility=input_feasibility,
+            gold_signal_preflight=gold_signal_preflight,
             existing_factors=attempted_factors,
             comparison_registry=research.registry_snapshot(F.REGISTRY),
         )
@@ -399,6 +426,7 @@ def cmd_epoch_start(args) -> None:
         raise SystemExit(str(exc)) from exc
     print(f"epoch 사전등록: {path}")
     print(f"후보 {len(factors)}개 정의·방향·해시 동결")
+    print("기존 APPROVED Gold 0.70 신호 상관 사전검사: PASS")
     print("최종 OOS: SEALED")
 
 
@@ -589,8 +617,10 @@ def cmd_epoch_close(args) -> None:
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    memory = _refresh_research_memory()
     print(f"epoch 종료: {report}")
     print(f"구조화 성찰: {result}")
+    print(f"시행 전량 메모리 갱신: {memory}")
     print("Discovery FDR: PENDING (campaign finalize에서 전체 후보 일괄 판정)")
     print("최종 OOS: SEALED")
 
@@ -615,6 +645,7 @@ def cmd_campaign_finalize(args) -> None:
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     campaign = epochs.load_campaign("research", args.campaign)
+    memory = _refresh_research_memory()
     context = research.write_context(panel, F.REGISTRY)
     if campaign["status"] == "CLOSED_NO_QUALIFIED":
         print(f"campaign 종료(기준 통과 후보 없음): {path}")
@@ -623,6 +654,7 @@ def cmd_campaign_finalize(args) -> None:
         print(f"기준 통과 후보 {len(campaign['qualified_factors'])}개 자동 구현 대상")
     print(f"Discovery BY 확정: {campaign['discovery_multiple_testing']}")
     print(f"다음 루프 컨텍스트 갱신: {context}")
+    print(f"시행 전량 메모리 갱신: {memory}")
     if campaign["status"] == "AWAITING_IMPLEMENTATION":
         print("다음 단계: qualified 전체의 Gold SQL 작성 및 discovery-only parity 검증")
         print("OOS는 구현 검증이 끝날 때까지 SEALED")
@@ -777,6 +809,7 @@ def cmd_campaign_reveal(args) -> None:
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    memory = _refresh_research_memory()
     try:
         publication = run.publish_revealed_campaign(args.campaign, panel)
         publication_path = epochs.record_gold_publication(
@@ -792,6 +825,7 @@ def cmd_campaign_reveal(args) -> None:
     print(f"전체 확인 결과: {result}")
     print("이 OOS 결과는 종료된 campaign 후보 수정에 사용할 수 없습니다")
     print(f"다음 루프 컨텍스트 갱신: {context}")
+    print(f"시행 전량 메모리 갱신: {memory}")
     print(
         f"Gold publication: {publication['status']} "
         f"({len(publication['published_factors'])}개), {publication_path}"
