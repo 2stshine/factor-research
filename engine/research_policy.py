@@ -10,6 +10,7 @@ import ast
 import hashlib
 import math
 import re
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -332,12 +333,50 @@ def factor_compute_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return output
 
 
+@dataclass
+class FactorComputeContext:
+    """Invocation-local causal row windows shared across factors."""
+
+    frame: pd.DataFrame = field(repr=False)
+    visible: pd.DataFrame = field(repr=False)
+    months: pd.PeriodIndex = field(repr=False)
+    anchors: tuple[pd.Period, ...]
+    positions: dict[tuple[int, pd.Period], np.ndarray] = field(
+        default_factory=dict, repr=False,
+    )
+
+    def local_positions(self, lookback: int, anchor: pd.Period) -> np.ndarray:
+        key = (lookback, anchor)
+        if key not in self.positions:
+            self.positions[key] = np.flatnonzero(
+                (self.months >= anchor - lookback) & (self.months <= anchor)
+            )
+        return self.positions[key]
+
+
+def build_factor_compute_context(frame: pd.DataFrame) -> FactorComputeContext:
+    """Sanitize one immutable research frame and cache only row positions."""
+    visible = factor_compute_frame(frame)
+    months = pd.PeriodIndex(visible["ym"], freq="M")
+    return FactorComputeContext(
+        frame=frame,
+        visible=visible,
+        months=months,
+        anchors=tuple(sorted(pd.unique(months))),
+    )
+
+
 def forbidden_candidate_inputs(columns) -> list[str]:
     """Return label-only or uncertified PIT fields declared as features."""
     return sorted(set(columns) & _FORBIDDEN_CANDIDATE_INPUTS)
 
 
-def compute_factor(factor, frame: pd.DataFrame) -> pd.Series:
+def compute_factor(
+    factor,
+    frame: pd.DataFrame,
+    *,
+    context: FactorComputeContext | None = None,
+) -> pd.Series:
     """Compute each signal month from only its declared trailing window.
 
     Static source checks are useful, but they cannot prove that every pandas
@@ -348,15 +387,29 @@ def compute_factor(factor, frame: pd.DataFrame) -> pd.Series:
     ceiling an execution boundary for every month rather than a sampled
     after-the-fact check.
     """
-    visible = factor_compute_frame(frame)
+    if context is not None:
+        if context.frame is not frame:
+            raise ValueError("factor compute context가 현재 frame과 다릅니다")
+        visible = context.visible
+        months = context.months
+        anchors = context.anchors
+    else:
+        visible = factor_compute_frame(frame)
+        months = pd.PeriodIndex(visible["ym"], freq="M")
+        anchors = tuple(sorted(pd.unique(months)))
     lookback = assert_allowed_lookback(
         name=factor.name, source=factor.source, params=factor.params,
     )
-    months = pd.PeriodIndex(visible["ym"], freq="M")
     output = np.full(len(visible), np.nan, dtype=float)
-    for anchor in sorted(pd.unique(months)):
-        local_mask = (months >= anchor - lookback) & (months <= anchor)
-        local = visible.loc[local_mask].copy()
+    for anchor in anchors:
+        positions = (
+            context.local_positions(lookback, anchor)
+            if context is not None
+            else np.flatnonzero(
+                (months >= anchor - lookback) & (months <= anchor)
+            )
+        )
+        local = visible.iloc[positions].copy()
         observed = factor.compute(local)
         if not isinstance(observed, pd.Series) or not observed.index.equals(
             local.index
@@ -364,12 +417,42 @@ def compute_factor(factor, frame: pd.DataFrame) -> pd.Series:
             raise ValueError(
                 f"{factor.name}: 후보 출력은 입력과 같은 index의 Series여야 합니다"
             )
-        local_months = pd.PeriodIndex(local["ym"], freq="M")
+        local_months = months[positions]
         anchor_values = pd.to_numeric(
             observed.loc[local_months == anchor], errors="raise",
         ).to_numpy(dtype=float)
-        output[np.flatnonzero(months == anchor)] = anchor_values
+        output[positions[local_months == anchor]] = anchor_values
     return pd.Series(output, index=frame.index)
+
+
+def _compute_factor_anchor(
+    factor,
+    visible: pd.DataFrame,
+    *,
+    anchor: pd.Period,
+    lookback: int,
+) -> pd.Series:
+    """Compute one causal anchor without evaluating unused earlier anchors.
+
+    This is exactly the per-anchor operation performed by ``compute_factor``.
+    Keeping it separate lets integrity sampling avoid recomputing every month
+    inside each 36-month audit window.
+    """
+    months = pd.PeriodIndex(visible["ym"], freq="M")
+    local = visible.loc[
+        (months >= anchor - lookback) & (months <= anchor)
+    ].copy()
+    observed = factor.compute(local)
+    if not isinstance(observed, pd.Series) or not observed.index.equals(
+        local.index
+    ):
+        raise ValueError(
+            f"{factor.name}: 후보 출력은 입력과 같은 index의 Series여야 합니다"
+        )
+    local_months = pd.PeriodIndex(local["ym"], freq="M")
+    return pd.to_numeric(
+        observed.loc[local_months == anchor], errors="raise",
+    )
 
 
 _AUTHORITATIVE_FACTOR_BINDINGS_ATTR = (
@@ -448,6 +531,10 @@ def causal_lookback_check(
     assert_research_input_frame(frame)
     if not isinstance(reference, pd.Series) or not reference.index.equals(frame.index):
         return False, "기준 출력이 입력 index의 Series가 아닙니다"
+    visible = factor_compute_frame(frame)
+    lookback = assert_allowed_lookback(
+        name=factor.name, source=factor.source, params=factor.params,
+    )
     months = pd.PeriodIndex(frame["ym"], freq="M")
     valid_months = []
     for anchor in sorted(pd.unique(months)):
@@ -474,20 +561,15 @@ def causal_lookback_check(
     for anchor in selected:
         anchor_mask = months == anchor
         expected = pd.to_numeric(reference.loc[anchor_mask], errors="coerce")
-        start = anchor - MAX_FACTOR_LOOKBACK_MONTHS
-        local_mask = (months >= start) & (months <= anchor)
-        local = frame.loc[local_mask].copy()
         try:
-            observed = compute_factor(factor, local)
+            actual = _compute_factor_anchor(
+                factor, visible, anchor=anchor, lookback=lookback,
+            )
         except Exception as exc:
             return False, (
                 f"{anchor}의 36개월 제한 재계산 실패: "
                 f"{type(exc).__name__}: {exc}"
             )
-        if not isinstance(observed, pd.Series) or not observed.index.equals(local.index):
-            return False, f"{anchor}의 제한 재계산 출력 index가 다릅니다"
-        local_anchor = pd.PeriodIndex(local["ym"], freq="M") == anchor
-        actual = pd.to_numeric(observed.loc[local_anchor], errors="coerce")
         expected_anchor = expected.reindex(actual.index)
         expected_values = expected_anchor.to_numpy(dtype=float)
         actual_values = actual.to_numpy(dtype=float)

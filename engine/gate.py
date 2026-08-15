@@ -123,6 +123,97 @@ class Result:
         return any(c.passed is False and c.tier.startswith(prefix) for c in self.checks)
 
 
+@dataclass(frozen=True)
+class EvaluationContext:
+    """Invocation-local static scope shared by repeated gate evaluations."""
+
+    panel: Panel = field(repr=False)
+    frame: pd.DataFrame = field(repr=False)
+    phase: str
+    data_cutoff: str | None
+    oos_start: pd.Period | None
+    work_index: pd.Index = field(repr=False)
+    work_eligible: np.ndarray = field(repr=False)
+    research_index: pd.Index = field(repr=False)
+    research_eligible: np.ndarray = field(repr=False)
+    research_month_positions: tuple[tuple[pd.Period, np.ndarray], ...] = field(
+        repr=False,
+    )
+    investable_month_positions: tuple[tuple[pd.Period, np.ndarray], ...] = field(
+        repr=False,
+    )
+
+
+def _month_positions(
+    months: pd.Series,
+    eligible: np.ndarray | None = None,
+) -> tuple[tuple[pd.Period, np.ndarray], ...]:
+    values = pd.PeriodIndex(months, freq="M").to_numpy()
+    allowed = (
+        np.ones(len(values), dtype=bool)
+        if eligible is None else np.asarray(eligible, dtype=bool)
+    )
+    if len(allowed) != len(values):
+        raise ValueError("gate context의 월별 mask 길이가 다릅니다")
+    return tuple(
+        (pd.Period(month, freq="M"), np.flatnonzero((values == month) & allowed))
+        for month in sorted(pd.unique(values))
+    )
+
+
+def build_evaluation_context(
+    panel: Panel,
+    df: pd.DataFrame,
+    *,
+    oos_start: pd.Period | None = None,
+    data_cutoff: str | pd.Timestamp | None = None,
+    phase: str = "full",
+) -> EvaluationContext:
+    """Freeze factor-independent masks and monthly groups for one invocation."""
+    if phase not in EVALUATION_PHASES:
+        raise ValueError(f"지원하지 않는 평가 phase={phase!r}")
+    if not df.index.is_unique:
+        raise ValueError("gate context는 고유한 frame index가 필요합니다")
+    frozen_oos = pd.Period(oos_start, freq="M") if oos_start is not None else None
+    cutoff_text = (
+        str(pd.Timestamp(data_cutoff).normalize().date())
+        if data_cutoff is not None else None
+    )
+    universe = panel.universe.reindex(df.index).fillna(False).astype(bool)
+    investable = panel.investable.reindex(df.index).fillna(False).astype(bool)
+    work_mask = universe & df["ym"].ge(RESEARCH_START)
+    work_index = df.index[work_mask]
+    work_eligible = investable.loc[work_index].to_numpy(dtype=bool)
+    research_mask = np.ones(len(work_index), dtype=bool)
+    work_rows = df.loc[work_index]
+    if data_cutoff is not None:
+        cutoff = pd.Timestamp(data_cutoff).normalize()
+        research_mask &= (
+            pd.to_datetime(work_rows["trade_date"]).dt.normalize().le(cutoff)
+            & work_rows["ym"].lt(cutoff.to_period("M"))
+        ).to_numpy(dtype=bool)
+    if frozen_oos is not None:
+        research_mask &= work_rows["ym"].lt(frozen_oos - 1).to_numpy(dtype=bool)
+    research_index = work_index[research_mask]
+    research_eligible = work_eligible[research_mask]
+    research_months = df.loc[research_index, "ym"]
+    return EvaluationContext(
+        panel=panel,
+        frame=df,
+        phase=phase,
+        data_cutoff=cutoff_text,
+        oos_start=frozen_oos,
+        work_index=work_index.copy(),
+        work_eligible=work_eligible,
+        research_index=research_index.copy(),
+        research_eligible=research_eligible,
+        research_month_positions=_month_positions(research_months),
+        investable_month_positions=_month_positions(
+            research_months, research_eligible,
+        ),
+    )
+
+
 def discovery_evidence_digest(
     result: Result,
     *,
@@ -198,6 +289,27 @@ def _ic_series(df: pd.DataFrame, col: str, fwd: str, min_n: int = 30) -> pd.Seri
         if len(sample) < min_n:
             continue
         correlation = stats.spearmanr(sample[col], sample[fwd]).statistic
+        if pd.notna(correlation):
+            values[ym] = float(correlation)
+    return pd.Series(values, dtype=float).sort_index()
+
+
+def _ic_series_from_positions(
+    df: pd.DataFrame,
+    col: str,
+    fwd: str,
+    positions: tuple[tuple[pd.Period, np.ndarray], ...],
+    min_n: int = 30,
+) -> pd.Series:
+    """Exact pairwise Spearman IC over precomputed monthly row positions."""
+    left = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
+    right = pd.to_numeric(df[fwd], errors="coerce").to_numpy(dtype=float)
+    values: dict[pd.Period, float] = {}
+    for ym, indices in positions:
+        valid = indices[np.isfinite(left[indices]) & np.isfinite(right[indices])]
+        if len(valid) < min_n:
+            continue
+        correlation = stats.spearmanr(left[valid], right[valid]).statistic
         if pd.notna(correlation):
             values[ym] = float(correlation)
     return pd.Series(values, dtype=float).sort_index()
@@ -324,6 +436,7 @@ def backtest(
     weighting: str = "equal",
     cost_multiplier: float = 1.0,
     min_months: int | None = None,
+    month_positions: tuple[tuple[pd.Period, np.ndarray], ...] | None = None,
 ) -> dict | None:
     """Fixed-universe long-only portfolio with next-period realized returns.
 
@@ -338,10 +451,17 @@ def backtest(
     current: dict[int, float] = {}
     rows: list[tuple] = []
     missing_held = held_observations = 0
-    months = sorted(df["ym"].dropna().unique())
+    grouped = (
+        month_positions
+        if month_positions is not None
+        else tuple(
+            (pd.Period(ym, freq="M"), np.flatnonzero(df["ym"].eq(ym).to_numpy()))
+            for ym in sorted(df["ym"].dropna().unique())
+        )
+    )
 
-    for i, ym in enumerate(months):
-        group = df[df["ym"] == ym].copy()
+    for i, (ym, positions) in enumerate(grouped):
+        group = df.iloc[positions].copy()
         eligible = group.get("_eligible", pd.Series(True, index=group.index)).fillna(False).astype(bool)
         benchmark_rows = group[eligible & group[fwd].notna()]
         eligible_count = int(eligible.sum())
@@ -622,6 +742,7 @@ def evaluate(
     oos_end: pd.Period | None = None,
     data_cutoff: str | pd.Timestamp | None = None,
     phase: str = "full",
+    context: EvaluationContext | None = None,
 ) -> Result:
     """Run the integrity/IC/robustness gate.
 
@@ -651,26 +772,61 @@ def evaluate(
     if result.tier_failed("T0"):
         return result
 
-    universe = panel.universe
-    investable = panel.investable
-    # Use one pre-declared start for every factor. Financial PIT coverage is not
-    # broad enough before 2018-03, and warm-up missingness must not be mistaken
-    # for a failed signal.
-    work = df.loc[universe & df["ym"].ge(RESEARCH_START)].copy()
-    work["_eligible"] = investable.loc[work.index].astype(bool)
+    if context is not None:
+        expected_cutoff = (
+            str(pd.Timestamp(data_cutoff).normalize().date())
+            if data_cutoff is not None else None
+        )
+        expected_oos = (
+            pd.Period(oos_start, freq="M") if oos_start is not None else None
+        )
+        if (
+            context.panel is not panel
+            or context.frame is not df
+            or context.phase != phase
+            or context.data_cutoff != expected_cutoff
+            or context.oos_start != expected_oos
+        ):
+            raise ValueError("gate context가 현재 panel/frame/평가 범위와 다릅니다")
+        work = df.loc[context.work_index].copy()
+        work["_eligible"] = context.work_eligible
+        research = df.loc[context.research_index].copy()
+        research["_eligible"] = context.research_eligible
+        full_month_positions = context.research_month_positions
+        investable_month_positions = context.investable_month_positions
+    else:
+        universe = panel.universe
+        investable = panel.investable
+        # Use one pre-declared start for every factor. Financial PIT coverage is not
+        # broad enough before 2018-03, and warm-up missingness must not be mistaken
+        # for a failed signal.
+        work = df.loc[universe & df["ym"].ge(RESEARCH_START)].copy()
+        work["_eligible"] = investable.loc[work.index].astype(bool)
 
-    # Every discovery check remains bound to the campaign's original Silver
-    # snapshot.  In particular, a delayed OOS start must not turn the intervening
-    # years into new development data at reveal time.
-    research = work
-    if data_cutoff is not None:
-        cutoff = pd.Timestamp(data_cutoff).normalize()
-        research = research[
-            pd.to_datetime(research["trade_date"]).dt.normalize().le(cutoff)
-            & research["ym"].lt(cutoff.to_period("M"))
-        ].copy()
-    if oos_start is not None:
-        research = research[research["ym"] < (oos_start - 1)].copy()
+        # Every discovery check remains bound to the campaign's original Silver
+        # snapshot.  In particular, a delayed OOS start must not turn the intervening
+        # years into new development data at reveal time.
+        research = work
+        if data_cutoff is not None:
+            cutoff = pd.Timestamp(data_cutoff).normalize()
+            research = research[
+                pd.to_datetime(research["trade_date"]).dt.normalize().le(cutoff)
+                & research["ym"].lt(cutoff.to_period("M"))
+            ].copy()
+        if oos_start is not None:
+            research = research[research["ym"] < (oos_start - 1)].copy()
+        full_month_positions = None
+        investable_month_positions = None
+
+    def scoped_ic(column: str, forward: str, *, investable_only: bool = False):
+        positions = (
+            investable_month_positions if investable_only
+            else full_month_positions
+        )
+        if positions is not None:
+            return _ic_series_from_positions(research, column, forward, positions)
+        frame = research[research["_eligible"]] if investable_only else research
+        return _ic_series(frame, column, forward)
 
     coverage = research[col].notna().mean()
     monthly_coverage = research.groupby("ym")[col].apply(lambda x: x.notna().mean())
@@ -683,7 +839,7 @@ def evaluate(
     for tag in ("opt", "mid", "pess"):
         fwd = f"fwd_{tag}"
         if fwd in research:
-            series = _ic_series(research, col, fwd)
+            series = scoped_ic(col, fwd)
             ic_scenarios[tag] = series
             scenario_means[tag] = float(series.mean()) if len(series) else float("nan")
     terminal_stable = len(scenario_means) == 3 and all(value > 0 for value in scenario_means.values())
@@ -700,14 +856,16 @@ def evaluate(
         add(Check("T2.0", "개발 표본", False, research["ym"].nunique(), f">={TH['min_months']}개월"))
         return result
 
-    ic_full_series = _ic_series(research, col, "fwd_mid")
+    ic_full_series = ic_scenarios.get("mid")
+    if ic_full_series is None:
+        ic_full_series = scoped_ic(col, "fwd_mid")
     ic_full, ic_full_t, ic_full_p = _hac_mean_test(ic_full_series)
     result.metrics.update({"ic_full": ic_full, "ic_t_full": ic_full_t, "ic_p_full": ic_full_p})
     add(Check(
         "T2.1", "전체 IC 최소요건",
         bool(ic_full >= TH["min_ic"]), ic_full, f">={TH['min_ic']}",
     ))
-    ic_investable_series = _ic_series(research[research["_eligible"]], col, "fwd_mid")
+    ic_investable_series = scoped_ic(col, "fwd_mid", investable_only=True)
     ic_inv, ic_inv_t, ic_inv_p = _hac_mean_test(ic_investable_series)
     ic_inv_std = float(ic_investable_series.std(ddof=1))
     rank_icir = ic_inv / ic_inv_std if np.isfinite(ic_inv_std) and ic_inv_std > 0 else float("nan")
@@ -736,6 +894,7 @@ def evaluate(
     base = backtest(
         research, col, "fwd_mid", hold=factor.rebalance_months,
         min_months=TH["min_oos_months"],
+        month_positions=full_month_positions,
     )
     # Execution and return outputs are diagnostics only.  Missing or expensive
     # portfolios do not alter the IC research verdict in ruleset v3.
@@ -756,10 +915,7 @@ def evaluate(
     segments = np.array_split(periods, 4)
     segment_ics = []
     for segment in segments:
-        segment_ic = _ic_series(
-            research[research["ym"].isin(segment) & research["_eligible"]],
-            col, "fwd_mid",
-        )
+        segment_ic = ic_investable_series.reindex(segment).dropna()
         segment_ics.append(float(segment_ic.mean()) if len(segment_ic) else float("nan"))
     agree = sum(np.isfinite(x) and x > 0 for x in segment_ics)
     add(Check("T3.1", "비중첩 구간 IC 방향", agree >= TH["subperiod_agree"], agree, f">={TH['subperiod_agree']}/4", str([round(x, 4) for x in segment_ics])))
@@ -768,7 +924,7 @@ def evaluate(
     add(Check("T3.1", "IC 레짐 집중도", concentration <= TH["regime_conc"], concentration, f"<={TH['regime_conc']}"))
 
     research["_neutral"] = _neutralized_signal(research, col, factor.category)
-    neutral_series = _ic_series(research[research["_eligible"]], "_neutral", "fwd_mid")
+    neutral_series = scoped_ic("_neutral", "fwd_mid", investable_only=True)
     neutral_ic, neutral_t, neutral_p = _hac_mean_test(neutral_series)
     neutral_retention = (
         neutral_ic / ic_inv

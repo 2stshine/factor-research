@@ -31,7 +31,11 @@ def _make_factor(name, compute=_identity):
     )
 
 
-def test_operational_timing_is_stderr_only_and_contains_no_outcome(monkeypatch, capsys):
+def test_operational_timing_is_stderr_and_append_log_without_outcome(
+    monkeypatch, capsys, tmp_path,
+):
+    timing_log = tmp_path / "research-timings.jsonl"
+    monkeypatch.setenv("RESEARCH_TIMING_LOG", str(timing_log))
     monkeypatch.setattr(run_script.time, "perf_counter", lambda: 12.5)
     run_script._log_timing(
         "parity.sql_query", 10.0, sql="batch.sql", factor_count=5,
@@ -39,13 +43,19 @@ def test_operational_timing_is_stderr_only_and_contains_no_outcome(monkeypatch, 
 
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert json.loads(captured.err) == {
+    payload = json.loads(captured.err)
+    recorded_at = payload.pop("recorded_at")
+    assert recorded_at.endswith("+00:00")
+    assert payload == {
         "event": "research_timing_v1",
         "factor_count": 5,
         "seconds": 2.5,
         "sql": "batch.sql",
         "stage": "parity.sql_query",
     }
+    persisted = json.loads(timing_log.read_text(encoding="utf-8"))
+    assert persisted.pop("recorded_at") == recorded_at
+    assert persisted == payload
 
 
 def test_parity_query_windows_are_exact_non_overlapping_month_chunks():
@@ -398,6 +408,13 @@ def test_batch_relationships_match_single_candidate_contract(monkeypatch):
         )
         for factor in factors[:2]
     }
+    monkeypatch.setattr(
+        pd.DataFrame,
+        "corr",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("registry 전체 상관행렬을 계산하면 안 됩니다")
+        ),
+    )
     actual = research.factor_relationships_batch(
         panel, frame, factors[:2], registry,
     )
@@ -420,7 +437,7 @@ def test_batch_relationships_compute_each_registry_signal_once(monkeypatch):
     )
     calls = []
 
-    def compute_once(factor, source):
+    def compute_once(factor, source, **_kwargs):
         calls.append(factor.name)
         return factor.compute(source)
 

@@ -574,6 +574,50 @@ def test_runtime_window_neutralizes_full_history_expression_in_every_month():
     assert "36개월" in note
 
 
+def test_single_anchor_optimization_matches_legacy_bounded_replay_exactly():
+    view = run_script._research_input_panel(_panel("2015-01", "2024-12"))
+
+    def compute(frame):
+        return frame.groupby("asset_id")["adj_close"].transform(
+            lambda values: values.rolling(12, min_periods=3).mean()
+        )
+
+    factor = Factor(
+        name="anchor_parity_probe",
+        category="other",
+        hypothesis="anchor 최적화 exact parity",
+        predicted_sign=1,
+        params={"lookback_months": 12},
+        compute=compute,
+    )
+    baseline_full = research_policy.compute_factor(factor, view.monthly)
+    context_full = research_policy.compute_factor(
+        factor,
+        view.monthly,
+        context=research_policy.build_factor_compute_context(view.monthly),
+    )
+    pd.testing.assert_series_equal(context_full, baseline_full)
+    anchor = pd.Period("2023-12", freq="M")
+    frame = view.monthly
+    months = pd.PeriodIndex(frame["ym"], freq="M")
+    legacy_window = frame.loc[
+        (months >= anchor - research_policy.MAX_FACTOR_LOOKBACK_MONTHS)
+        & (months <= anchor)
+    ].copy()
+    legacy = research_policy.compute_factor(factor, legacy_window)
+    legacy = legacy.loc[
+        pd.PeriodIndex(legacy_window["ym"], freq="M") == anchor
+    ]
+    optimized = research_policy._compute_factor_anchor(
+        factor,
+        research_policy.factor_compute_frame(frame),
+        anchor=anchor,
+        lookback=12,
+    )
+
+    pd.testing.assert_series_equal(optimized, legacy, check_names=False)
+
+
 def test_candidate_module_cannot_import_filesystem_or_read_cache(tmp_path):
     candidate = tmp_path / "cache_reader.py"
     candidate.write_text(

@@ -63,7 +63,14 @@ def _stub_gate(monkeypatch, control):
     monkeypatch.setattr(gate, "evaluate_oos", evaluate_oos)
 
 
-def _measure(panel, *, checkpoint_path=None, seed=20260731):
+def _measure(
+    panel,
+    *,
+    checkpoint_path=None,
+    seed=20260731,
+    discovery_family_digest="standalone",
+    oos_family_digest="standalone",
+):
     return null_engine.measure(
         panel,
         n=2,
@@ -73,9 +80,19 @@ def _measure(panel, *, checkpoint_path=None, seed=20260731):
         research_data_cutoff="2025-12-31",
         discovery_family_size=2,
         oos_family_size=2,
+        discovery_family_digest=discovery_family_digest,
+        oos_family_digest=oos_family_digest,
         checkpoint_path=checkpoint_path,
         verbose=False,
     )
+
+
+def _checkpoint_records(path):
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
 
 
 def test_null_measure_resumes_without_recomputing_completed_families(
@@ -89,12 +106,14 @@ def test_null_measure_resumes_without_recomputing_completed_families(
     with pytest.raises(RuntimeError, match="simulated interruption"):
         _measure(interrupted_panel, checkpoint_path=checkpoint)
 
-    partial = json.loads(checkpoint.read_text(encoding="utf-8"))
+    header, *partial = _checkpoint_records(checkpoint)
+    durable_prefix = checkpoint.read_bytes()
+    assert header["schema_version"] == 2
     assert [
         (entry["kind"], entry["replicate"])
-        for entry in partial["entries"]
+        for entry in partial
     ] == [("random", 0), ("random", 1), ("ar1_095", 0)]
-    assert all("row" in entry and "rng_state" in entry for entry in partial["entries"])
+    assert all("row" in entry and "rng_state" in entry for entry in partial)
     assert not any(
         column.startswith(("_raw_null_", "f_null_"))
         for column in interrupted_panel.monthly
@@ -105,7 +124,8 @@ def test_null_measure_resumes_without_recomputing_completed_families(
     # Five remaining families with two definitions each; the first three were
     # loaded from checkpoint and were not evaluated again.
     assert control["calls"] == 10
-    assert len(json.loads(checkpoint.read_text())["entries"]) == 8
+    assert len(_checkpoint_records(checkpoint)[1:]) == 8
+    assert checkpoint.read_bytes().startswith(durable_prefix)
     assert not list(tmp_path.glob(".null-checkpoint.json.*.tmp"))
 
     control.update(calls=0, fail_after=None)
@@ -120,14 +140,67 @@ def test_null_measure_rejects_checkpoint_from_different_scope(tmp_path, monkeypa
     _measure(_confirmation_panel(), checkpoint_path=checkpoint)
 
     control["calls"] = 0
-    with pytest.raises(ValueError, match="범위 또는 실행 입력"):
+    with pytest.raises(ValueError, match="범위 또는 무결성"):
         _measure(
             _confirmation_panel(), checkpoint_path=checkpoint, seed=20260732,
         )
     assert control["calls"] == 0
 
-    payload = json.loads(checkpoint.read_text(encoding="utf-8"))
-    payload["entries"][0]["row"]["research_data_cutoff"] = "2020-01-31"
-    checkpoint.write_text(json.dumps(payload), encoding="utf-8")
+    records = _checkpoint_records(checkpoint)
+    records[1]["row"]["research_data_cutoff"] = "2020-01-31"
+    checkpoint.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match="무결성"):
         _measure(_confirmation_panel(), checkpoint_path=checkpoint)
+
+
+def test_null_calculation_cache_rebinds_campaign_family_evidence(
+    tmp_path, monkeypatch,
+):
+    cache_root = tmp_path / "by-calculation"
+    control = {"calls": 0, "fail_after": None}
+    _stub_gate(monkeypatch, control)
+    first = _measure(
+        _confirmation_panel(),
+        checkpoint_path=cache_root,
+        discovery_family_digest="a" * 64,
+        oos_family_digest="b" * 64,
+    )
+    assert control["calls"] == 16
+    assert len(list(cache_root.glob("*.jsonl"))) == 1
+
+    control["calls"] = 0
+    rebound = _measure(
+        _confirmation_panel(),
+        checkpoint_path=cache_root,
+        discovery_family_digest="c" * 64,
+        oos_family_digest="d" * 64,
+    )
+    assert control["calls"] == 0
+    assert rebound["discovery_family_digest"].eq("c" * 64).all()
+    assert rebound["oos_family_digest"].eq("d" * 64).all()
+    comparable = [
+        column for column in first.columns
+        if column not in {"discovery_family_digest", "oos_family_digest"}
+    ]
+    pd.testing.assert_frame_equal(first[comparable], rebound[comparable])
+
+
+def test_null_checkpoint_discards_only_an_incomplete_final_append(
+    tmp_path, monkeypatch,
+):
+    checkpoint = tmp_path / "null-checkpoint.json"
+    control = {"calls": 0, "fail_after": 2}
+    _stub_gate(monkeypatch, control)
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        _measure(_confirmation_panel(), checkpoint_path=checkpoint)
+    with checkpoint.open("ab") as handle:
+        handle.write(b'{"torn":')
+
+    control.update(calls=0, fail_after=None)
+    resumed = _measure(_confirmation_panel(), checkpoint_path=checkpoint)
+    assert len(resumed) == 8
+    assert checkpoint.read_bytes().endswith(b"\n")
+    assert len(_checkpoint_records(checkpoint)) == 9

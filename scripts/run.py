@@ -18,6 +18,7 @@ import shutil
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -56,18 +57,52 @@ _PARITY_CHECKPOINT_SCHEMA = "implementation-parity-sql-checkpoint-v1"
 
 
 def _log_timing(stage: str, started: float, **context: object) -> None:
-    """Emit non-persistent operational timings without research outcomes."""
+    """Emit and append operational timings without research outcomes."""
+    allowed_context = {
+        "factor", "factor_count", "phase", "registry_count", "sql",
+        "target_table", "query_start_month", "query_end_month",
+        "query_chunk_count", "chunk_index", "chunk_count",
+        "checkpoint_reused", "database_temp_files_global_delta",
+        "database_temp_bytes_global_delta", "kind", "replicate",
+        "candidate_count", "family_count",
+    }
+    unexpected = set(context) - allowed_context
+    if unexpected:
+        print(
+            f"[timing] 허용되지 않은 필드는 기록하지 않음: {sorted(unexpected)}",
+            file=sys.stderr,
+            flush=True,
+        )
+    context = {key: value for key, value in context.items() if key in allowed_context}
     payload = {
         "event": "research_timing_v1",
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
         "stage": stage,
         "seconds": round(time.perf_counter() - started, 3),
         **context,
     }
-    print(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True),
-        file=sys.stderr,
-        flush=True,
-    )
+    encoded = (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    print(encoded.decode("utf-8").rstrip("\n"), file=sys.stderr, flush=True)
+    path = Path(os.environ.get(
+        "RESEARCH_TIMING_LOG", str(CACHE / "research-timings.jsonl"),
+    ))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600,
+        )
+        try:
+            os.write(descriptor, encoded)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        print(
+            f"[timing] 영구 로그 기록 실패(계산은 계속): {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def _database_temp_usage(conn) -> tuple[int, int]:
@@ -478,12 +513,15 @@ def _ensure_factor_columns(pan, targets):
             f"  → uv run python scripts/run.py build  (재빌드 필요)")
     print(f"[gate] 신규 팩터 {len(missing)}개 즉석 계산: "
           f"{', '.join(f.name for f in missing)}")
+    compute_context = research_policy.build_factor_compute_context(df)
     for f in missing:
         started = time.perf_counter()
         try:
             column = f"f_{f.name}"
             df[column] = (
-                research_policy.compute_factor(f, df) * f.predicted_sign
+                research_policy.compute_factor(
+                    f, df, context=compute_context,
+                ) * f.predicted_sign
             )
             research_policy.bind_authoritative_factor_column(f, df, column)
         except Exception as exc:
@@ -2007,6 +2045,13 @@ def _evaluate(
     )
     results: list[gate.Result] = []
     if development_pan is not None and development_df is not None:
+        development_context = gate.build_evaluation_context(
+            development_pan,
+            development_df,
+            oos_start=frozen_oos,
+            data_cutoff=data_cutoff,
+            phase="discovery",
+        )
         # First reproduce and authenticate every frozen discovery result.  No
         # OOS return may be evaluated until all recoverable snapshot/artifact
         # failures have been ruled out.
@@ -2020,6 +2065,7 @@ def _evaluate(
                 f, development_pan, development_df, existing=existing,
                 trial_count=summary.count, prior_sharpes=summary.sharpes,
                 oos_start=frozen_oos, data_cutoff=data_cutoff, phase="discovery",
+                context=development_context,
             ))
             _log_timing(
                 "evaluation.gate", started, factor=f.name, phase="discovery",
@@ -2083,6 +2129,13 @@ def _evaluate(
                 "evaluation.gate", started, factor=f.name, phase="full",
             )
     else:
+        evaluation_context = gate.build_evaluation_context(
+            pan,
+            df,
+            oos_start=frozen_oos,
+            data_cutoff=data_cutoff,
+            phase=phase,
+        )
         for f in targets:
             started = time.perf_counter()
             # A new version of an already-approved factor is compared with other
@@ -2092,6 +2145,7 @@ def _evaluate(
                 f, pan, df, existing=existing, trial_count=summary.count,
                 prior_sharpes=summary.sharpes, oos_start=frozen_oos,
                 oos_end=frozen_oos_end, data_cutoff=data_cutoff, phase=phase,
+                context=evaluation_context,
             ))
             _log_timing(
                 "evaluation.gate", started, factor=f.name, phase=phase,
@@ -2132,6 +2186,7 @@ def cmd_gate(args):
 
 
 def cmd_null(args):
+    total_started = time.perf_counter()
     load_registry()
     pan = _load()
     print(f"합성 귀무 campaign 측정 (종류당 {args.n}개 family)...")
@@ -2198,11 +2253,14 @@ def cmd_null(args):
         confirmation_snapshot_digest=confirmation_snapshot_digest,
         qualification_policy=campaign["qualification_policy"],
         existing=approved,
-        checkpoint_path=(
-            CACHE / "null-checkpoints" / f"{args.campaign}.json"
-        ),
+        # The null calculation is campaign-independent when every frozen
+        # computational input matches. ``measure`` derives a content-addressed
+        # JSONL filename and rebinds only the campaign family evidence digests.
+        checkpoint_path=CACHE / "null-checkpoints" / "by-calculation",
+        timing_callback=_log_timing,
     )
     out.to_parquet(CACHE / "null_dist.parquet", index=False)
+    _log_timing("null.total", total_started, family_count=len(out))
 
 
 def cmd_publish(args):

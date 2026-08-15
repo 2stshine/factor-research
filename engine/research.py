@@ -122,9 +122,10 @@ def factor_relationships_batch(
     """Compute registry signals once and reuse them for an epoch batch.
 
     The cache is invocation-local and contains only the authenticated research
-    view.  Nothing is written to the panel cache or Gold.  Monthly Spearman
-    matrices replace the old target-by-target recomputation while preserving
-    the same investable sample, minimum pair count, and median statistic.
+    view. Nothing is written to the panel cache or Gold. Only the rectangular
+    target-by-registry block is evaluated: registry-by-registry pairs do not
+    affect novelty. Pairwise finite-row filtering preserves the original
+    Spearman/NaN sample, minimum count, and median statistic exactly.
     """
     research_policy.assert_research_input_frame(df)
     names = [factor.name for factor in factors]
@@ -141,6 +142,7 @@ def factor_relationships_batch(
         for factor in factors
     }
     comparable: list[Factor] = []
+    compute_context = None
     for other in registry:
         try:
             research_policy.assert_allowed_lookback(
@@ -156,8 +158,14 @@ def factor_relationships_batch(
             values = df[column]
         elif set(other.needs).issubset(df.columns):
             try:
+                if compute_context is None:
+                    compute_context = (
+                        research_policy.build_factor_compute_context(df)
+                    )
                 values = (
-                    research_policy.compute_factor(other, df)
+                    research_policy.compute_factor(
+                        other, df, context=compute_context,
+                    )
                     * other.predicted_sign
                 )
             except Exception:
@@ -185,14 +193,16 @@ def factor_relationships_batch(
         if other.name != target
     }
     for _, month in signal_frame.groupby("ym", sort=True):
-        correlations = month.drop(columns="ym").corr(
-            method="spearman", min_periods=30,
-        )
-        for key, values in pair_values.items():
-            target, other = key
-            if target not in correlations.index or other not in correlations.columns:
+        arrays = {
+            name: month[name].to_numpy(dtype=float, copy=False)
+            for name in signals
+        }
+        for (target, other), values in pair_values.items():
+            left, right = arrays[target], arrays[other]
+            valid = np.isfinite(left) & np.isfinite(right)
+            if int(valid.sum()) < 30:
                 continue
-            value = correlations.at[target, other]
+            value = stats.spearmanr(left[valid], right[valid]).statistic
             if pd.notna(value):
                 values.append(float(value))
 

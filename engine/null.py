@@ -1,9 +1,11 @@
 """Synthetic-null calibration of the *actual* T0-T5 gate."""
 from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -14,11 +16,16 @@ from engine import panel as panel_engine
 from engine.boundaries import CampaignWindow, QUALIFICATION_POLICY
 from engine.factors import Factor
 from engine.panel import Panel
+from engine import research_policy
 
 
-_CHECKPOINT_SCHEMA_VERSION = 1
+_CHECKPOINT_SCHEMA_VERSION = 2
 _GENERATOR_SUITE = "null-v2"
 _GENERATOR_KINDS = ("random", "ar1_095", "ar1_0999", "frozen")
+_REBOUND_EVIDENCE_FIELDS = {
+    "discovery_family_digest",
+    "oos_family_digest",
+}
 _OUTPUT_COLUMNS = (
     "calibration_unit", "generator_suite", "qualification_policy", "kind",
     "replicate", "pass", "promoted_count", "revealed_count",
@@ -78,18 +85,30 @@ def _checkpoint_entry(kind: str, replicate: int, row: dict, rng) -> dict:
     return entry
 
 
-def _write_checkpoint(path: Path, signature: dict, entries: list[dict]) -> None:
-    """Atomically replace a checkpoint after one complete null family."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+def _checkpoint_header(signature: dict) -> dict:
+    content = {
+        "record": "header",
         "schema_version": _CHECKPOINT_SCHEMA_VERSION,
         "signature": signature,
-        "entries": entries,
     }
+    return {
+        **content,
+        "sha256": hashlib.sha256(_canonical_json(content)).hexdigest(),
+    }
+
+
+def _write_jsonl_checkpoint(
+    path: Path,
+    signature: dict,
+    entries: list[dict],
+) -> None:
+    """Create or migrate one checkpoint, then append only complete entries."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
-        with temporary.open("wb") as handle:
-            handle.write(_canonical_json(payload))
+        with temporary.open("xb") as handle:
+            for record in (_checkpoint_header(signature), *entries):
+                handle.write(_canonical_json(record) + b"\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
@@ -97,23 +116,100 @@ def _write_checkpoint(path: Path, signature: dict, entries: list[dict]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _append_checkpoint(
+    path: Path,
+    signature: dict,
+    entry: dict,
+    prior_entries: list[dict],
+) -> None:
+    """Persist one family with one O_APPEND write and one durability sync."""
+    if not path.exists():
+        _write_jsonl_checkpoint(path, signature, [entry])
+        return
+    with path.open("rb") as handle:
+        first_line = handle.readline()
+    try:
+        header = json.loads(first_line)
+    except json.JSONDecodeError:
+        header = None
+    if isinstance(header, dict) and header.get("record") == "header":
+        content = {key: value for key, value in header.items() if key != "sha256"}
+        if (
+            header.get("schema_version") != _CHECKPOINT_SCHEMA_VERSION
+            or header.get("signature") != signature
+            or header.get("sha256")
+            != hashlib.sha256(_canonical_json(content)).hexdigest()
+        ):
+            raise ValueError("귀무 보정 checkpoint header가 실행 중 변경되었습니다")
+        with path.open("ab", buffering=0) as handle:
+            handle.write(_canonical_json(entry) + b"\n")
+            os.fsync(handle.fileno())
+        return
+    raw = path.read_bytes()
+    try:
+        legacy = json.loads(raw)
+    except json.JSONDecodeError:
+        legacy = None
+    if isinstance(legacy, dict):
+        # A v1 file is migrated once. Subsequent families are append-only.
+        _write_jsonl_checkpoint(path, signature, [*prior_entries, entry])
+        return
+    raise ValueError("귀무 보정 checkpoint 형식을 확인할 수 없습니다")
+
+
 def _load_checkpoint(
     path: Path,
     *,
     signature: dict,
     expected_pairs: list[tuple[str, int]],
+    legacy_signature: dict | None = None,
 ) -> tuple[list[dict], dict | None, list[dict]]:
     if not path.exists():
         return [], None, []
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        raw = path.read_bytes()
+    except OSError as exc:
         raise ValueError(f"귀무 보정 checkpoint를 읽을 수 없습니다: {path}") from exc
-    if payload.get("schema_version") != _CHECKPOINT_SCHEMA_VERSION:
-        raise ValueError("귀무 보정 checkpoint schema가 현재 엔진과 다릅니다")
-    if payload.get("signature") != signature:
-        raise ValueError("귀무 보정 checkpoint 범위 또는 실행 입력이 현재 요청과 다릅니다")
-    entries = payload.get("entries")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        if payload.get("schema_version") != 1:
+            raise ValueError("귀무 보정 checkpoint schema가 현재 엔진과 다릅니다")
+        if payload.get("signature") != legacy_signature:
+            raise ValueError("귀무 보정 checkpoint 범위 또는 실행 입력이 현재 요청과 다릅니다")
+        entries = payload.get("entries")
+    else:
+        if not raw.endswith(b"\n"):
+            raw = raw.rpartition(b"\n")[0] + b"\n"
+            if raw == b"\n":
+                raise ValueError("귀무 보정 checkpoint header가 손상되었습니다")
+            with path.open("r+b") as handle:
+                handle.truncate(len(raw))
+                handle.flush()
+                os.fsync(handle.fileno())
+        try:
+            records = [
+                json.loads(line)
+                for line in raw.decode("utf-8").splitlines()
+                if line
+            ]
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("귀무 보정 checkpoint JSONL이 손상되었습니다") from exc
+        if not records:
+            raise ValueError("귀무 보정 checkpoint header가 없습니다")
+        header, *entries = records
+        content = {key: value for key, value in header.items() if key != "sha256"}
+        if (
+            set(header) != {"record", "schema_version", "signature", "sha256"}
+            or header.get("record") != "header"
+            or header.get("schema_version") != _CHECKPOINT_SCHEMA_VERSION
+            or header.get("signature") != signature
+            or header.get("sha256")
+            != hashlib.sha256(_canonical_json(content)).hexdigest()
+        ):
+            raise ValueError("귀무 보정 checkpoint header 범위 또는 무결성이 다릅니다")
     if not isinstance(entries, list) or len(entries) > len(expected_pairs):
         raise ValueError("귀무 보정 checkpoint 완료 목록이 손상되었습니다")
 
@@ -145,7 +241,7 @@ def _load_checkpoint(
                 raise ValueError(
                     f"귀무 보정 checkpoint row 범위가 손상되었습니다: {field}"
                 )
-        rows.append(row)
+        rows.append(dict(row))
     state = entries[-1]["rng_state"] if entries else None
     return rows, state, entries
 
@@ -266,6 +362,7 @@ def measure(
     qualification_policy: str = QUALIFICATION_POLICY,
     verbose: bool = True,
     checkpoint_path: str | Path | None = None,
+    timing_callback: Callable[..., None] | None = None,
 ) -> pd.DataFrame:
     """Estimate family-wise false promotion with production-sized null campaigns.
 
@@ -275,8 +372,10 @@ def measure(
     automatically confirmed, matching the production qualification policy.
 
     When ``checkpoint_path`` is set, each completed ``(kind, replicate)`` row
-    and the post-family RNG state are atomically persisted. A later call with
-    the exact same bound inputs resumes from that contiguous completed prefix.
+    and the post-family RNG state are durably appended. A later call with the
+    exact same computational inputs resumes from that contiguous prefix. A
+    directory path enables content-addressed reuse while campaign family
+    evidence digests are rebound on output.
     """
     if n < 1:
         raise ValueError("null campaign 반복 수 n은 1 이상이어야 합니다")
@@ -310,6 +409,13 @@ def measure(
         confirmation_snapshot_digest or panel_engine.snapshot_digest(panel)
     )
     discovery_df = discovery_panel.monthly
+    discovery_context = gate.build_evaluation_context(
+        discovery_panel,
+        discovery_df,
+        oos_start=oos_start,
+        data_cutoff=research_data_cutoff,
+        phase="discovery",
+    )
     base = df.loc[panel.universe, ["ym", "asset_id"]]
     rng = np.random.default_rng(seed)
     generators = {
@@ -353,8 +459,8 @@ def measure(
         checkpoint_entries: list[dict] = []
         signature = None
     else:
-        signature = {
-            "checkpoint_schema": _CHECKPOINT_SCHEMA_VERSION,
+        legacy_signature = {
+            "checkpoint_schema": 1,
             "n": n,
             "seed": seed,
             "trial_count": trial_count,
@@ -364,9 +470,28 @@ def measure(
             "gate_thresholds": _json_ready(gate.TH),
             "row_scope": _json_ready(row_scope),
         }
+        signature = {
+            key: value for key, value in legacy_signature.items()
+            if key not in {"checkpoint_schema", "trial_count", "prior_sharpes"}
+        }
+        signature["row_scope"] = _json_ready({
+                key: value for key, value in row_scope.items()
+                if key not in _REBOUND_EVIDENCE_FIELDS
+        })
+        if not checkpoint.suffix:
+            calculation_digest = hashlib.sha256(
+                _canonical_json(signature)
+            ).hexdigest()
+            checkpoint = checkpoint / f"{calculation_digest}.jsonl"
         rows, rng_state, checkpoint_entries = _load_checkpoint(
-            checkpoint, signature=signature, expected_pairs=expected_pairs,
+            checkpoint,
+            signature=signature,
+            expected_pairs=expected_pairs,
+            legacy_signature=legacy_signature,
         )
+        for row in rows:
+            for field in _REBOUND_EVIDENCE_FIELDS:
+                row[field] = row_scope[field]
         if rng_state is not None:
             try:
                 rng.bit_generator.state = rng_state
@@ -379,6 +504,7 @@ def measure(
             if pair_index < completed_count:
                 pair_index += 1
                 continue
+            family_started = time.perf_counter()
             family_results: list[gate.Result] = []
             factors_by_hash: dict[str, Factor] = {}
             temporary_columns: list[tuple[str, str]] = []
@@ -407,6 +533,14 @@ def measure(
                         },
                         compute=lambda frame, source=raw_col: frame[source],
                     )
+                    # The synthetic value was generated once on the immutable
+                    # confirmation panel and copied to the discovery subset.
+                    # Bind that exact column as the first determinism sample;
+                    # the gate still performs an independent bounded compute
+                    # and its causal anchor audit.
+                    research_policy.bind_authoritative_factor_column(
+                        factor, discovery_df, factor_col,
+                    )
                     discovery_result = gate.evaluate(
                         factor, discovery_panel, discovery_df, existing=existing,
                         trial_count=trial_count + discovery_family_size,
@@ -414,6 +548,7 @@ def measure(
                         oos_start=oos_start,
                         data_cutoff=research_data_cutoff,
                         phase="discovery",
+                        context=discovery_context,
                     )
                     family_results.append(discovery_result)
                     factors_by_hash[factor.definition_hash] = factor
@@ -516,8 +651,21 @@ def measure(
                 checkpoint_entries.append(
                     _checkpoint_entry(kind, replicate, row, rng)
                 )
-                _write_checkpoint(checkpoint, signature, checkpoint_entries)
+                _append_checkpoint(
+                    checkpoint,
+                    signature,
+                    checkpoint_entries[-1],
+                    checkpoint_entries[:-1],
+                )
             pair_index += 1
+            if timing_callback is not None:
+                timing_callback(
+                    "null.family",
+                    family_started,
+                    kind=kind,
+                    replicate=replicate,
+                    candidate_count=discovery_family_size,
+                )
             if verbose:
                 print(
                     f"  [null] {pair_index}/{len(expected_pairs)} "

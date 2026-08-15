@@ -820,6 +820,45 @@ def test_discovery_rank_ic_floor_is_three_percent(monkeypatch):
         assert next(item for item in below.checks if item.name == name).passed is False
 
 
+def test_invocation_gate_context_is_result_exact():
+    months = pd.period_range("2018-03", periods=60, freq="M")
+    assets = np.arange(1, 61)
+    frame = pd.DataFrame([
+        {
+            "asset_id": int(asset),
+            "ym": month,
+            "trade_date": month.to_timestamp(how="end").normalize(),
+            "in_universe": True,
+            "market_cap": float(asset + 100),
+            "adj_close": 100.0,
+            "total_return_close": 100.0,
+            "adv20": float(asset + 1),
+            "market": "KOSPI" if asset % 2 else "KOSDAQ",
+            "instrument_type": "common_stock",
+            "f_candidate": float(asset + 100),
+            "fwd_opt": float(asset) / 1000,
+            "fwd_mid": float(asset) / 1000,
+            "fwd_pess": float(asset) / 1000,
+        }
+        for month in months
+        for asset in assets
+    ])
+    panel = Panel(
+        frame, pd.Series(dtype="datetime64[ns]"), meta=dict(RETURN_META),
+    )
+    factor = Factor(
+        name="candidate", category="other", hypothesis="context exact parity",
+        predicted_sign=1, compute=lambda data: data["market_cap"],
+    )
+    baseline = gate.evaluate(factor, panel, frame, phase="discovery")
+    context = gate.build_evaluation_context(panel, frame, phase="discovery")
+    optimized = gate.evaluate(
+        factor, panel, frame, phase="discovery", context=context,
+    )
+
+    assert research.serialize_result(optimized) == research.serialize_result(baseline)
+
+
 def test_neutralized_ic_requires_thirty_percent_of_investable_ic(monkeypatch):
     months = pd.period_range("2020-01", periods=60, freq="M")
     frame = pd.DataFrame({
@@ -1254,6 +1293,7 @@ def test_null_calibration_outputs_campaign_family_units(monkeypatch):
         "market_cap": 100.0,
         "adj_close": np.arange(len(months), dtype=float) + 100.0,
         "total_return_close": np.arange(len(months), dtype=float) + 100.0,
+        "adv20": 1.0,
     })
     panel = Panel(
         frame, pd.Series(dtype="datetime64[ns]"), meta=dict(RETURN_META),
