@@ -1519,6 +1519,7 @@ def publish_revealed_campaign(
     current_bindings = _implementation_bindings(factors)
     verification = epochs.load_implementation_verification(
         "research", campaign_id, current_bindings=current_bindings,
+        finalized_publication=True,
     )
     parity_rows = verification.get("implementations") or []
     if (

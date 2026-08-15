@@ -2542,6 +2542,95 @@ def test_epoch_16_campaign_is_read_only_under_epoch_17(tmp_path):
         )
 
 
+def test_epoch_16_finalized_evidence_is_publish_compatible_but_not_reopened(tmp_path):
+    factor = Factor(
+        name="candidate_a", family="family_a", category="other",
+        hypothesis="가설", predicted_sign=1,
+        compute=lambda frame: frame["market_cap"],
+    )
+    campaign_path = _start_campaign(tmp_path)
+    epochs.start_epoch(
+        tmp_path, "campaign-001", "epoch-001", [factor],
+        strategy_digests=_strategy_digests([factor]),
+        input_feasibility=_input_feasibility([factor]),
+    )
+    epochs.mark_evaluated(
+        tmp_path, "campaign-001", "epoch-001", factor,
+        gate.Result(
+            factor=factor.name, definition_hash=factor.definition_hash,
+            verdict=gate.Verdict.PROVISIONAL,
+            metrics={"ic_p_investable": .001},
+        ),
+        strategy_sha256=_strategy_sha(factor),
+        report="research/runs/candidate_a/report.md",
+        strongest_relationship=None,
+    )
+    epochs.close_epoch(tmp_path, "campaign-001", "epoch-001")
+    epochs.finalize_campaign(
+        tmp_path, "campaign-001",
+        batch_orthogonality=_batch_orthogonality([factor]),
+    )
+    campaign = epochs.load_campaign(tmp_path, "campaign-001")
+    evidence = _implementation_evidence(factor, campaign)
+    implementation_path = epochs.record_implementation_verification(
+        tmp_path, "campaign-001", [evidence],
+    )
+
+    campaign = json.loads(campaign_path.read_text())
+    implementation_payload = json.loads(implementation_path.read_text())
+    campaign["protocol_version"] = "epoch-1.6"
+    campaign["ruleset_version"] = "fr-3.13.0"
+    implementation_payload["protocol_version"] = "epoch-1.6"
+    implementation_payload["ruleset_version"] = "fr-3.13.0"
+    campaign["implementation_verification_digest"] = epochs._payload_digest(
+        implementation_payload
+    )
+    implementation_path.write_text(
+        json.dumps(implementation_payload), encoding="utf-8",
+    )
+    campaign_path.write_text(json.dumps(campaign), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="protocol"):
+        epochs.load_implementation_verification(tmp_path, "campaign-001")
+    loaded = epochs.load_implementation_verification(
+        tmp_path, "campaign-001",
+        current_bindings=[_binding_from_evidence(evidence)],
+        finalized_publication=True,
+    )
+    assert loaded["protocol_version"] == "epoch-1.6"
+
+    campaign["status"] = "REVEALED"
+    campaign["oos"]["status"] = "REVEALED"
+    campaign["oos"]["revealed_at"] = "2026-08-15T00:00:00Z"
+    confirmation = {
+        "protocol_version": "epoch-1.6",
+        "campaign_id": "campaign-001",
+        "revealed_at": campaign["oos"]["revealed_at"],
+        "oos_start": campaign["oos"]["start"],
+        "oos_end": campaign["oos"]["signal_end"],
+        "confirmations": [{
+            "factor": factor.name,
+            "definition_hash": factor.definition_hash,
+            "strategy_sha256": _strategy_sha(factor),
+            "verdict": "PROMOTE",
+        }],
+    }
+    confirmation_path = tmp_path / "campaigns/campaign-001/confirmation/result.json"
+    confirmation_path.parent.mkdir(parents=True, exist_ok=True)
+    confirmation_path.write_text(json.dumps(confirmation), encoding="utf-8")
+    campaign["confirmation_result"] = str(confirmation_path)
+    campaign["confirmation_result_digest"] = epochs._payload_digest(confirmation)
+    campaign_path.write_text(json.dumps(campaign), encoding="utf-8")
+    assert epochs.load_confirmation(
+        tmp_path, "campaign-001"
+    )["protocol_version"] == "epoch-1.6"
+
+    campaign["ruleset_version"] = "fr-3.12.0"
+    campaign_path.write_text(json.dumps(campaign), encoding="utf-8")
+    with pytest.raises(ValueError, match="게시 호환"):
+        epochs.load_confirmation(tmp_path, "campaign-001")
+
+
 def test_batch_gold_orthogonality_keeps_lexical_first_without_outcomes():
     months = pd.period_range("2020-01", periods=36, freq="M")
     assets = np.arange(40)

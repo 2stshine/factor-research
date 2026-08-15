@@ -35,6 +35,10 @@ from engine.gate import (
 
 
 PROTOCOL_VERSION = "epoch-1.7"
+_PUBLICATION_COMPATIBLE_STATES = {
+    ("epoch-1.6", "fr-3.13.0"),
+    (PROTOCOL_VERSION, RULESET_VERSION),
+}
 IDENTITY_INVALIDATION_SCHEMA_VERSION = "input-identity-invalidation-1"
 INVALIDATED_INPUT_IDENTITY_STATUS = "CLOSED_INVALIDATED_INPUT_IDENTITY"
 ABORTED_CAMPAIGN_STATUS = "CLOSED_ABORTED"
@@ -218,6 +222,16 @@ def _assert_current_state(campaign: dict, epoch: dict | None = None) -> None:
                 "epoch ruleset이 현재 엔진과 다릅니다: "
                 f"{epoch.get('ruleset_version')} != {RULESET_VERSION}"
             )
+
+
+def _assert_publication_compatible_state(campaign: dict) -> None:
+    """Allow only frozen protocol/ruleset pairs with a reviewed publish contract."""
+    state = (campaign.get("protocol_version"), campaign.get("ruleset_version"))
+    if state not in _PUBLICATION_COMPATIBLE_STATES:
+        raise ValueError(
+            "campaign protocol/ruleset은 Gold 게시 호환 상태가 아닙니다: "
+            f"{state}"
+        )
 
 
 def start_campaign(
@@ -1460,10 +1474,14 @@ def load_implementation_verification(
     campaign_id: str,
     *,
     current_bindings: list[dict] | None = None,
+    finalized_publication: bool = False,
 ) -> dict:
     """Authenticate parity evidence and optionally the current manifest/SQL files."""
     campaign = load_campaign(root, campaign_id)
-    _assert_current_state(campaign)
+    if finalized_publication:
+        _assert_publication_compatible_state(campaign)
+    else:
+        _assert_current_state(campaign)
     artifact_path = campaign.get("implementation_verification")
     if not artifact_path:
         raise ValueError("campaign Gold 구현 검증 artifact가 없습니다")
@@ -1471,8 +1489,8 @@ def load_implementation_verification(
     rows = artifact.get("implementations") or []
     _validate_implementation_rows(campaign, rows)
     valid = (
-        artifact.get("protocol_version") == PROTOCOL_VERSION
-        and artifact.get("ruleset_version") == RULESET_VERSION
+        artifact.get("protocol_version") == campaign.get("protocol_version")
+        and artifact.get("ruleset_version") == campaign.get("ruleset_version")
         and artifact.get("campaign_id") == campaign_id
         and artifact.get("scope") == "discovery_only"
         and artifact.get("qualified_family_digest") == campaign.get("oos_family_digest")
@@ -1638,6 +1656,7 @@ def record_reveal(
 def load_confirmation(root: str | Path, campaign_id: str) -> dict:
     """Authenticate the one-time revealed confirmation exact family."""
     campaign = load_campaign(root, campaign_id)
+    _assert_publication_compatible_state(campaign)
     if campaign.get("status") != "REVEALED" or campaign.get("oos", {}).get(
         "status"
     ) != "REVEALED":
@@ -1651,6 +1670,7 @@ def load_confirmation(root: str | Path, campaign_id: str) -> dict:
         for row in campaign["qualified_factors"]
     )
     confirmations = payload.get("confirmations") or []
+    campaign_protocol = campaign.get("protocol_version")
     observed = sorted(
         (
             row.get("factor"), row.get("definition_hash"),
@@ -1659,7 +1679,7 @@ def load_confirmation(root: str | Path, campaign_id: str) -> dict:
         for row in confirmations
     )
     valid = (
-        payload.get("protocol_version") == PROTOCOL_VERSION
+        payload.get("protocol_version") == campaign_protocol
         and payload.get("campaign_id") == campaign_id
         and payload.get("oos_start") == campaign["oos"]["start"]
         and payload.get("oos_end") == campaign["oos"]["signal_end"]
