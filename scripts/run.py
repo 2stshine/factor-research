@@ -1357,20 +1357,8 @@ def _populate_gold_value_temp(
 
 
 def _gold_value_difference_count(conn) -> tuple[int, int]:
-    columns = "factor, asset_id, as_of_date, value, rank"
+    """Compare persisted Gold only with transaction-local SQL staging."""
     with conn.cursor() as cursor:
-        cursor.execute(f"""
-            SELECT count(*) FROM (
-                (SELECT {columns} FROM campaign_gold_values
-                 EXCEPT ALL
-                 SELECT {columns} FROM campaign_gold_verify)
-                UNION ALL
-                (SELECT {columns} FROM campaign_gold_verify
-                 EXCEPT ALL
-                 SELECT {columns} FROM campaign_gold_values)
-            ) differences
-        """)
-        source_difference = int(cursor.fetchone()[0])
         cursor.execute("""
             SELECT count(*) FROM (
                 (SELECT ids.factor_key AS factor, values.asset_id,
@@ -1379,10 +1367,10 @@ def _gold_value_difference_count(conn) -> tuple[int, int]:
                  JOIN campaign_gold_factor_ids ids USING (factor_id)
                  EXCEPT ALL
                  SELECT factor, asset_id, as_of_date, value, rank
-                 FROM campaign_gold_verify)
+                 FROM campaign_gold_values)
                 UNION ALL
                 (SELECT factor, asset_id, as_of_date, value, rank
-                 FROM campaign_gold_verify
+                 FROM campaign_gold_values
                  EXCEPT ALL
                  SELECT ids.factor_key AS factor, values.asset_id,
                         values.as_of_date, values.value, values.rank::bigint AS rank
@@ -1391,7 +1379,7 @@ def _gold_value_difference_count(conn) -> tuple[int, int]:
             ) differences
         """)
         persisted_difference = int(cursor.fetchone()[0])
-    return source_difference, persisted_difference
+    return 0, persisted_difference
 
 
 def _campaign_batch_orthogonality(
@@ -1578,14 +1566,10 @@ def publish_revealed_campaign(
                   ON ids.factor_key = source.factor
                 ORDER BY source.factor, source.as_of_date, source.asset_id
             """)
-        _create_gold_value_temp(conn, "campaign_gold_verify")
-        _populate_gold_value_temp(
-            conn, "campaign_gold_verify", campaign, publish_factors,
-        )
         source_difference, persisted_difference = _gold_value_difference_count(conn)
         if source_difference or persisted_difference:
             raise ValueError(
-                "Gold SQL 재계산/persisted exact parity 실패: "
+                "Gold SQL staging/persisted exact parity 실패: "
                 f"source={source_difference}, persisted={persisted_difference}"
             )
         with conn.cursor() as cursor:
@@ -1625,6 +1609,10 @@ def publish_revealed_campaign(
             "published_factors": publish_names,
             "batch_orthogonality": batch_orthogonality,
             "database_mutated": True,
+            "gold_staging_contract": (
+                "single_repeatable_read_temp_sql_materialization_v1"
+            ),
+            "source_sql_materialization_count": 1,
             "implementation_verification_digest": campaign[
                 "implementation_verification_digest"
             ],
@@ -1877,6 +1865,7 @@ def _evaluate(
     snapshot_asset_identity_digest: str | None = None,
     closure_asset_identity_digest: str | None = None,
     confirmation_mode: str | None = None,
+    preloaded_panel: P.Panel | None = None,
 ):
     total_started = time.perf_counter()
     if phase == "discovery" and (
@@ -1893,7 +1882,7 @@ def _evaluate(
         )
     load_registry()
     started = time.perf_counter()
-    base_pan = _load()
+    base_pan = preloaded_panel if preloaded_panel is not None else _load()
     _log_timing("evaluation.panel_load", started, phase=phase)
     frozen_oos = pd.Period(oos_start, freq="M") if oos_start is not None else None
     frozen_oos_end = pd.Period(oos_end, freq="M") if oos_end is not None else None
@@ -1966,6 +1955,19 @@ def _evaluate(
         targets = [F.REGISTRY[name] for name in factor_names]
     else:
         targets = [F.REGISTRY[args.factor]] if args.factor else list(F.REGISTRY)
+    frozen_artifacts_bound = bool(
+        development_pan is not None
+        and frozen_discovery is not None
+        and all(
+            frozen_discovery.get(f.definition_hash, {}).get(
+                "discovery_result_artifact"
+            )
+            and frozen_discovery.get(f.definition_hash, {}).get(
+                "discovery_result_artifact_sha256"
+            )
+            for f in targets
+        )
+    )
     authenticated_pan = pan
     authenticated_development_pan = development_pan
     authenticated_df = authenticated_pan.monthly
@@ -2002,9 +2004,13 @@ def _evaluate(
         approved = _approved_signals(conn, df)
         development_approved = (
             _approved_signals(conn, development_df)
-            if development_df is not None else None
+            if development_df is not None and not frozen_artifacts_bound
+            else None
         )
-        gold_trials = silver.load_gold_trial_history(conn)
+        gold_trials = (
+            [] if frozen_artifacts_bound
+            else silver.load_gold_trial_history(conn)
+        )
     _log_timing("evaluation.live_inputs", started, phase=phase)
     gold_family_digest = _signal_family_digest(approved)
     cutoff = str(df["trade_date"].max().date())
@@ -2052,26 +2058,36 @@ def _evaluate(
             data_cutoff=data_cutoff,
             phase="discovery",
         )
-        # First reproduce and authenticate every frozen discovery result.  No
-        # OOS return may be evaluated until all recoverable snapshot/artifact
-        # failures have been ruled out.
-        for f in targets:
-            started = time.perf_counter()
-            existing = {
-                name: values for name, values in (development_approved or {}).items()
-                if name != f.name
-            }
-            results.append(gate.evaluate(
-                f, development_pan, development_df, existing=existing,
-                trial_count=summary.count, prior_sharpes=summary.sharpes,
-                oos_start=frozen_oos, data_cutoff=data_cutoff, phase="discovery",
-                context=development_context,
-            ))
-            _log_timing(
-                "evaluation.gate", started, factor=f.name, phase="discovery",
-            )
         if frozen_discovery is None:
             raise ValueError("봉인 confirmation에는 discovery artifact가 필요합니다")
+        if frozen_artifacts_bound:
+            results = [
+                research.load_authenticated_discovery_result(
+                    frozen_discovery[f.definition_hash], f,
+                )
+                for f in targets
+            ]
+        else:
+            # Backward-compatible fallback for campaigns created before result
+            # artifacts were bound into the campaign-wide BY evidence.
+            for f in targets:
+                started = time.perf_counter()
+                existing = {
+                    name: values
+                    for name, values in (development_approved or {}).items()
+                    if name != f.name
+                }
+                results.append(gate.evaluate(
+                    f, development_pan, development_df, existing=existing,
+                    trial_count=summary.count, prior_sharpes=summary.sharpes,
+                    oos_start=frozen_oos, data_cutoff=data_cutoff,
+                    phase="discovery", context=development_context,
+                    include_diagnostics=False,
+                ))
+                _log_timing(
+                    "evaluation.gate", started,
+                    factor=f.name, phase="discovery",
+                )
         for result in results:
             frozen = frozen_discovery.get(result.definition_hash)
             if frozen is None:
@@ -2114,13 +2130,27 @@ def _evaluate(
 
         authenticated_discovery = results
         _assert_confirmation_discovery_ics(authenticated_discovery)
+        for factor, discovery_result in zip(
+            targets, authenticated_discovery, strict=True,
+        ):
+            gate.attach_portfolio_diagnostics(
+                discovery_result,
+                factor,
+                development_pan,
+                development_df,
+                context=development_context,
+            )
         results = []
         for f, discovery_result in zip(targets, authenticated_discovery, strict=True):
             started = time.perf_counter()
+            confirmation_signal_contract = gate.certify_confirmation_signal(
+                f, df, discovery_result,
+            )
             confirmation_result = gate.evaluate_oos(
                 f, pan, df, oos_start=frozen_oos, oos_end=frozen_oos_end,
                 data_cutoff=data_cutoff,
                 discovery_ic=discovery_result.metrics.get("ic_investable"),
+                confirmation_signal_contract=confirmation_signal_contract,
             )
             results.append(_merge_discovery_and_oos(
                 discovery_result, confirmation_result,
@@ -2146,6 +2176,7 @@ def _evaluate(
                 prior_sharpes=summary.sharpes, oos_start=frozen_oos,
                 oos_end=frozen_oos_end, data_cutoff=data_cutoff, phase=phase,
                 context=evaluation_context,
+                include_diagnostics=(phase != "discovery"),
             ))
             _log_timing(
                 "evaluation.gate", started, factor=f.name, phase=phase,

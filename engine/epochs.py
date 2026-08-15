@@ -727,6 +727,8 @@ def mark_evaluated(
     strategy_sha256: str,
     report: str,
     strongest_relationship: dict | None,
+    discovery_result_artifact: str | None = None,
+    discovery_result_artifact_sha256: str | None = None,
 ) -> None:
     campaign = load_campaign(root, campaign_id)
     epoch = load_epoch(root, campaign_id, epoch_id)
@@ -765,6 +767,8 @@ def mark_evaluated(
         "strongest_relationship": strongest_relationship,
         "ic_p_investable": result.metrics.get("ic_p_investable"),
         "discovery_evidence_digest": discovery_evidence_digest(result),
+        "discovery_result_artifact": discovery_result_artifact,
+        "discovery_result_artifact_sha256": discovery_result_artifact_sha256,
         "evidence_ruleset_version": RULESET_VERSION,
         "fdr_status": "PENDING",
         "fdr_qvalue": None,
@@ -950,6 +954,12 @@ def finalize_campaign(root: str | Path, campaign_id: str) -> Path:
             "evidence_ruleset_version": candidate.get(
                 "evidence_ruleset_version", RULESET_VERSION,
             ),
+            "discovery_result_artifact": candidate.get(
+                "discovery_result_artifact"
+            ),
+            "discovery_result_artifact_sha256": candidate.get(
+                "discovery_result_artifact_sha256"
+            ),
         })
     qualified_names = sorted(
         name for name, candidate in candidates.items()
@@ -983,6 +993,12 @@ def finalize_campaign(root: str | Path, campaign_id: str) -> Path:
             "predicted_sign": candidates[name]["predicted_sign"],
             "max_lookback_months": candidates[name]["max_lookback_months"],
             "discovery_report": candidates[name]["report"],
+            "discovery_result_artifact": candidates[name].get(
+                "discovery_result_artifact"
+            ),
+            "discovery_result_artifact_sha256": candidates[name].get(
+                "discovery_result_artifact_sha256"
+            ),
             "discovery_multiple_testing": str(multiple_testing_path),
         }
         for name in qualified_names
@@ -1055,6 +1071,19 @@ def load_discovery_multiple_testing(root: str | Path, campaign_id: str) -> dict:
             _SHA256.fullmatch(str(row.get("strategy_sha256"))) is not None
             and row.get("strategy_sha256")
             == expected_strategies.get(row.get("definition_hash"))
+            for row in rows
+        )
+        and all(
+            (
+                row.get("discovery_result_artifact") is None
+                and row.get("discovery_result_artifact_sha256") is None
+            )
+            or (
+                isinstance(row.get("discovery_result_artifact"), str)
+                and _SHA256.fullmatch(str(
+                    row.get("discovery_result_artifact_sha256")
+                )) is not None
+            )
             for row in rows
         )
         and _family_digest(hashes) == campaign.get("discovery_family_digest")

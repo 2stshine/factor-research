@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import io
+import os
 from enum import Enum
 from pathlib import Path
 
@@ -11,9 +14,150 @@ from scipy import stats
 
 from engine import dividends, epochs, fundamentals
 from engine.factors import Factor, Registry
-from engine.gate import RESEARCH_START, Result, RULESET_VERSION
+from engine.gate import Check, RESEARCH_START, Result, RULESET_VERSION, Verdict
 from engine.panel import Panel
 from engine import research_policy
+
+
+_REGISTRY_SIGNAL_CACHE_SCHEMA = "registry-signal-cache-v1"
+
+
+class RegistrySignalCacheError(ValueError):
+    """A present registry cache is corrupt or bound to different inputs."""
+
+
+def _canonical_json_bytes(value: dict) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _frame_identity_digest(df: pd.DataFrame) -> str:
+    required = ["asset_id", "ym"]
+    missing = [column for column in required if column not in df]
+    if missing or not df.index.is_unique:
+        raise ValueError(f"registry cache row identity 계약 오류: missing={missing}")
+    identity = df[required].copy()
+    if "trade_date" in df:
+        identity["trade_date"] = pd.to_datetime(df["trade_date"]).dt.strftime(
+            "%Y-%m-%d"
+        )
+    identity["ym"] = identity["ym"].astype(str)
+    digest = hashlib.sha256()
+    digest.update(pd.util.hash_pandas_object(
+        identity, index=True, categorize=True,
+    ).values.tobytes())
+    return digest.hexdigest()
+
+
+def _cache_signal_bytes(values: pd.Series) -> bytes:
+    buffer = io.BytesIO()
+    np.save(buffer, values.to_numpy(dtype=np.float64), allow_pickle=False)
+    return buffer.getvalue()
+
+
+def _load_or_compute_registry_signal(
+    factor: Factor,
+    df: pd.DataFrame,
+    *,
+    compute_context,
+    cache_root: Path | None,
+    snapshot_digest: str | None,
+    asset_identity_digest: str | None,
+    frame_identity_digest: str,
+) -> pd.Series:
+    """Load one content-bound registry signal or compute and certify it once."""
+    if cache_root is None:
+        return research_policy.compute_factor(
+            factor, df, context=compute_context,
+        ) * factor.predicted_sign
+    for label, value in (
+        ("snapshot_digest", snapshot_digest),
+        ("asset_identity_digest", asset_identity_digest),
+    ):
+        if not isinstance(value, str) or len(value) != 64:
+            raise ValueError(f"registry cache {label}는 SHA-256이어야 합니다")
+    directory = cache_root / str(snapshot_digest)
+    stem = f"{factor.definition_hash}-{factor.predicted_sign:+d}"
+    values_path = directory / f"{stem}.npy"
+    manifest_path = directory / f"{stem}.json"
+    if values_path.exists() != manifest_path.exists():
+        raise RegistrySignalCacheError(
+            f"registry signal cache pair가 불완전합니다: {stem}"
+        )
+    expected = {
+        "schema_version": _REGISTRY_SIGNAL_CACHE_SCHEMA,
+        "snapshot_digest": snapshot_digest,
+        "asset_identity_digest": asset_identity_digest,
+        "frame_identity_digest": frame_identity_digest,
+        "row_count": int(len(df)),
+        "factor": factor.name,
+        "definition_hash": factor.definition_hash,
+        "predicted_sign": factor.predicted_sign,
+    }
+    if values_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            payload = values_path.read_bytes()
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RegistrySignalCacheError(
+                f"registry signal cache를 읽을 수 없습니다: {stem}"
+            ) from exc
+        if (
+            {key: manifest.get(key) for key in expected} != expected
+            or manifest.get("values_sha256")
+            != hashlib.sha256(payload).hexdigest()
+            or manifest.get("manifest_sha256")
+            != hashlib.sha256(_canonical_json_bytes({
+                key: value for key, value in manifest.items()
+                if key != "manifest_sha256"
+            })).hexdigest()
+        ):
+            raise RegistrySignalCacheError(
+                f"registry signal cache binding이 다릅니다: {stem}"
+            )
+        try:
+            array = np.load(io.BytesIO(payload), allow_pickle=False)
+        except (OSError, ValueError) as exc:
+            raise RegistrySignalCacheError(
+                f"registry signal cache 배열이 손상되었습니다: {stem}"
+            ) from exc
+        if array.shape != (len(df),) or np.isinf(array).any():
+            raise RegistrySignalCacheError(
+                f"registry signal cache shape/유한성 오류: {stem}"
+            )
+        return pd.Series(array, index=df.index, dtype=float)
+
+    values = research_policy.compute_factor(
+        factor, df, context=compute_context,
+    ) * factor.predicted_sign
+    if not isinstance(values, pd.Series) or not values.index.equals(df.index):
+        raise ValueError(f"registry signal 출력 계약 오류: {factor.name}")
+    numeric = pd.to_numeric(values, errors="coerce").astype(float)
+    if np.isinf(numeric.to_numpy()).any():
+        raise ValueError(f"registry signal에 무한값이 있습니다: {factor.name}")
+    payload = _cache_signal_bytes(numeric)
+    manifest = {
+        **expected,
+        "values_sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    manifest["manifest_sha256"] = hashlib.sha256(
+        _canonical_json_bytes(manifest)
+    ).hexdigest()
+    directory.mkdir(parents=True, exist_ok=True)
+    nonce = f".{stem}.{os.getpid()}.tmp"
+    values_tmp = directory / f"{nonce}.npy"
+    manifest_tmp = directory / f"{nonce}.json"
+    try:
+        values_tmp.write_bytes(payload)
+        manifest_tmp.write_bytes(_canonical_json_bytes(manifest))
+        os.replace(values_tmp, values_path)
+        os.replace(manifest_tmp, manifest_path)
+    finally:
+        values_tmp.unlink(missing_ok=True)
+        manifest_tmp.unlink(missing_ok=True)
+    return numeric
 
 
 def _jsonable(value):
@@ -49,6 +193,102 @@ def serialize_result(result: Result) -> dict:
             for check in result.checks
         ],
     }
+
+
+def deserialize_result(payload: dict) -> Result:
+    """Reconstruct a result only from the schema emitted by serialize_result."""
+    if not isinstance(payload, dict):
+        raise ValueError("동결 discovery evaluation 형식이 dict가 아닙니다")
+    try:
+        verdict = Verdict(payload["verdict"])
+        checks = [
+            Check(
+                tier=str(row["tier"]),
+                name=str(row["name"]),
+                passed=row["passed"],
+                value=row.get("value"),
+                threshold=str(row.get("threshold", "")),
+                note=str(row.get("note", "")),
+            )
+            for row in payload["checks"]
+        ]
+        result = Result(
+            factor=str(payload["factor"]),
+            definition_hash=str(payload["definition_hash"]),
+            verdict=verdict,
+            checks=checks,
+            metrics=dict(payload["metrics"]),
+            labels=[str(value) for value in payload["labels"]],
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("동결 discovery evaluation schema가 손상되었습니다") from exc
+    if any(check.passed not in {True, False, None} for check in result.checks):
+        raise ValueError("동결 discovery check 상태가 올바르지 않습니다")
+    return result
+
+
+def discovery_result_artifact_binding(report: str | Path) -> dict:
+    result_path = Path(report).with_name("result.json")
+    if not result_path.is_file() or result_path.is_symlink():
+        raise ValueError(f"discovery result artifact가 없습니다: {result_path}")
+    payload = result_path.read_bytes()
+    return {
+        "discovery_result_artifact": str(result_path),
+        "discovery_result_artifact_sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def load_authenticated_discovery_result(
+    frozen: dict,
+    factor: Factor,
+) -> Result:
+    """Authenticate one frozen Discovery result without recomputing its gates."""
+    path_value = frozen.get("discovery_result_artifact")
+    expected_sha = frozen.get("discovery_result_artifact_sha256")
+    if not isinstance(path_value, str) or not isinstance(expected_sha, str):
+        raise ValueError("동결 discovery result artifact binding이 없습니다")
+    path = Path(path_value)
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(f"동결 discovery result artifact가 없습니다: {path}")
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_sha:
+        raise ValueError(f"동결 discovery result artifact SHA가 다릅니다: {factor.name}")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("동결 discovery result artifact JSON이 손상되었습니다") from exc
+    result = deserialize_result(payload.get("evaluation"))
+    strategy = payload.get("research_spec") or {}
+    factor_payload = payload.get("factor") or {}
+    if (
+        payload.get("phase") != "discovery"
+        or payload.get("ruleset_version") != RULESET_VERSION
+        or result.factor != factor.name
+        or result.definition_hash != factor.definition_hash
+        or factor_payload.get("name") != factor.name
+        or factor_payload.get("definition_hash") != factor.definition_hash
+        or strategy.get("strategy_sha256") != frozen.get("strategy_sha256")
+        or frozen.get("factor") != factor.name
+        or frozen.get("definition_hash") != factor.definition_hash
+    ):
+        raise ValueError(f"동결 discovery result identity가 다릅니다: {factor.name}")
+    current_p = result.metrics.get("ic_p_investable")
+    frozen_p = frozen.get("pvalue")
+    if (
+        current_p is None or frozen_p is None
+        or not np.isfinite(float(current_p))
+        or abs(float(current_p) - float(frozen_p)) > 1e-12
+    ):
+        raise ValueError(f"동결 discovery p값 binding이 다릅니다: {factor.name}")
+    from engine import gate
+
+    digest = gate.discovery_evidence_digest(
+        result,
+        ruleset_version=frozen.get("evidence_ruleset_version"),
+    )
+    if digest != frozen.get("discovery_evidence_digest"):
+        raise ValueError(f"동결 discovery T0-T3 digest가 다릅니다: {factor.name}")
+    return result
 
 
 def factor_relationships(
@@ -118,6 +358,10 @@ def factor_relationships_batch(
     df: pd.DataFrame,
     factors: list[Factor],
     registry: Registry,
+    *,
+    cache_root: str | Path | None = None,
+    snapshot_digest: str | None = None,
+    asset_identity_digest: str | None = None,
 ) -> dict[str, list[dict]]:
     """Compute registry signals once and reuse them for an epoch batch.
 
@@ -143,6 +387,8 @@ def factor_relationships_batch(
     }
     comparable: list[Factor] = []
     compute_context = None
+    cache_path = Path(cache_root) if cache_root is not None else None
+    frame_digest = _frame_identity_digest(df) if cache_path is not None else ""
     for other in registry:
         try:
             research_policy.assert_allowed_lookback(
@@ -162,12 +408,17 @@ def factor_relationships_batch(
                     compute_context = (
                         research_policy.build_factor_compute_context(df)
                     )
-                values = (
-                    research_policy.compute_factor(
-                        other, df, context=compute_context,
-                    )
-                    * other.predicted_sign
+                values = _load_or_compute_registry_signal(
+                    other,
+                    df,
+                    compute_context=compute_context,
+                    cache_root=cache_path,
+                    snapshot_digest=snapshot_digest,
+                    asset_identity_digest=asset_identity_digest,
+                    frame_identity_digest=frame_digest,
                 )
+            except RegistrySignalCacheError:
+                raise
             except Exception:
                 continue
             if not isinstance(values, pd.Series) or not values.index.equals(df.index):

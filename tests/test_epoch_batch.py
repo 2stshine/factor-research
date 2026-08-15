@@ -448,6 +448,52 @@ def test_batch_relationships_compute_each_registry_signal_once(monkeypatch):
     assert set(output) == {"target_a", "target_b"}
 
 
+def test_batch_relationships_reuses_only_exact_content_bound_registry_cache(
+    monkeypatch, tmp_path,
+):
+    frame = _relationship_frame().drop(columns=["f_other_a", "f_other_b"])
+    panel = SimpleNamespace(investable=pd.Series(True, index=frame.index))
+    registry = Registry()
+    targets = [_make_factor("target_a"), _make_factor("target_b", _negative)]
+    others = [_make_factor("other_a"), _make_factor("other_b", _negative)]
+    for factor in [*targets, *others]:
+        registry.add(factor)
+    monkeypatch.setattr(
+        research.research_policy, "assert_allowed_lookback",
+        lambda **_kwargs: 0,
+    )
+    calls = []
+    original = research.research_policy.compute_factor
+
+    def counted(factor, source, **kwargs):
+        calls.append(factor.name)
+        return original(factor, source, **kwargs)
+
+    monkeypatch.setattr(research.research_policy, "compute_factor", counted)
+    kwargs = {
+        "cache_root": tmp_path / "signals",
+        "snapshot_digest": "a" * 64,
+        "asset_identity_digest": "b" * 64,
+    }
+    first = research.factor_relationships_batch(
+        panel, frame, targets, registry, **kwargs,
+    )
+    assert calls == ["other_a", "other_b"]
+    calls.clear()
+    second = research.factor_relationships_batch(
+        panel, frame.copy(), targets, registry, **kwargs,
+    )
+    assert calls == []
+    assert second == first
+
+    values_path = next((tmp_path / "signals" / ("a" * 64)).glob("*.npy"))
+    values_path.write_bytes(values_path.read_bytes() + b"tamper")
+    with pytest.raises(ValueError, match="cache binding"):
+        research.factor_relationships_batch(
+            panel, frame.copy(), targets, registry, **kwargs,
+        )
+
+
 def test_abort_open_campaign_preserves_candidates_and_does_not_use_oos(tmp_path):
     root = tmp_path / "research"
     epochs.start_campaign(
@@ -516,6 +562,14 @@ def test_discovery_persistence_writes_trial_ledger_last(monkeypatch, tmp_path):
         research_script.epochs,
         "mark_evaluated",
         lambda *_args, **_kwargs: events.append("epoch"),
+    )
+    monkeypatch.setattr(
+        research_script.research,
+        "discovery_result_artifact_binding",
+        lambda _report: {
+            "discovery_result_artifact": str(tmp_path / "result.json"),
+            "discovery_result_artifact_sha256": "8" * 64,
+        },
     )
 
     class Ledger:

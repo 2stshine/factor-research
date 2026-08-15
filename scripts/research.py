@@ -439,6 +439,7 @@ def _persist_discovery_result(args, panel, factor, result, relationships):
         strategy_sha256=RESEARCH_SPECS[factor.name]["strategy_sha256"],
         report=str(report),
         strongest_relationship=relationships[0] if relationships else None,
+        **research.discovery_result_artifact_binding(report),
     )
     trials.TrialLedger(run.TRIAL_DB).record(
         factor,
@@ -506,6 +507,11 @@ def cmd_epoch_evaluate(args) -> None:
         started = time.perf_counter()
         relationships = research.factor_relationships_batch(
             panel, df, targets, F.REGISTRY,
+            cache_root=run.CACHE / "registry-signals",
+            snapshot_digest=campaign["snapshot"]["discovery_input_digest"],
+            asset_identity_digest=campaign["snapshot"].get(
+                "discovery_asset_identity_digest"
+            ),
         )
         run._log_timing(
             "discovery.relationships_batch",
@@ -689,6 +695,7 @@ def cmd_campaign_reveal(args) -> None:
             campaign["snapshot"].get("closure_asset_identity_digest")
         ),
         confirmation_mode=campaign["oos"]["mode"],
+        preloaded_panel=panel,
     )
     confirmations = []
     for factor, result in zip(factors, results, strict=True):

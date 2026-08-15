@@ -541,6 +541,17 @@ def measure(
                     research_policy.bind_authoritative_factor_column(
                         factor, discovery_df, factor_col,
                     )
+                    discovery_null_contract = gate.certify_internal_null_signal(
+                        factor,
+                        discovery_df,
+                        generator_suite=_GENERATOR_SUITE,
+                        kind=kind,
+                        replicate=replicate,
+                        candidate=candidate_index,
+                        seed=seed,
+                        raw_column=raw_col,
+                        factor_column=factor_col,
+                    )
                     discovery_result = gate.evaluate(
                         factor, discovery_panel, discovery_df, existing=existing,
                         trial_count=trial_count + discovery_family_size,
@@ -549,6 +560,8 @@ def measure(
                         data_cutoff=research_data_cutoff,
                         phase="discovery",
                         context=discovery_context,
+                        internal_null_contract=discovery_null_contract,
+                        include_diagnostics=False,
                     )
                     family_results.append(discovery_result)
                     factors_by_hash[factor.definition_hash] = factor
@@ -574,11 +587,24 @@ def measure(
                 )
                 for index, discovery_result in enumerate(selected):
                     factor = factors_by_hash[discovery_result.definition_hash]
+                    name = factor.name
+                    confirmation_null_contract = gate.certify_internal_null_signal(
+                        factor,
+                        df,
+                        generator_suite=_GENERATOR_SUITE,
+                        kind=str(factor.params["kind"]),
+                        replicate=int(factor.params["replicate"]),
+                        candidate=int(factor.params["candidate"]),
+                        seed=int(factor.params["seed"]),
+                        raw_column=f"_raw_{name}",
+                        factor_column=f"f_{name}",
+                    )
                     confirmation_result = gate.evaluate_oos(
                         factor, panel, df,
                         oos_start=oos_start, oos_end=oos_end,
                         data_cutoff=research_data_cutoff,
                         discovery_ic=discovery_result.metrics.get("ic_investable"),
+                        internal_null_contract=confirmation_null_contract,
                     )
                     selected[index] = _merge_discovery_and_oos(
                         discovery_result, confirmation_result,

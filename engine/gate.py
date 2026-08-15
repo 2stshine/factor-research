@@ -144,6 +144,208 @@ class EvaluationContext:
     )
 
 
+@dataclass(frozen=True)
+class InternalNullSignalContract:
+    """One-frame capability for engine-generated synthetic null signals."""
+
+    generator_suite: str
+    kind: str
+    replicate: int
+    candidate: int
+    seed: int
+    factor_name: str
+    definition_hash: str
+    raw_column: str
+    factor_column: str
+    frame_identity: int
+    signal_digest: str
+
+
+@dataclass(frozen=True)
+class ConfirmationSignalContract:
+    """Current OOS signal bound to an authenticated Discovery T0 result."""
+
+    factor_name: str
+    definition_hash: str
+    factor_column: str
+    frame_identity: int
+    signal_digest: str
+
+
+_INTERNAL_NULL_GENERATOR_SUITE = "null-v2"
+_INTERNAL_NULL_KINDS = frozenset({"random", "ar1_095", "ar1_0999", "frozen"})
+
+
+def _series_digest(series: pd.Series) -> str:
+    digest = hashlib.sha256()
+    digest.update(str(series.dtype).encode("utf-8"))
+    digest.update(pd.util.hash_pandas_object(
+        series, index=True, categorize=True,
+    ).values.tobytes())
+    return digest.hexdigest()
+
+
+def certify_internal_null_signal(
+    factor: Factor,
+    df: pd.DataFrame,
+    *,
+    generator_suite: str,
+    kind: str,
+    replicate: int,
+    candidate: int,
+    seed: int,
+    raw_column: str,
+    factor_column: str,
+) -> InternalNullSignalContract:
+    """Certify one engine-owned null signal without executing candidate T0."""
+    expected_name = f"null_{kind}_{replicate}_{candidate}"
+    expected_params = {
+        "kind": kind, "replicate": replicate, "candidate": candidate,
+        "seed": seed,
+    }
+    if (
+        generator_suite != _INTERNAL_NULL_GENERATOR_SUITE
+        or kind not in _INTERNAL_NULL_KINDS
+        or replicate < 0
+        or candidate < 0
+        or factor.name != expected_name
+        or factor.family != f"null_{kind}"
+        or factor.category != "other"
+        or factor.predicted_sign != 1
+        or factor.rebalance_months != 1
+        or factor.needs
+        or factor.params != expected_params
+        or raw_column != f"_raw_{expected_name}"
+        or factor_column != f"f_{expected_name}"
+    ):
+        raise ValueError("engine null signal 계약이 닫힌 generator identity와 다릅니다")
+    if raw_column not in df or factor_column not in df:
+        raise ValueError("engine null signal raw/factor column이 없습니다")
+    raw = df[raw_column]
+    signed = df[factor_column]
+    if (
+        not raw.index.equals(df.index)
+        or not signed.index.equals(df.index)
+        or not pd.api.types.is_numeric_dtype(raw)
+        or not pd.api.types.is_numeric_dtype(signed)
+        or np.isinf(pd.to_numeric(raw, errors="coerce")).any()
+        or np.isinf(pd.to_numeric(signed, errors="coerce")).any()
+        or not np.allclose(
+            raw.to_numpy(dtype=float), signed.to_numpy(dtype=float),
+            equal_nan=True,
+        )
+    ):
+        raise ValueError("engine null signal 값·인덱스·유한성 계약이 다릅니다")
+    return InternalNullSignalContract(
+        generator_suite=generator_suite,
+        kind=kind,
+        replicate=replicate,
+        candidate=candidate,
+        seed=seed,
+        factor_name=factor.name,
+        definition_hash=factor.definition_hash,
+        raw_column=raw_column,
+        factor_column=factor_column,
+        frame_identity=id(df),
+        signal_digest=_series_digest(signed),
+    )
+
+
+def _internal_null_checks(
+    factor: Factor,
+    df: pd.DataFrame,
+    cached: str,
+    contract: InternalNullSignalContract,
+) -> list[Check]:
+    if (
+        contract.generator_suite != _INTERNAL_NULL_GENERATOR_SUITE
+        or contract.kind not in _INTERNAL_NULL_KINDS
+        or contract.factor_name != factor.name
+        or contract.definition_hash != factor.definition_hash
+        or contract.factor_column != cached
+        or contract.frame_identity != id(df)
+        or cached not in df
+        or contract.signal_digest != _series_digest(df[cached])
+    ):
+        raise ValueError("engine null signal 인증이 현재 factor/frame과 다릅니다")
+    note = "closed engine null generator; candidate code path not used"
+    return [
+        Check("T0.1", "미선언 상수", True, 0, "0개", note),
+        Check("T0.2", "단일 팩터 계약", True, 0, "합성 신호 0개", note),
+        Check("T0.3", "최대 룩백", True, 0, "engine null generator", note),
+        Check("T0.4", "연구 입력 하한", True, None, f">={research_policy.RESEARCH_INPUT_START}", note),
+        Check("T0.5", "label 전용 입력 차단", True, 0, "0개", note),
+        Check("T0.6", "입력 계약", True, 0, "누락 0개", note),
+        Check("T0.8", "출력 타입·인덱스", True, None, "numeric Series / 동일 index", note),
+        Check("T0.9", "유한값", True, None, "±inf 없음", note),
+        Check("T0.10", "결정성", True, None, "동결 generator bytes", note),
+        Check("T0.11", "36개월 인과성", True, None, "engine generator는 label 비참조", note),
+        Check("T0.12", "캐시 정의 일치", True, None, "raw=factor exact bytes", note),
+    ]
+
+
+def certify_confirmation_signal(
+    factor: Factor,
+    df: pd.DataFrame,
+    discovery: Result,
+) -> ConfirmationSignalContract:
+    """Bind current computed values to a candidate whose T0 already passed."""
+    required = {
+        "미선언 상수", "단일 팩터 계약", "최대 룩백", "연구 입력 하한",
+        "label 전용 입력 차단", "입력 계약", "출력 타입·인덱스",
+        "유한값", "결정성", "36개월 인과성", "캐시 정의 일치",
+    }
+    passed = {
+        check.name for check in discovery.checks
+        if check.tier.startswith("T0") and check.passed is True
+    }
+    column = f"f_{factor.name}"
+    if (
+        discovery.factor != factor.name
+        or discovery.definition_hash != factor.definition_hash
+        or not required.issubset(passed)
+        or any(
+            check.passed is not True
+            for check in discovery.checks if check.tier.startswith("T0")
+        )
+        or column not in df
+        or not df.index.is_unique
+        or not pd.api.types.is_numeric_dtype(df[column])
+        or np.isinf(pd.to_numeric(df[column], errors="coerce")).any()
+    ):
+        raise ValueError(
+            f"동결 Discovery T0/current OOS signal 계약이 다릅니다: {factor.name}"
+        )
+    return ConfirmationSignalContract(
+        factor_name=factor.name,
+        definition_hash=factor.definition_hash,
+        factor_column=column,
+        frame_identity=id(df),
+        signal_digest=_series_digest(df[column]),
+    )
+
+
+def _confirmation_signal_check(
+    factor: Factor,
+    df: pd.DataFrame,
+    cached: str,
+    contract: ConfirmationSignalContract,
+) -> list[Check]:
+    if (
+        contract.factor_name != factor.name
+        or contract.definition_hash != factor.definition_hash
+        or contract.factor_column != cached
+        or contract.frame_identity != id(df)
+        or cached not in df
+        or contract.signal_digest != _series_digest(df[cached])
+    ):
+        raise ValueError("OOS candidate signal이 인증 뒤 변경되었습니다")
+    return [Check(
+        "T0.C", "동결 Discovery T0/current signal binding", True, None,
+        "definition+strategy+T0+signal bytes exact",
+    )]
+
+
 def _month_positions(
     months: pd.Series,
     eligible: np.ndarray | None = None,
@@ -524,6 +726,45 @@ def _public_metrics(backtest_result: dict) -> dict:
     return {key: value for key, value in backtest_result.items() if not key.startswith("_")}
 
 
+def attach_portfolio_diagnostics(
+    result: Result,
+    factor: Factor,
+    panel: Panel,
+    df: pd.DataFrame,
+    *,
+    context: EvaluationContext,
+) -> Result:
+    """Attach non-decision portfolio diagnostics after qualification only."""
+    if "portfolio_diagnostics_deferred" not in result.labels:
+        return result
+    if (
+        context.panel is not panel
+        or context.frame is not df
+        or context.phase != "discovery"
+    ):
+        raise ValueError("portfolio diagnostics context가 discovery frame과 다릅니다")
+    col = f"f_{factor.name}"
+    research = df.loc[context.research_index].copy()
+    research["_eligible"] = context.research_eligible
+    measured = backtest(
+        research, col, "fwd_mid", hold=factor.rebalance_months,
+        min_months=TH["min_oos_months"],
+        month_positions=context.research_month_positions,
+    )
+    result.labels.remove("portfolio_diagnostics_deferred")
+    if measured is None:
+        result.labels.append("portfolio_diagnostics_unavailable")
+        return result
+    result.metrics.update(_public_metrics(measured))
+    if measured["turnover"] > TH["turnover_warn"]:
+        result.labels.append("high_turnover")
+    if measured["turnover"] > TH["turnover_fail"]:
+        result.labels.append("very_high_turnover")
+    if measured["missing_return_rate"] > TH["max_missing_return"]:
+        result.labels.append("high_missing_return")
+    return result
+
+
 def _deflated_sharpe_probability(
     excess: pd.Series,
     *,
@@ -743,6 +984,8 @@ def evaluate(
     data_cutoff: str | pd.Timestamp | None = None,
     phase: str = "full",
     context: EvaluationContext | None = None,
+    internal_null_contract: InternalNullSignalContract | None = None,
+    include_diagnostics: bool = True,
 ) -> Result:
     """Run the integrity/IC/robustness gate.
 
@@ -768,7 +1011,11 @@ def evaluate(
     if phase == "discovery":
         result.labels.append("oos_sealed")
     add = result.checks.append
-    result.checks.extend(_validate_factor(factor, df, col))
+    result.checks.extend(
+        _internal_null_checks(factor, df, col, internal_null_contract)
+        if internal_null_contract is not None
+        else _validate_factor(factor, df, col)
+    )
     if result.tier_failed("T0"):
         return result
 
@@ -891,14 +1138,19 @@ def evaluate(
     # The raw HAC p-value is the input to campaign-wide BY correction.  It is
     # reported, but a second p<=q hard check would be logically redundant.
 
-    base = backtest(
-        research, col, "fwd_mid", hold=factor.rebalance_months,
-        min_months=TH["min_oos_months"],
-        month_positions=full_month_positions,
+    base = (
+        backtest(
+            research, col, "fwd_mid", hold=factor.rebalance_months,
+            min_months=TH["min_oos_months"],
+            month_positions=full_month_positions,
+        )
+        if include_diagnostics else None
     )
     # Execution and return outputs are diagnostics only.  Missing or expensive
     # portfolios do not alter the IC research verdict in ruleset v3.
-    if base is None:
+    if not include_diagnostics:
+        result.labels.append("portfolio_diagnostics_deferred")
+    elif base is None:
         result.labels.append("portfolio_diagnostics_unavailable")
     else:
         result.metrics.update(_public_metrics(base))
@@ -1050,6 +1302,8 @@ def evaluate_oos(
     oos_end: pd.Period,
     data_cutoff: str,
     discovery_ic: float | None,
+    internal_null_contract: InternalNullSignalContract | None = None,
+    confirmation_signal_contract: ConfirmationSignalContract | None = None,
 ) -> Result:
     """Evaluate only the sealed OOS endpoint on its own fixed snapshot.
 
@@ -1083,7 +1337,17 @@ def evaluate_oos(
         "oos_ic_retention": None,
         "oos_required_ic": None,
     })
-    result.checks.extend(_validate_factor(factor, df, col))
+    if internal_null_contract is not None and confirmation_signal_contract is not None:
+        raise ValueError("OOS signal 인증 계약은 하나만 허용됩니다")
+    result.checks.extend(
+        _internal_null_checks(factor, df, col, internal_null_contract)
+        if internal_null_contract is not None
+        else _confirmation_signal_check(
+            factor, df, col, confirmation_signal_contract,
+        )
+        if confirmation_signal_contract is not None
+        else _validate_factor(factor, df, col)
+    )
     if result.tier_failed("T0"):
         return result
     if not _label_return_certified(panel):

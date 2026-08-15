@@ -859,6 +859,213 @@ def test_invocation_gate_context_is_result_exact():
     assert research.serialize_result(optimized) == research.serialize_result(baseline)
 
 
+def test_discovery_defers_only_non_decision_portfolio_diagnostics():
+    months = pd.period_range("2018-03", periods=60, freq="M")
+    assets = np.arange(1, 61)
+    frame = pd.DataFrame([
+        {
+            "asset_id": int(asset), "ym": month,
+            "trade_date": month.to_timestamp(how="end").normalize(),
+            "in_universe": True, "market_cap": float(asset + 100),
+            "adj_close": 100.0, "total_return_close": 100.0,
+            "adv20": float(asset + 1),
+            "market": "KOSPI" if asset % 2 else "KOSDAQ",
+            "instrument_type": "common_stock",
+            "f_candidate": float(asset + 100),
+            "fwd_opt": float(asset) / 1000,
+            "fwd_mid": float(asset) / 1000,
+            "fwd_pess": float(asset) / 1000,
+        }
+        for month in months for asset in assets
+    ])
+    panel = Panel(frame, pd.Series(dtype="datetime64[ns]"), meta=dict(RETURN_META))
+    factor = Factor(
+        name="candidate", category="other", hypothesis="diagnostic deferral",
+        predicted_sign=1, compute=lambda data: data["market_cap"],
+    )
+    context = gate.build_evaluation_context(panel, frame, phase="discovery")
+    baseline = gate.evaluate(
+        factor, panel, frame, phase="discovery", context=context,
+    )
+    deferred = gate.evaluate(
+        factor, panel, frame, phase="discovery", context=context,
+        include_diagnostics=False,
+    )
+    assert gate.discovery_evidence_digest(deferred) == gate.discovery_evidence_digest(
+        baseline
+    )
+    assert [(c.tier, c.name, c.passed) for c in deferred.checks] == [
+        (c.tier, c.name, c.passed) for c in baseline.checks
+    ]
+    assert "turnover" not in deferred.metrics
+    gate.attach_portfolio_diagnostics(
+        deferred, factor, panel, frame, context=context,
+    )
+    for key in ("turnover", "gross", "cost", "net", "net_ir"):
+        assert deferred.metrics[key] == pytest.approx(baseline.metrics[key])
+
+
+def test_internal_null_contract_skips_candidate_t0_but_rejects_drift(monkeypatch):
+    months = pd.period_range("2018-03", periods=60, freq="M")
+    frame = pd.DataFrame({
+        "asset_id": np.arange(len(months)), "ym": months,
+        "trade_date": months.to_timestamp(how="end").normalize(),
+        "in_universe": True, "market_cap": 100.0, "adj_close": 100.0,
+        "total_return_close": 100.0, "adv20": 1.0, "market": "KOSPI",
+        "instrument_type": "common_stock", "fwd_opt": 0.0,
+        "fwd_mid": 0.0, "fwd_pess": 0.0,
+    })
+    name = "null_random_0_0"
+    frame[f"_raw_{name}"] = np.arange(len(frame), dtype=float)
+    frame[f"f_{name}"] = frame[f"_raw_{name}"]
+    factor = Factor(
+        name=name, family="null_random", category="other",
+        hypothesis="합성 귀무", predicted_sign=1,
+        params={"kind": "random", "replicate": 0, "candidate": 0, "seed": 7},
+        compute=lambda data: data[f"_raw_{name}"],
+    )
+    panel = Panel(frame, pd.Series(dtype="datetime64[ns]"), meta=dict(RETURN_META))
+    contract = gate.certify_internal_null_signal(
+        factor, frame, generator_suite="null-v2", kind="random",
+        replicate=0, candidate=0, seed=7,
+        raw_column=f"_raw_{name}", factor_column=f"f_{name}",
+    )
+    baseline = gate.evaluate(
+        factor, panel, frame, phase="discovery", include_diagnostics=False,
+    )
+    monkeypatch.setattr(
+        gate, "_validate_factor",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("candidate T0 must not run for internal null")
+        ),
+    )
+    result = gate.evaluate(
+        factor, panel, frame, phase="discovery",
+        internal_null_contract=contract, include_diagnostics=False,
+    )
+    assert all(check.passed is True for check in result.checks if check.tier == "T0")
+    assert {
+        key: value for key, value in result.metrics.items()
+        if key not in {"evaluation_phase", "research_start"}
+    } == {
+        key: value for key, value in baseline.metrics.items()
+        if key not in {"evaluation_phase", "research_start"}
+    }
+    assert [
+        (check.tier, check.name, check.passed, check.value)
+        for check in result.checks if not check.tier.startswith("T0")
+    ] == [
+        (check.tier, check.name, check.passed, check.value)
+        for check in baseline.checks if not check.tier.startswith("T0")
+    ]
+    frame.loc[0, f"f_{name}"] = 999.0
+    with pytest.raises(ValueError, match="현재 factor/frame"):
+        gate.evaluate(
+            factor, panel, frame, phase="discovery",
+            internal_null_contract=contract, include_diagnostics=False,
+        )
+
+
+def test_frozen_discovery_result_authentication_skips_recompute_and_detects_tamper(
+    tmp_path,
+):
+    factor = Factor(
+        name="candidate", category="other", hypothesis="frozen discovery",
+        predicted_sign=1, compute=lambda data: data["market_cap"],
+    )
+    result = gate.Result(
+        factor=factor.name, definition_hash=factor.definition_hash,
+        verdict=gate.Verdict.PROVISIONAL,
+        metrics={"ic_p_investable": .01, "ic_investable": .04},
+        labels=["oos_sealed", "fdr_pending", "portfolio_diagnostics_deferred"],
+        checks=[gate.Check("T2.1", "투자가능 IC 최소요건", True, .04)],
+    )
+    strategy_sha = "c" * 64
+    payload = {
+        "campaign_id": "campaign-test", "epoch_id": "epoch-test",
+        "phase": "discovery", "ruleset_version": gate.RULESET_VERSION,
+        "factor": {"name": factor.name, "definition_hash": factor.definition_hash},
+        "research_spec": {"strategy_sha256": strategy_sha},
+        "evaluation": research.serialize_result(result),
+    }
+    path = tmp_path / "result.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    raw = path.read_bytes()
+    frozen = {
+        "factor": factor.name, "definition_hash": factor.definition_hash,
+        "strategy_sha256": strategy_sha, "pvalue": .01,
+        "evidence_ruleset_version": gate.RULESET_VERSION,
+        "discovery_evidence_digest": gate.discovery_evidence_digest(result),
+        "discovery_result_artifact": str(path),
+        "discovery_result_artifact_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    restored = research.load_authenticated_discovery_result(frozen, factor)
+    assert research.serialize_result(restored) == research.serialize_result(result)
+    path.write_bytes(raw + b" ")
+    with pytest.raises(ValueError, match="artifact SHA"):
+        research.load_authenticated_discovery_result(frozen, factor)
+
+
+def test_confirmation_reuses_authenticated_t0_and_binds_current_signal(monkeypatch):
+    months = pd.period_range("2023-07", periods=36, freq="M")
+    assets = np.arange(1, 61)
+    frame = pd.DataFrame([
+        {
+            "asset_id": int(asset), "ym": month,
+            "trade_date": month.to_timestamp(how="end").normalize(),
+            "in_universe": True, "market_cap": float(asset + 100),
+            "adj_close": 100.0, "total_return_close": 100.0,
+            "adv20": float(asset + 1), "market": "KOSPI",
+            "instrument_type": "common_stock",
+            "f_candidate": float(asset + 100),
+            "fwd_opt": float(asset) / 1000,
+            "fwd_mid": float(asset) / 1000,
+            "fwd_pess": float(asset) / 1000,
+        }
+        for month in months for asset in assets
+    ])
+    panel = Panel(frame, pd.Series(dtype="datetime64[ns]"), meta=dict(RETURN_META))
+    factor = Factor(
+        name="candidate", category="other", hypothesis="confirmation T0 reuse",
+        predicted_sign=1, compute=lambda data: data["market_cap"],
+    )
+    discovery = gate.Result(
+        factor=factor.name, definition_hash=factor.definition_hash,
+        checks=gate._validate_factor(factor, frame, "f_candidate"),
+    )
+    contract = gate.certify_confirmation_signal(factor, frame, discovery)
+    monkeypatch.setattr(
+        gate, "_validate_factor",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("confirmation must not rerun candidate T0")
+        ),
+    )
+    result = gate.evaluate_oos(
+        factor, panel, frame,
+        oos_start=pd.Period("2023-07", freq="M"),
+        oos_end=pd.Period("2026-06", freq="M"),
+        data_cutoff="2023-06-30", discovery_ic=.05,
+        confirmation_signal_contract=contract,
+    )
+    assert any(check.name.startswith("동결 Discovery") for check in result.checks)
+    frame.loc[0, "f_candidate"] = -999.0
+    with pytest.raises(ValueError, match="인증 뒤 변경"):
+        gate.evaluate_oos(
+            factor, panel, frame,
+            oos_start=pd.Period("2023-07", freq="M"),
+            oos_end=pd.Period("2026-06", freq="M"),
+            data_cutoff="2023-06-30", discovery_ic=.05,
+            confirmation_signal_contract=contract,
+        )
+
+
+def test_gold_publication_materializes_sql_once_then_verifies_staging():
+    source = inspect.getsource(run_script.publish_revealed_campaign)
+    assert source.count("_populate_gold_value_temp(") == 1
+    assert '"campaign_gold_values"' in source
+    assert '"campaign_gold_verify"' not in source
+
+
 def test_neutralized_ic_requires_thirty_percent_of_investable_ic(monkeypatch):
     months = pd.period_range("2020-01", periods=60, freq="M")
     frame = pd.DataFrame({
