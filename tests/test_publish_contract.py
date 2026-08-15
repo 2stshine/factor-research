@@ -102,7 +102,7 @@ def test_automatic_row_binds_campaign_strategy_and_manifest_hashes():
         campaign_id="campaign-test",
         strategy_sha256="b" * 64,
         manifest_entry_digest="c" * 64,
-        approved_by="automatic_exact_campaign_gate_v1",
+        approved_by="automatic_exact_campaign_gate_v2",
     )
 
     assert row["status"] == "APPROVED"
@@ -110,7 +110,7 @@ def test_automatic_row_binds_campaign_strategy_and_manifest_hashes():
     assert row["config"]["strategy_sha256"] == "b" * 64
     assert row["config"]["implementation_manifest_digest"] == "c" * 64
     assert row["evaluation"]["automatic_publish_contract"] == (
-        "revealed_promote_exact_set_atomic_v1"
+        "revealed_promote_batch_orthogonal_atomic_v2"
     )
 
 

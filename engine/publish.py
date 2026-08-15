@@ -2,8 +2,9 @@
 
 이 모듈이 리서치와 프로덕션의 **유일한 접점**이다.
 factor-research는 팩터별 query-only SQL과 parity 증거를 소유한다. Gold write는
-REVEALED campaign의 exact qualified/PROMOTE 집합, null/OOS, 동결 hash, live
-CERTIFIED 계약을 한 트랜잭션에서 다시 검증한 자동 게시 경로에만 허용한다.
+REVEALED campaign의 exact qualified/PROMOTE 집합에 결정론적 batch 직교성 gate를
+적용한 결과, null/OOS, 동결 hash, live CERTIFIED 계약을 한 트랜잭션에서 다시
+검증한 자동 게시 경로에만 허용한다.
 
 팀 스키마가 강제하는 것(sql/gold_schema.sql):
   status='APPROVED'  → evaluation @> '{"passed": true}'
@@ -108,7 +109,8 @@ def build_row(factor: Factor, result: Result, *, implementation: ImplementationR
         "data_cutoff": data_cutoff,
         "campaign_id": campaign_id,
         "automatic_publish_contract": (
-            "revealed_promote_exact_set_atomic_v1" if campaign_id else None
+            "revealed_promote_batch_orthogonal_atomic_v2"
+            if campaign_id else None
         ),
     }
     config = {

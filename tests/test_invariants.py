@@ -2054,3 +2054,53 @@ def test_epoch_15_campaign_is_read_only_under_epoch_16(tmp_path):
             tmp_path, "campaign-001", "epoch-001", factor,
             strategy_sha256=_strategy_sha(factor),
         )
+
+
+def test_batch_gold_orthogonality_keeps_lexical_first_without_outcomes():
+    months = pd.period_range("2020-01", periods=36, freq="M")
+    assets = np.arange(40)
+    frame = pd.DataFrame({
+        "ym": np.repeat(months, len(assets)),
+        "asset_id": np.tile(assets, len(months)),
+    })
+    alpha = pd.Series(np.tile(assets, len(months)), index=frame.index, dtype=float)
+    beta = alpha.copy()
+    rng = np.random.default_rng(20260815)
+    gamma = pd.Series(
+        np.concatenate([rng.permutation(assets) for _ in months]),
+        index=frame.index,
+        dtype=float,
+    )
+    result = gate.batch_signal_orthogonality(
+        frame,
+        {"gamma": gamma, "beta": beta, "alpha": alpha},
+        eligible=pd.Series(True, index=frame.index),
+    )
+    assert result["candidate_factors"] == ["alpha", "beta", "gamma"]
+    assert result["survivors"] == ["alpha", "gamma"]
+    assert result["suppressed"] == [{
+        "factor": "beta",
+        "kept_factor": "alpha",
+        "reason": "batch_signal_correlation_above_threshold",
+    }]
+    conflict = next(
+        row for row in result["pairs"]
+        if (row["left"], row["right"]) == ("alpha", "beta")
+    )
+    assert conflict["comparison_months"] == 36
+    assert conflict["median_absolute_spearman"] == pytest.approx(1.0)
+    assert conflict["conflict"] is True
+
+
+def test_batch_gold_orthogonality_fails_closed_below_36_comparison_months():
+    months = pd.period_range("2020-01", periods=35, freq="M")
+    frame = pd.DataFrame({
+        "ym": np.repeat(months, 40),
+    })
+    values = pd.Series(np.tile(np.arange(40), len(months)), index=frame.index)
+    with pytest.raises(ValueError, match="비교월이 부족"):
+        gate.batch_signal_orthogonality(
+            frame,
+            {"alpha": values, "beta": values},
+            eligible=pd.Series(True, index=frame.index),
+        )

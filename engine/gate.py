@@ -203,6 +203,94 @@ def _ic_series(df: pd.DataFrame, col: str, fwd: str, min_n: int = 30) -> pd.Seri
     return pd.Series(values, dtype=float).sort_index()
 
 
+def batch_signal_orthogonality(
+    df: pd.DataFrame,
+    signals: dict[str, pd.Series],
+    *,
+    eligible: pd.Series,
+) -> dict:
+    """Select one deterministic Gold survivor from each correlated batch.
+
+    The statistic is the same monthly investable-universe median absolute
+    Spearman correlation used by T5.  Selection never uses IC, OOS, or
+    portfolio outcomes: factor names are visited in lexical order and a later
+    factor is suppressed only when it conflicts with an already-kept factor.
+    """
+    names = sorted(signals)
+    if len(names) != len(set(names)):
+        raise ValueError("batch 직교성 대상 factor 이름은 고유해야 합니다")
+    if not {"ym"}.issubset(df.columns):
+        raise ValueError("batch 직교성 계산에 ym이 필요합니다")
+    if not eligible.index.equals(df.index):
+        raise ValueError("batch 직교성 investable mask index가 다릅니다")
+    for name, values in signals.items():
+        if not values.index.equals(df.index):
+            raise ValueError(f"batch 직교성 signal index가 다릅니다: {name}")
+
+    sample = df.loc[eligible.fillna(False).astype(bool), ["ym"]].copy()
+    for name in names:
+        sample[name] = pd.to_numeric(signals[name], errors="coerce").reindex(
+            sample.index
+        )
+
+    pairs: list[dict] = []
+    conflicts: dict[str, set[str]] = {name: set() for name in names}
+    for left_index, left in enumerate(names):
+        for right in names[left_index + 1:]:
+            monthly: list[float] = []
+            for _, group in sample.groupby("ym"):
+                valid = group[[left, right]].replace(
+                    [np.inf, -np.inf], np.nan
+                ).dropna()
+                if len(valid) < 30:
+                    continue
+                rho = stats.spearmanr(valid[left], valid[right]).statistic
+                if pd.notna(rho):
+                    monthly.append(abs(float(rho)))
+            months = len(monthly)
+            if months < TH["min_gold_corr_months"]:
+                raise ValueError(
+                    "batch 직교성 비교월이 부족합니다: "
+                    f"{left}/{right}={months}, "
+                    f"required={TH['min_gold_corr_months']}"
+                )
+            correlation = float(np.median(monthly))
+            conflict = bool(correlation > TH["max_gold_corr"])
+            if conflict:
+                conflicts[left].add(right)
+                conflicts[right].add(left)
+            pairs.append({
+                "left": left,
+                "right": right,
+                "median_absolute_spearman": correlation,
+                "comparison_months": months,
+                "conflict": conflict,
+            })
+
+    survivors: list[str] = []
+    suppressed: list[dict] = []
+    for name in names:
+        blockers = sorted(conflicts[name].intersection(survivors))
+        if blockers:
+            suppressed.append({
+                "factor": name,
+                "kept_factor": blockers[0],
+                "reason": "batch_signal_correlation_above_threshold",
+            })
+        else:
+            survivors.append(name)
+    return {
+        "schema_version": "gold-batch-orthogonality-v1",
+        "policy": "lexical_first_independent_of_research_outcomes_v1",
+        "threshold": TH["max_gold_corr"],
+        "minimum_comparison_months": TH["min_gold_corr_months"],
+        "candidate_factors": names,
+        "pairs": pairs,
+        "survivors": survivors,
+        "suppressed": suppressed,
+    }
+
+
 def _weights(group: pd.DataFrame, weighting: str) -> dict[int, float]:
     if weighting == "equal":
         raw = pd.Series(1.0, index=group["asset_id"].astype(int))

@@ -747,6 +747,25 @@ def cmd_campaign_publish(args) -> None:
     )
 
 
+def cmd_campaign_reconcile_gold_batch(args) -> None:
+    """Retire correlated members of one already-published campaign batch."""
+    panel = run._load()
+    try:
+        evidence = run.reconcile_gold_batch_orthogonality(args.campaign, panel)
+        path = epochs.record_gold_batch_reconciliation(
+            "research", args.campaign, evidence,
+        )
+    except Exception as exc:
+        raise SystemExit(
+            f"Gold batch 직교성 reconciliation 실패; transaction rollback: {exc}"
+        ) from exc
+    print(
+        "Gold batch orthogonality reconciled: "
+        f"retired={evidence['retired_factors']}, "
+        f"approved={evidence['approved_factors_after']}, evidence={path}"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -813,9 +832,14 @@ def main() -> None:
     campaign_reveal.add_argument("--campaign", required=True)
     campaign_publish = commands.add_parser(
         "campaign-publish",
-        help="REVEALED campaign의 exact PROMOTE 집합만 원자적으로 Gold 게시",
+        help="REVEALED PROMOTE 집합에 batch 직교성 gate 후 원자적 Gold 게시",
     )
     campaign_publish.add_argument("--campaign", required=True)
+    campaign_reconcile = commands.add_parser(
+        "campaign-reconcile-gold-batch",
+        help="기존 Gold 배치의 0.70 초과 상관 후보를 결정론적으로 RETIRED",
+    )
+    campaign_reconcile.add_argument("--campaign", required=True)
     args = parser.parse_args()
     {
         "context": cmd_context,
@@ -831,6 +855,7 @@ def main() -> None:
         "campaign-verify-implementations": cmd_campaign_verify_implementations,
         "campaign-reveal": cmd_campaign_reveal,
         "campaign-publish": cmd_campaign_publish,
+        "campaign-reconcile-gold-batch": cmd_campaign_reconcile_gold_batch,
     }[args.command](args)
 
 

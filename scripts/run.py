@@ -1356,11 +1356,53 @@ def _gold_value_difference_count(conn) -> tuple[int, int]:
     return source_difference, persisted_difference
 
 
+def _campaign_batch_orthogonality(
+    campaign: dict,
+    panel: P.Panel,
+    factors: list[F.Factor],
+) -> dict:
+    """Recompute the discovery-scope mutual Gold correlation gate."""
+    ordered = sorted(factors, key=lambda factor: factor.name)
+    if len(ordered) < 2:
+        names = [factor.name for factor in ordered]
+        return {
+            "schema_version": "gold-batch-orthogonality-v1",
+            "policy": "lexical_first_independent_of_research_outcomes_v1",
+            "threshold": gate.TH["max_gold_corr"],
+            "minimum_comparison_months": gate.TH["min_gold_corr_months"],
+            "candidate_factors": names,
+            "pairs": [],
+            "survivors": names,
+            "suppressed": [],
+        }
+    discovery = _scope_discovery_panel(
+        panel,
+        data_cutoff=campaign["discovery"]["data_cutoff"],
+        oos_start=campaign["oos"]["start"],
+    )
+    research_panel = _research_input_panel(discovery)
+    frame = _ensure_factor_columns(research_panel, ordered)
+    signal_end = pd.Period(campaign["discovery"]["signal_end"], freq="M")
+    eligible = (
+        research_panel.universe
+        & research_panel.investable
+        & frame["ym"].ge(gate.RESEARCH_START)
+        & frame["ym"].le(signal_end)
+    )
+    signals = {
+        factor.name: frame[f"f_{factor.name}"]
+        for factor in ordered
+    }
+    return gate.batch_signal_orthogonality(
+        frame, signals, eligible=eligible,
+    )
+
+
 def publish_revealed_campaign(
     campaign_id: str,
     panel: P.Panel,
 ) -> dict:
-    """Atomically publish the exact final PROMOTE set after every frozen gate."""
+    """Atomically publish deterministic batch-orthogonal PROMOTE survivors."""
     load_registry()
     campaign = epochs.load_campaign("research", campaign_id)
     confirmation_panel = _scope_confirmation_panel(
@@ -1403,19 +1445,25 @@ def publish_revealed_campaign(
         raise ValueError("PROMOTE/publish exact set을 재현하지 못했습니다")
     if not promote_names:
         return {
-            "schema_version": "gold-auto-publication-v1",
+            "schema_version": "gold-auto-publication-v2",
             "campaign_id": campaign_id,
             "status": "NO_PROMOTE_NO_WRITE",
             "qualified_factors": qualified_names,
+            "promote_factors": [],
             "published_factors": [],
             "database_mutated": False,
         }
     for name in promote_names:
         _assert_promote_confirmation(results[name])
     promote_factors = [F.REGISTRY[name] for name in promote_names]
+    batch_orthogonality = _campaign_batch_orthogonality(
+        campaign, confirmation_panel, promote_factors,
+    )
+    publish_names = list(batch_orthogonality["survivors"])
+    publish_factors = [F.REGISTRY[name] for name in publish_names]
     binding_by_name = {row["factor"]: row for row in current_bindings}
     metadata_rows = []
-    for factor in promote_factors:
+    for factor in publish_factors:
         binding = binding_by_name[factor.name]
         implementation_ref = publish.ImplementationRef(
             uri=binding["implementation_uri"],
@@ -1430,7 +1478,7 @@ def publish_revealed_campaign(
             n_trials=int(campaign["discovery_family_size"]),
             null_family_error_rate=result.metrics.get("null_family_error_rate"),
             data_cutoff=campaign["discovery"]["data_cutoff"],
-            approved_by="automatic_exact_campaign_gate_v1",
+            approved_by="automatic_exact_campaign_gate_v2",
             campaign_id=campaign_id,
             strategy_sha256=binding["strategy_sha256"],
             manifest_entry_digest=binding["manifest_entry_digest"],
@@ -1462,7 +1510,7 @@ def publish_revealed_campaign(
             )
         _create_gold_value_temp(conn, "campaign_gold_values")
         _populate_gold_value_temp(
-            conn, "campaign_gold_values", campaign, promote_factors,
+            conn, "campaign_gold_values", campaign, publish_factors,
         )
         published = publish.upsert_approved_metadata_atomic(conn, metadata_rows)
         with conn.cursor() as cursor:
@@ -1494,7 +1542,7 @@ def publish_revealed_campaign(
             """)
         _create_gold_value_temp(conn, "campaign_gold_verify")
         _populate_gold_value_temp(
-            conn, "campaign_gold_verify", campaign, promote_factors,
+            conn, "campaign_gold_verify", campaign, publish_factors,
         )
         source_difference, persisted_difference = _gold_value_difference_count(conn)
         if source_difference or persisted_difference:
@@ -1521,7 +1569,7 @@ def publish_revealed_campaign(
                 for row in cursor.fetchall()
             ]
         if (
-            [row["factor_key"] for row in post_rows] != promote_names
+            [row["factor_key"] for row in post_rows] != publish_names
             or any(
                 row["status"] != "APPROVED"
                 or int(row["row_count"]) <= 0
@@ -1531,11 +1579,13 @@ def publish_revealed_campaign(
         ):
             raise ValueError("Gold APPROVED/row/date/duplicate 사후 검증에 실패했습니다")
         evidence = {
-            "schema_version": "gold-auto-publication-v1",
+            "schema_version": "gold-auto-publication-v2",
             "campaign_id": campaign_id,
             "status": "APPROVED_ATOMIC",
             "qualified_factors": qualified_names,
-            "published_factors": promote_names,
+            "promote_factors": promote_names,
+            "published_factors": publish_names,
+            "batch_orthogonality": batch_orthogonality,
             "database_mutated": True,
             "implementation_verification_digest": campaign[
                 "implementation_verification_digest"
@@ -1558,6 +1608,161 @@ def publish_revealed_campaign(
                 }
                 for published_row, post_row in zip(published, post_rows, strict=True)
             ],
+        }
+        conn.commit()
+        return evidence
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def reconcile_gold_batch_orthogonality(
+    campaign_id: str,
+    panel: P.Panel,
+) -> dict:
+    """Atomically retire previously published factors suppressed by batch T5."""
+    load_registry()
+    campaign = epochs.load_campaign("research", campaign_id)
+    confirmation_panel = _scope_confirmation_panel(
+        panel,
+        data_cutoff=campaign["discovery"]["data_cutoff"],
+        oos_start=campaign["oos"]["start"],
+        oos_end=campaign["oos"]["signal_end"],
+    )
+    confirmation = epochs.load_confirmation("research", campaign_id)
+    promote_names = sorted(
+        row["factor"] for row in confirmation["confirmations"]
+        if row.get("verdict") == gate.Verdict.PROMOTE.value
+    )
+    promote_factors = [F.REGISTRY[name] for name in promote_names]
+    batch = _campaign_batch_orthogonality(
+        campaign, confirmation_panel, promote_factors,
+    )
+    survivors = list(batch["survivors"])
+    retired = sorted(row["factor"] for row in batch["suppressed"])
+    if not retired:
+        raise ValueError("현재 campaign Gold 배치에는 0.70 초과 충돌이 없습니다")
+    publication_path = campaign.get("gold_publication")
+    if not publication_path:
+        raise ValueError("기존 Gold publication evidence가 없습니다")
+    publication = json.loads(Path(publication_path).read_text(encoding="utf-8"))
+    if publication.get("published_factors") != promote_names:
+        raise ValueError(
+            "기존 Gold publication이 원래 PROMOTE exact set과 다릅니다"
+        )
+
+    conn = silver.connect(read_only=False)
+    try:
+        conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"factor-research:{campaign_id}:batch-orthogonality",),
+            )
+        silver.verify_live_total_return_contract(
+            conn,
+            confirmation_panel.meta.get("return_contract_validation_evidence"),
+        )
+        _verify_confirmation_live_identity(conn, confirmation_panel)
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT f.factor_id, f.factor_key,
+                       f.evaluation->>'campaign_id' AS campaign_id,
+                       count(v.factor_id)::bigint AS row_count
+                FROM gold.factor f
+                LEFT JOIN gold.factor_value v USING (factor_id)
+                WHERE f.status = 'APPROVED'
+                  AND f.factor_key = ANY(%s)
+                GROUP BY f.factor_id, f.factor_key, f.evaluation
+                ORDER BY f.factor_key
+            """, (promote_names,))
+            columns = [column.name for column in cursor.description]
+            before = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+        if (
+            [row["factor_key"] for row in before] != promote_names
+            or any(row["campaign_id"] != campaign_id for row in before)
+            or any(int(row["row_count"]) <= 0 for row in before)
+        ):
+            raise ValueError(
+                "Gold reconciliation 전 APPROVED/campaign/value exact set이 다릅니다"
+            )
+        factor_ids = {
+            row["factor_key"]: int(row["factor_id"])
+            for row in before
+        }
+        deleted_rows: dict[str, int] = {}
+        retirement_payloads = {
+            row["factor"]: {
+                "policy": batch["policy"],
+                "threshold": batch["threshold"],
+                "kept_factor": row["kept_factor"],
+                "campaign_id": campaign_id,
+            }
+            for row in batch["suppressed"]
+        }
+        with conn.cursor() as cursor:
+            for name in retired:
+                cursor.execute(
+                    "DELETE FROM gold.factor_value WHERE factor_id = %s",
+                    (factor_ids[name],),
+                )
+                deleted_rows[name] = int(cursor.rowcount)
+                cursor.execute("""
+                    UPDATE gold.factor
+                    SET status = 'RETIRED',
+                        evaluation = evaluation || jsonb_build_object(
+                            'batch_orthogonality_retirement', %s::jsonb
+                        )
+                    WHERE factor_id = %s AND status = 'APPROVED'
+                """, (
+                    json.dumps(retirement_payloads[name], sort_keys=True),
+                    factor_ids[name],
+                ))
+                if cursor.rowcount != 1:
+                    raise ValueError(f"Gold factor RETIRED 전환 실패: {name}")
+            cursor.execute("""
+                SELECT f.factor_key, count(v.factor_id)::bigint AS row_count
+                FROM gold.factor f
+                LEFT JOIN gold.factor_value v USING (factor_id)
+                WHERE f.status = 'APPROVED'
+                  AND f.factor_key = ANY(%s)
+                GROUP BY f.factor_key
+                ORDER BY f.factor_key
+            """, (promote_names,))
+            after = [(str(name), int(count)) for name, count in cursor.fetchall()]
+            cursor.execute("""
+                SELECT count(*)::bigint
+                FROM gold.factor_value
+                WHERE factor_id = ANY(%s)
+            """, ([factor_ids[name] for name in retired],))
+            retired_value_count = int(cursor.fetchone()[0])
+        if (
+            [name for name, _count in after] != survivors
+            or any(count <= 0 for _name, count in after)
+            or retired_value_count != 0
+            or any(deleted_rows[name] <= 0 for name in retired)
+        ):
+            raise ValueError("Gold batch reconciliation 사후 exact set 검증 실패")
+        evidence = {
+            "schema_version": "gold-batch-reconciliation-v1",
+            "campaign_id": campaign_id,
+            "status": "BATCH_ORTHOGONALITY_RECONCILED",
+            "reconciled_at": pd.Timestamp.now(tz="UTC").isoformat(),
+            "database_mutated": True,
+            "batch_orthogonality": batch,
+            "approved_factors_before": promote_names,
+            "approved_factors_after": survivors,
+            "retired_factors": retired,
+            "deleted_value_rows": deleted_rows,
+            "retired_value_rows_after": retired_value_count,
+            "survivor_row_counts": {
+                name: count for name, count in after
+            },
+            "original_gold_publication_digest": campaign.get(
+                "gold_publication_digest"
+            ),
         }
         conn.commit()
         return evidence

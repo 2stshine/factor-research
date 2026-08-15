@@ -1452,7 +1452,7 @@ def record_gold_publication(
 ) -> Path:
     """Bind one completed or no-op automatic Gold publication to a reveal."""
     campaign = load_campaign(root, campaign_id)
-    load_confirmation(root, campaign_id)
+    confirmation = load_confirmation(root, campaign_id)
     if evidence.get("campaign_id") != campaign_id:
         raise ValueError("Gold publication campaign identity가 다릅니다")
     qualified = sorted(row["name"] for row in campaign["qualified_factors"])
@@ -1460,15 +1460,80 @@ def record_gold_publication(
         raise ValueError("Gold publication qualified exact set이 다릅니다")
     status = evidence.get("status")
     published = evidence.get("published_factors") or []
+    promoted = sorted(
+        row["factor"] for row in confirmation["confirmations"]
+        if row.get("verdict") == "PROMOTE"
+    )
+    if evidence.get("promote_factors") != promoted:
+        raise ValueError("Gold publication PROMOTE exact set이 다릅니다")
     if status not in {"APPROVED_ATOMIC", "NO_PROMOTE_NO_WRITE"}:
         raise ValueError("Gold publication status가 유효하지 않습니다")
     if len(published) != len(set(published)) or not set(published).issubset(qualified):
         raise ValueError("Gold publication 대상 집합이 유효하지 않습니다")
+    if status == "NO_PROMOTE_NO_WRITE":
+        if promoted or published or evidence.get("database_mutated") is not False:
+            raise ValueError("NO_PROMOTE Gold publication 집합이 유효하지 않습니다")
+    else:
+        batch = evidence.get("batch_orthogonality") or {}
+        suppressed = batch.get("suppressed") or []
+        suppressed_names = sorted(row.get("factor") for row in suppressed)
+        batch_valid = (
+            batch.get("schema_version") == "gold-batch-orthogonality-v1"
+            and batch.get("policy")
+            == "lexical_first_independent_of_research_outcomes_v1"
+            and batch.get("threshold") == TH["max_gold_corr"]
+            and batch.get("minimum_comparison_months")
+            == TH["min_gold_corr_months"]
+            and batch.get("candidate_factors") == promoted
+            and batch.get("survivors") == published
+            and sorted(published + suppressed_names) == promoted
+            and not set(published).intersection(suppressed_names)
+        )
+        if not batch_valid:
+            raise ValueError("Gold publication batch 직교성 exact set이 다릅니다")
     path = _campaign_dir(root, campaign_id) / "gold-publication.json"
     _write(path, evidence)
     campaign["gold_publication"] = str(path)
     campaign["gold_publication_digest"] = _payload_digest(evidence)
     campaign["gold_publication_status"] = status
+    _write(_campaign_path(root, campaign_id), campaign)
+    return path
+
+
+def record_gold_batch_reconciliation(
+    root: str | Path,
+    campaign_id: str,
+    evidence: dict,
+) -> Path:
+    """Append one atomic retirement of correlated factors from a past batch."""
+    campaign = load_campaign(root, campaign_id)
+    confirmation = load_confirmation(root, campaign_id)
+    if evidence.get("campaign_id") != campaign_id:
+        raise ValueError("Gold batch reconciliation campaign identity가 다릅니다")
+    if evidence.get("status") != "BATCH_ORTHOGONALITY_RECONCILED":
+        raise ValueError("Gold batch reconciliation status가 유효하지 않습니다")
+    promoted = sorted(
+        row["factor"] for row in confirmation["confirmations"]
+        if row.get("verdict") == "PROMOTE"
+    )
+    batch = evidence.get("batch_orthogonality") or {}
+    retired = sorted(evidence.get("retired_factors") or [])
+    survivors = sorted(evidence.get("approved_factors_after") or [])
+    valid = (
+        batch.get("candidate_factors") == promoted
+        and batch.get("survivors") == survivors
+        and sorted(row.get("factor") for row in batch.get("suppressed") or [])
+        == retired
+        and sorted(survivors + retired) == promoted
+        and evidence.get("database_mutated") is True
+    )
+    if not valid:
+        raise ValueError("Gold batch reconciliation exact set이 다릅니다")
+    path = _campaign_dir(root, campaign_id) / "gold-batch-reconciliation.json"
+    _write(path, evidence)
+    campaign["gold_batch_reconciliation"] = str(path)
+    campaign["gold_batch_reconciliation_digest"] = _payload_digest(evidence)
+    campaign["gold_batch_reconciliation_status"] = evidence["status"]
     _write(_campaign_path(root, campaign_id), campaign)
     return path
 
