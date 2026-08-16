@@ -21,6 +21,29 @@ from strategies.config import StrategyConfig
 
 PANEL_CACHE = REPO_ROOT / ".cache" / "panel.pkl"
 
+# 상장 펀드·투자회사 이름 가드.
+#
+# 엔진 유니버스는 `instrument_type == 'common_stock'`만 받지만(engine/panel.py의
+# `ok_common`), Silver가 상장 펀드를 전부 common_stock으로 분류해 새고 있다 —
+# 2015년 이후 유니버스 2,810종목이 **전부** common_stock으로 찍혀 있고 그 안에
+# 유전개발펀드·선박투자회사·특별자산펀드가 섞여 있다. 엔진도 같은 이유로 스팩과
+# 리츠를 이미 이름으로 막고 있으므로("Silver가 REIT를 instrument_type으로 올릴
+# 때까지") 같은 관용구를 쓴다.
+#
+# **왜 전략 레이어에서 막나** — 이들은 대규모 원본상환으로 주가가 정상적으로
+# 붕괴하는데, Silver 조정 체인이 그 사건을 못 잡으면 총수익에 허구의 대박이
+# 찍힌다. 152550 한국ANKOR유전 2022-12가 그 사례로, 실제 −83%가 `fwd_mid`에
+# +1163.6%로 기록됐다. 순위 기반 팩터 게이트(Spearman IC)는 이를 견디지만
+# 원수익률을 더하는 전략 백테스트는 그대로 맞는다 — 이 한 종목이 38개월
+# 백테스트의 CAGR을 +23% → +42%, 연변동성을 16.5% → 35.8%로 밀어올렸다.
+#
+# 엔진 유니버스를 고치는 게 정공법이나 인증 게이트라 승인 팩터 전체의 재검증을
+# 부른다. Silver `instrument_type`이 고쳐지면 `ok_common`이 저절로 작동하므로
+# 이 가드는 통째로 지워야 한다.
+LISTED_FUND_NAME_RE = (
+    r"\d+호$|유전|맥쿼리인프라|발해인프라|패러랠|베트남개발|특별자산|투융자"
+)
+
 
 def load_panel():
     """엔진이 만든 월말 PIT 패널 캐시를 로드한다."""
@@ -87,12 +110,22 @@ def monthly_frame(panel, cfg: StrategyConfig, verbose: bool = True) -> pd.DataFr
     monthly["ym"] = monthly["ym"].astype("period[M]")
     if cfg.target_col not in monthly.columns:
         raise SystemExit(f"패널에 타깃 컬럼이 없습니다: {cfg.target_col}")
-    cols = ["asset_id", "ym", "trade_date", "in_universe", "adv20", cfg.target_col]
+    cols = ["asset_id", "ym", "trade_date", "in_universe", "adv20", "Name",
+            cfg.target_col]
     out = signed.merge(monthly[cols], on=["asset_id", "ym"], how="inner")
 
     out = out[out["in_universe"].fillna(False)]
     if cfg.require_investable:
         out = out[out["adv20"].fillna(0) > 0]
+    if cfg.exclude_listed_funds:
+        is_fund = out["Name"].str.contains(
+            LISTED_FUND_NAME_RE, na=False, regex=True)
+        if verbose and is_fund.any():
+            names = sorted(out.loc[is_fund, "Name"].unique())
+            print(f"  [monthly_frame] 상장 펀드·투자회사 제외: {len(names)}종목 "
+                  f"({is_fund.sum():,}행) — {', '.join(names[:6])}"
+                  f"{' 외' if len(names) > 6 else ''}")
+        out = out[~is_fund]
     if cfg.context_cutoff_ym is not None:
         cutoff = pd.Period(cfg.context_cutoff_ym, freq="M")
         before = out["ym"].nunique()
@@ -105,6 +138,7 @@ def monthly_frame(panel, cfg: StrategyConfig, verbose: bool = True) -> pd.DataFr
     out["trade_date"] = pd.to_datetime(out["trade_date"]).astype("datetime64[ns]")
     out["trade_date"] = out.groupby("ym")["trade_date"].transform("max")
     keep = ["trade_date", "asset_id", "ym", "target"] + fcols
+    out = out.drop(columns=["Name"])
     return out[keep].sort_values(["trade_date", "asset_id"]).reset_index(drop=True)
 
 

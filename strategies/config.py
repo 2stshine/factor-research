@@ -87,6 +87,9 @@ class StrategyConfig:
     # 보유는 20~40종목으로 안착한다.
     top_n: int | None = None
     require_investable: bool = True     # adv20>0 (엔진 투자가능 유니버스)
+    # 상장 펀드·투자회사 제외. Silver `instrument_type`이 이들을 common_stock으로
+    # 분류해 엔진 `ok_common`을 통과시킨다. 근거는 data.LISTED_FUND_NAME_RE 참조.
+    exclude_listed_funds: bool = True
 
     # --- 2단계: 배분(QP) ---
     # mean − c·var 의 c. 표준 mean-variance 효용에서 c = γ/2 (γ=상대위험회피계수)이고
