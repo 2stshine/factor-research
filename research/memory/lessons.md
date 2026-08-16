@@ -29,7 +29,7 @@
 가장 가까운 기존 팩터: <4절 목록에서 하나> — 차이: <한 줄>
 ```
 
-붙일 대상이 떠오르지 않으면 4절을 다시 읽는다. 목록이 158건이라 "없다"는 답은 거의 틀린다.
+붙일 대상이 떠오르지 않으면 4절을 다시 읽는다. 목록이 198건이라 "없다"는 답은 거의 틀린다.
 같은 변수를 부호나 표현만 뒤집은 것(예: 고점 대비 근접도 ↔ 고점 대비 낙폭,
 변동성 ↔ 안정성)은 **새 후보가 아니라 같은 후보**다.
 
@@ -48,7 +48,7 @@
 - Short-Term Reversal: 1건 등록
 - Size: 1건 등록
 - Value: 10건 등록
-- (미매칭): 110건
+- (미매칭): 150건
 
 ### 구조적 교훈
 
@@ -279,9 +279,65 @@
 - `return_gain_loss_ratio_12m` (return_magnitude_asymmetry) — 시행함
 - 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
 
+**campaign-20260816-001 / epoch-001**
+
+- `price_momentum_9_2` (price_momentum_9_2) — 시행함
+- `high_24m_proximity` (high_24m_proximity) — 시행함
+- `amihud_mean_6m` (amihud_mean_6m) — 시행함
+- `amihud_volatility_6m` (amihud_volatility_6m) — 시행함
+- `realized_daily_volatility_change_6m` (realized_daily_volatility_change_6m) — 시행함
+- `market_beta_6m` (market_beta_6m) — 시행함
+- `total_asset_growth_6m` (total_asset_growth_6m) — 시행함
+- `capital_stock_growth_6m` (capital_stock_growth_6m) — 시행함
+- `book_to_market_change_6m` (book_to_market_change_6m) — 시행함
+- `operating_margin_change_6m` (operating_margin_change_6m) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
+
+**campaign-20260816-002 / epoch-001**
+
+- `price_momentum_15_3` (price_momentum_15_3) — 시행함
+- `price_recovery_24m` (price_recovery_24m) — 시행함
+- `amihud_mean_18m` (amihud_mean_18m) — 시행함
+- `amihud_volatility_18m` (amihud_volatility_18m) — 시행함
+- `max_daily_return_change_6m` (max_daily_return_change_6m) — 시행함
+- `market_beta_9m` (market_beta_9m) — 시행함
+- `total_asset_growth_18m` (total_asset_growth_18m) — 시행함
+- `capital_stock_growth_18m` (capital_stock_growth_18m) — 시행함
+- `earnings_yield_change_12m` (earnings_yield_change_12m) — 시행함
+- `net_margin_change_6m` (net_margin_change_6m) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
+
+**campaign-20260816-003 / epoch-001**
+
+- `price_momentum_18_6` (price_momentum_18_6) — 시행함
+- `positive_return_share_24m` (positive_return_share_24m) — 시행함
+- `amihud_mean_24m` (amihud_mean_24m) — 시행함
+- `amihud_volatility_24m` (amihud_volatility_24m) — 시행함
+- `realized_daily_volatility_change_24m` (realized_daily_volatility_change_24m) — 시행함
+- `market_beta_12m` (market_beta_12m) — 시행함
+- `total_asset_growth_24m` (total_asset_growth_24m) — 시행함
+- `equity_growth_6m` (equity_growth_6m) — 시행함
+- `pretax_yield_change_6m` (pretax_yield_change_6m) — 시행함
+- `retained_earnings_to_assets_change_6m` (retained_earnings_to_assets_change_6m) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
+
+**campaign-20260816-004 / epoch-0001**
+
+- `price_momentum_24_6` (price_momentum_24_6) — 시행함
+- `return_seasonality_12m` (return_seasonality_12m) — 시행함
+- `amihud_mean_36m` (amihud_mean_36m) — 시행함
+- `amihud_volatility_36m` (amihud_volatility_36m) — 시행함
+- `realized_daily_volatility_instability_6m` (realized_daily_volatility_instability_6m) — 시행함
+- `market_beta_18m` (market_beta_18m) — 시행함
+- `total_asset_growth_30m` (total_asset_growth_30m) — 시행함
+- `equity_growth_24m` (equity_growth_24m) — 시행함
+- `enterprise_sales_yield_change_6m` (enterprise_sales_yield_change_6m) — 시행함
+- `net_to_operating_income_conversion` (net_to_operating_income_conversion) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
+
 ## 4. 시행 전량
 
-시행 158건 · 생략 없음
+시행 198건 · 생략 없음
 
 | cycle | factor | family | ruleset | 테마 | 데이터 |
 |---|---|---|---|---|---|
@@ -443,3 +499,43 @@
 | `cycle-0156-adv20_change_12m` | `adv20_change_12m` | `trading_liquidity_growth` | `fr-3.14.0` | - | - |
 | `cycle-0157-price_recovery_12m` | `price_recovery_12m` | `price_recovery_from_low` | `fr-3.14.0` | - | - |
 | `cycle-0158-return_gain_loss_ratio_12m` | `return_gain_loss_ratio_12m` | `return_magnitude_asymmetry` | `fr-3.14.0` | - | - |
+| `cycle-0159-price_momentum_9_2` | `price_momentum_9_2` | `price_momentum_9_2` | `fr-3.16.0` | - | - |
+| `cycle-0160-high_24m_proximity` | `high_24m_proximity` | `high_24m_proximity` | `fr-3.16.0` | - | - |
+| `cycle-0161-amihud_mean_6m` | `amihud_mean_6m` | `amihud_mean_6m` | `fr-3.16.0` | - | - |
+| `cycle-0162-amihud_volatility_6m` | `amihud_volatility_6m` | `amihud_volatility_6m` | `fr-3.16.0` | - | - |
+| `cycle-0163-realized_daily_volatility_change_6m` | `realized_daily_volatility_change_6m` | `realized_daily_volatility_change_6m` | `fr-3.16.0` | - | - |
+| `cycle-0164-market_beta_6m` | `market_beta_6m` | `market_beta_6m` | `fr-3.16.0` | - | - |
+| `cycle-0165-total_asset_growth_6m` | `total_asset_growth_6m` | `total_asset_growth_6m` | `fr-3.16.0` | - | - |
+| `cycle-0166-capital_stock_growth_6m` | `capital_stock_growth_6m` | `capital_stock_growth_6m` | `fr-3.16.0` | - | - |
+| `cycle-0167-book_to_market_change_6m` | `book_to_market_change_6m` | `book_to_market_change_6m` | `fr-3.16.0` | - | - |
+| `cycle-0168-operating_margin_change_6m` | `operating_margin_change_6m` | `operating_margin_change_6m` | `fr-3.16.0` | - | - |
+| `cycle-0169-price_momentum_15_3` | `price_momentum_15_3` | `price_momentum_15_3` | `fr-3.16.0` | - | - |
+| `cycle-0170-price_recovery_24m` | `price_recovery_24m` | `price_recovery_24m` | `fr-3.16.0` | - | - |
+| `cycle-0171-amihud_mean_18m` | `amihud_mean_18m` | `amihud_mean_18m` | `fr-3.16.0` | - | - |
+| `cycle-0172-amihud_volatility_18m` | `amihud_volatility_18m` | `amihud_volatility_18m` | `fr-3.16.0` | - | - |
+| `cycle-0173-max_daily_return_change_6m` | `max_daily_return_change_6m` | `max_daily_return_change_6m` | `fr-3.16.0` | - | - |
+| `cycle-0174-market_beta_9m` | `market_beta_9m` | `market_beta_9m` | `fr-3.16.0` | - | - |
+| `cycle-0175-total_asset_growth_18m` | `total_asset_growth_18m` | `total_asset_growth_18m` | `fr-3.16.0` | - | - |
+| `cycle-0176-capital_stock_growth_18m` | `capital_stock_growth_18m` | `capital_stock_growth_18m` | `fr-3.16.0` | - | - |
+| `cycle-0177-earnings_yield_change_12m` | `earnings_yield_change_12m` | `earnings_yield_change_12m` | `fr-3.16.0` | - | - |
+| `cycle-0178-net_margin_change_6m` | `net_margin_change_6m` | `net_margin_change_6m` | `fr-3.16.0` | - | - |
+| `cycle-0179-price_momentum_18_6` | `price_momentum_18_6` | `price_momentum_18_6` | `fr-3.16.0` | - | - |
+| `cycle-0180-positive_return_share_24m` | `positive_return_share_24m` | `positive_return_share_24m` | `fr-3.16.0` | - | - |
+| `cycle-0181-amihud_mean_24m` | `amihud_mean_24m` | `amihud_mean_24m` | `fr-3.16.0` | - | - |
+| `cycle-0182-amihud_volatility_24m` | `amihud_volatility_24m` | `amihud_volatility_24m` | `fr-3.16.0` | - | - |
+| `cycle-0183-realized_daily_volatility_change_24m` | `realized_daily_volatility_change_24m` | `realized_daily_volatility_change_24m` | `fr-3.16.0` | - | - |
+| `cycle-0184-market_beta_12m` | `market_beta_12m` | `market_beta_12m` | `fr-3.16.0` | - | - |
+| `cycle-0185-total_asset_growth_24m` | `total_asset_growth_24m` | `total_asset_growth_24m` | `fr-3.16.0` | - | - |
+| `cycle-0186-equity_growth_6m` | `equity_growth_6m` | `equity_growth_6m` | `fr-3.16.0` | - | - |
+| `cycle-0187-pretax_yield_change_6m` | `pretax_yield_change_6m` | `pretax_yield_change_6m` | `fr-3.16.0` | - | - |
+| `cycle-0188-retained_earnings_to_assets_change_6m` | `retained_earnings_to_assets_change_6m` | `retained_earnings_to_assets_change_6m` | `fr-3.16.0` | - | - |
+| `cycle-0189-price_momentum_24_6` | `price_momentum_24_6` | `price_momentum_24_6` | `fr-3.16.0` | - | - |
+| `cycle-0190-return_seasonality_12m` | `return_seasonality_12m` | `return_seasonality_12m` | `fr-3.16.0` | - | - |
+| `cycle-0191-amihud_mean_36m` | `amihud_mean_36m` | `amihud_mean_36m` | `fr-3.16.0` | - | - |
+| `cycle-0192-amihud_volatility_36m` | `amihud_volatility_36m` | `amihud_volatility_36m` | `fr-3.16.0` | - | - |
+| `cycle-0193-realized_daily_volatility_instability_6m` | `realized_daily_volatility_instability_6m` | `realized_daily_volatility_instability_6m` | `fr-3.16.0` | - | - |
+| `cycle-0194-market_beta_18m` | `market_beta_18m` | `market_beta_18m` | `fr-3.16.0` | - | - |
+| `cycle-0195-total_asset_growth_30m` | `total_asset_growth_30m` | `total_asset_growth_30m` | `fr-3.16.0` | - | - |
+| `cycle-0196-equity_growth_24m` | `equity_growth_24m` | `equity_growth_24m` | `fr-3.16.0` | - | - |
+| `cycle-0197-enterprise_sales_yield_change_6m` | `enterprise_sales_yield_change_6m` | `enterprise_sales_yield_change_6m` | `fr-3.16.0` | - | - |
+| `cycle-0198-net_to_operating_income_conversion` | `net_to_operating_income_conversion` | `net_to_operating_income_conversion` | `fr-3.16.0` | - | - |

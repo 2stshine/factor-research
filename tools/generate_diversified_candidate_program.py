@@ -634,7 +634,18 @@ def candidates() -> list[Candidate]:
         _rolling_price(Candidate("high_24m_proximity", "high_24m_proximity", "momentum", "momentum_trend_reversal", 1, "24개월 고점에 가까운 종목의 추세가 이후에도 지속된다.", "장기 고점 근접도는 지속적 수요와 정보 확산을 포착한다.", "12개월 고점 신호와 기간이 다르다.", "adj_close 24개월 창만 사용한다.", (), (("WINDOW_MONTHS", 24),), (("window_months", "WINDOW_MONTHS"),), ""), "high"),
         _rolling_price(Candidate("price_recovery_24m", "price_recovery_24m", "momentum", "momentum_trend_reversal", 1, "24개월 저점에서 크게 회복한 종목의 개선이 이후에도 이어진다.", "장기 악재 해소의 지연반영을 측정한다.", "12개월 회복과 기간이 다르다.", "adj_close 24개월 창만 사용한다.", (), (("WINDOW_MONTHS", 24),), (("window_months", "WINDOW_MONTHS"),), ""), "low"),
         _rolling_price(Candidate("positive_return_share_24m", "positive_return_share_24m", "momentum", "momentum_trend_reversal", 1, "24개월 상승월 비중이 높은 종목은 넓은 추세 참여로 이후 상대수익이 높다.", "소수 급등월이 아닌 추세의 폭을 측정한다.", "12개월 상승월 비중과 기간이 다르다.", "연속 월 adj_close 수익률만 사용한다.", (), (("WINDOW_MONTHS", 24),), (("window_months", "WINDOW_MONTHS"),), ""), "positive"),
-        _rolling_price(Candidate("price_trend_efficiency_6m", "price_trend_efficiency_6m", "momentum", "momentum_trend_reversal", 1, "6개월 가격경로 대비 방향효율이 높은 추세는 이후에도 지속된다.", "왕복 잡음이 적은 단기 추세를 분리한다.", "12개월 효율성과 기간이 다르다.", "adj_close의 연속 6개월 경로만 사용한다.", (), (("WINDOW_MONTHS", 6),), (("window_months", "WINDOW_MONTHS"),), ""), "efficiency"),
+        Candidate("return_seasonality_12m", "return_seasonality_12m", "momentum", "momentum_trend_reversal", 1, "같은 달의 12개월 전 월수익이 높은 종목은 반복되는 계절적 수요와 정보주기로 이후 상대수익이 높다.", "연속 추세가 아니라 직전 연도의 동일 달력월 수익만 사용해 기업고유 계절성을 측정한다.", "일반 모멘텀과 입력은 공유하지만 불연속적인 12개월 시차의 한 달 수익만 사용해 구분한다.", "adj_close로 계산한 과거 동일월 수익만 사용하며 미래 수익률과 OOS 결과를 사용하지 않는다.", (), (("LOOKBACK_MONTHS", 13), ("SEASONAL_LAG", 12)), (("lookback_months", "LOOKBACK_MONTHS"), ("seasonal_lag", "SEASONAL_LAG")), '''    ordered = frame.sort_values(["asset_id", "ym"], kind="mergesort")
+    grouped = ordered.groupby("asset_id", sort=False)
+    prior = grouped["adj_close"].shift(1)
+    prior_month = grouped["ym"].shift(1)
+    monthly = (ordered["adj_close"] / prior.where(prior > 0) - 1.0).where(
+        ordered["ym"].eq(prior_month + 1)
+    )
+    seasonal = monthly.groupby(ordered["asset_id"], sort=False).shift(SEASONAL_LAG)
+    seasonal_month = grouped["ym"].shift(SEASONAL_LAG)
+    return seasonal.where(
+        ordered["ym"].eq(seasonal_month + SEASONAL_LAG)
+    ).reindex(frame.index)'''),
         _rolling_price(Candidate("price_trend_efficiency_24m", "price_trend_efficiency_24m", "momentum", "momentum_trend_reversal", 1, "24개월 가격경로 대비 방향효율이 높은 추세는 이후에도 지속된다.", "왕복 잡음이 적은 장기 추세를 분리한다.", "12개월 효율성과 기간이 다르다.", "adj_close의 연속 24개월 경로만 사용한다.", (), (("WINDOW_MONTHS", 24),), (("window_months", "WINDOW_MONTHS"),), ""), "efficiency"),
         _market_relative("market_relative_momentum_6_1", 6, 1),
         _market_relative("market_relative_momentum_18_3", 18, 3),
@@ -693,7 +704,8 @@ def candidates() -> list[Candidate]:
         _growth("operating_asset_growth_24m", "operating_assets", 24, operating=True),
     ]
     financing = [
-        *[_financing(f"capital_stock_growth_{window}m", "capital_stock", window) for window in (6, 18, 24)],
+        *[_financing(f"capital_stock_growth_{window}m", "capital_stock", window) for window in (6, 18)],
+        _financing("equity_growth_6m", "book_equity", 6),
         _financing("equity_growth_24m", "book_equity", 24),
         *[_financing(f"market_leverage_change_{window}m", "market_leverage", window) for window in (6, 18, 24, 30)],
         _financing("net_equity_issuance_price_adjusted_24m", "price_adjusted_issuance", 24),
@@ -703,7 +715,7 @@ def candidates() -> list[Candidate]:
         _value_change("book_to_market_change_6m", "total_equity", 6),
         _value_change("earnings_yield_change_12m", "net_income_ttm", 12),
         _value_change("pretax_yield_change_6m", "pretax_income_ttm", 6),
-        _value_change("asset_to_market_change_6m", "total_assets", 6),
+        _value_change("enterprise_sales_yield_change_6m", "revenue_ttm", 6, ev=True),
         _value_change("operating_yield_change_12m", "operating_income_ttm", 12),
         _value_change("enterprise_sales_yield_change_12m", "revenue_ttm", 12, ev=True),
         _value_change("enterprise_earnings_yield_change_12m", "net_income_ttm", 12, ev=True),
