@@ -1,0 +1,2118 @@
+{
+  "cycle_id": "cycle-0225-noncurrent_asset_growth_24m",
+  "campaign_id": "campaign-20260816-007",
+  "epoch_id": "epoch-0001",
+  "phase": "discovery",
+  "ruleset_version": "fr-3.16.0",
+  "research_start": "2018-03",
+  "data_cutoff": "2023-05-31",
+  "factor": {
+    "name": "noncurrent_asset_growth_24m",
+    "family": "noncurrent_asset_growth_24m",
+    "category": "quality",
+    "definition_hash": "beb4ca235d839b51",
+    "predicted_sign": -1,
+    "params": {
+      "lookback_months": 24,
+      "source_field": "noncurrent_assets"
+    },
+    "rebalance_months": 3,
+    "needs": [
+      "noncurrent_assets"
+    ],
+    "source": "def compute(frame):\n    ordered = frame.sort_values([\"asset_id\", \"ym\"], kind=\"mergesort\")\n    asset = ordered[\"asset_id\"]\n    source = ordered['noncurrent_assets']\n    prior = source.groupby(asset).shift(LOOKBACK_MONTHS)\n    prior_month = ordered[\"ym\"].groupby(asset).shift(LOOKBACK_MONTHS)\n    value = source / prior.where(prior > 0) - 1.0\n    return value.where(ordered[\"ym\"].eq(prior_month + LOOKBACK_MONTHS)).reindex(frame.index)\n"
+  },
+  "research_spec": {
+    "thesis": "최근 24개월 noncurrent_assets 증가율이 낮은 기업은 과잉투자·자산팽창 위험이 작아 이후 상대수익이 높다.",
+    "mechanism": "PIT 재무규모의 시간 변화를 이용해 경영자의 자본배분과 투자 확대를 측정한다.",
+    "falsification": "사전등록 방향이 무결성·입력 커버리지·Discovery IC·강건성·campaign-wide BY·Gold 상관·SQL parity·귀무 보정·봉인 OOS 중 하나라도 통과하지 못하면 기각한다.",
+    "expected_relationship": "기존 12개월 자산성장과 관련되지만 기간 또는 영업자산 범위가 다르다.",
+    "data_notes": "DART available_date PIT 값의 정확한 달력 시차와 양의 전기 분모만 사용한다.",
+    "factor_name": "noncurrent_asset_growth_24m",
+    "strategy_file": "factors/candidates/noncurrent_asset_growth_24m.py",
+    "strategy_sha256": "5914c1b4c371548ccaf28b69bca07123f8b87ffcd8b850d2585b6e40275e7fc4",
+    "max_lookback_months": 24
+  },
+  "evaluation": {
+    "factor": "noncurrent_asset_growth_24m",
+    "definition_hash": "beb4ca235d839b51",
+    "verdict": "REJECT",
+    "metrics": {
+      "research_start": "2018-03",
+      "evaluation_phase": "discovery",
+      "ic_full": 0.012947936744925488,
+      "ic_t_full": 1.9204456282634574,
+      "ic_p_full": 0.029739893112508957,
+      "ic_investable": 0.013852643062975284,
+      "ic_std_investable": 0.055896404576138786,
+      "rank_icir_investable": 0.24782708598199785,
+      "ic_t_investable": 1.8867824464598628,
+      "ic_p_investable": 0.03197554996579792,
+      "ic_retention": 1.0698726241773127
+    },
+    "labels": [
+      "oos_sealed",
+      "portfolio_diagnostics_deferred",
+      "fdr_pending"
+    ],
+    "checks": [
+      {
+        "tier": "T0.1",
+        "name": "미선언 상수",
+        "passed": true,
+        "value": 0,
+        "threshold": "0개",
+        "note": "[]"
+      },
+      {
+        "tier": "T0.2",
+        "name": "단일 팩터 계약",
+        "passed": true,
+        "value": 0,
+        "threshold": "합성 신호 0개",
+        "note": "[]"
+      },
+      {
+        "tier": "T0.3",
+        "name": "최대 룩백",
+        "passed": true,
+        "value": 24,
+        "threshold": "<=36개월",
+        "note": ""
+      },
+      {
+        "tier": "T0.4",
+        "name": "연구 입력 하한",
+        "passed": true,
+        "value": null,
+        "threshold": ">=2015-01",
+        "note": ""
+      },
+      {
+        "tier": "T0.5",
+        "name": "label 전용 입력 차단",
+        "passed": true,
+        "value": 0,
+        "threshold": "0개",
+        "note": "[]"
+      },
+      {
+        "tier": "T0.6",
+        "name": "입력 계약",
+        "passed": true,
+        "value": 0,
+        "threshold": "누락 0개",
+        "note": "[]"
+      },
+      {
+        "tier": "T0.8",
+        "name": "출력 타입·인덱스",
+        "passed": true,
+        "value": null,
+        "threshold": "numeric Series / 동일 index",
+        "note": ""
+      },
+      {
+        "tier": "T0.9",
+        "name": "유한값",
+        "passed": true,
+        "value": null,
+        "threshold": "±inf 없음",
+        "note": ""
+      },
+      {
+        "tier": "T0.10",
+        "name": "결정성",
+        "passed": true,
+        "value": null,
+        "threshold": "동일 입력 2회 일치",
+        "note": ""
+      },
+      {
+        "tier": "T0.11",
+        "name": "36개월 인과성",
+        "passed": true,
+        "value": null,
+        "threshold": "36개월 이전·미래 행 비의존",
+        "note": "평가기간 전반의 결정적 anchor 7개에서 36개월 제한 재계산 일치"
+      },
+      {
+        "tier": "T0.12",
+        "name": "캐시 정의 일치",
+        "passed": true,
+        "value": null,
+        "threshold": "현재 정의와 캐시 일치",
+        "note": ""
+      },
+      {
+        "tier": "T1.1",
+        "name": "전체 커버리지",
+        "passed": true,
+        "value": 0.8882429879377998,
+        "threshold": ">=50%",
+        "note": ""
+      },
+      {
+        "tier": "T1.1",
+        "name": "월별 커버리지 하위10%",
+        "passed": true,
+        "value": 0.8806356836579692,
+        "threshold": ">=30%",
+        "note": ""
+      },
+      {
+        "tier": "T1.2",
+        "name": "종착수익률 3점 방향",
+        "passed": true,
+        "value": null,
+        "threshold": "세 시나리오 IC > 0",
+        "note": "{'opt': 0.0141, 'mid': 0.0129, 'pess': 0.0129}"
+      },
+      {
+        "tier": "T1.3",
+        "name": "배당 포함 총수익 계약",
+        "passed": true,
+        "value": null,
+        "threshold": "feature=adj_close / label=total_return_close v3(CERTIFIED) / candidate label 차단",
+        "note": ""
+      },
+      {
+        "tier": "T2.1",
+        "name": "전체 IC 최소요건",
+        "passed": false,
+        "value": 0.012947936744925488,
+        "threshold": ">=0.03",
+        "note": ""
+      },
+      {
+        "tier": "T2.1",
+        "name": "투자가능 IC 최소요건",
+        "passed": false,
+        "value": 0.013852643062975284,
+        "threshold": ">=0.03",
+        "note": ""
+      },
+      {
+        "tier": "T2.1",
+        "name": "투자가능 Rank ICIR 최소요건",
+        "passed": true,
+        "value": 0.24782708598199785,
+        "threshold": ">=0.15 (월평균 Rank IC / 월별 Rank IC 표준편차, 비연율화)",
+        "note": ""
+      }
+    ]
+  },
+  "relationships": [
+    {
+      "factor": "noncurrent_asset_growth_30m",
+      "category": "quality",
+      "median_spearman": 0.9036586967825525,
+      "abs_median_spearman": 0.9036586967825525,
+      "months": 60
+    },
+    {
+      "factor": "noncurrent_asset_growth_18m",
+      "category": "quality",
+      "median_spearman": 0.8691574162191861,
+      "abs_median_spearman": 0.8691574162191861,
+      "months": 63
+    },
+    {
+      "factor": "noncurrent_assets_growth_12m",
+      "category": "other",
+      "median_spearman": 0.7104764506363748,
+      "abs_median_spearman": 0.7104764506363748,
+      "months": 63
+    },
+    {
+      "factor": "total_asset_growth_24m",
+      "category": "quality",
+      "median_spearman": 0.6809775567744797,
+      "abs_median_spearman": 0.6809775567744797,
+      "months": 63
+    },
+    {
+      "factor": "total_asset_growth_30m",
+      "category": "quality",
+      "median_spearman": 0.6606446026394894,
+      "abs_median_spearman": 0.6606446026394894,
+      "months": 60
+    },
+    {
+      "factor": "total_asset_growth_18m",
+      "category": "quality",
+      "median_spearman": 0.5851113126459858,
+      "abs_median_spearman": 0.5851113126459858,
+      "months": 63
+    },
+    {
+      "factor": "operating_asset_growth_24m",
+      "category": "quality",
+      "median_spearman": 0.5742477628910688,
+      "abs_median_spearman": 0.5742477628910688,
+      "months": 63
+    },
+    {
+      "factor": "noncurrent_asset_growth_6m",
+      "category": "quality",
+      "median_spearman": 0.5191085098706828,
+      "abs_median_spearman": 0.5191085098706828,
+      "months": 63
+    },
+    {
+      "factor": "asset_growth_12m",
+      "category": "other",
+      "median_spearman": 0.47534726492877366,
+      "abs_median_spearman": 0.47534726492877366,
+      "months": 63
+    },
+    {
+      "factor": "equity_growth_24m",
+      "category": "other",
+      "median_spearman": 0.44188233480972067,
+      "abs_median_spearman": 0.44188233480972067,
+      "months": 63
+    },
+    {
+      "factor": "noncurrent_asset_share_change_12m",
+      "category": "other",
+      "median_spearman": 0.3873475517047161,
+      "abs_median_spearman": 0.3873475517047161,
+      "months": 63
+    },
+    {
+      "factor": "operating_asset_growth_12m",
+      "category": "quality",
+      "median_spearman": 0.3830769843451274,
+      "abs_median_spearman": 0.3830769843451274,
+      "months": 63
+    },
+    {
+      "factor": "liability_growth_12m",
+      "category": "other",
+      "median_spearman": 0.36304906876813753,
+      "abs_median_spearman": 0.36304906876813753,
+      "months": 63
+    },
+    {
+      "factor": "total_asset_growth_6m",
+      "category": "quality",
+      "median_spearman": 0.3046420002229643,
+      "abs_median_spearman": 0.3046420002229643,
+      "months": 63
+    },
+    {
+      "factor": "market_leverage_change_24m",
+      "category": "other",
+      "median_spearman": 0.2933701554056565,
+      "abs_median_spearman": 0.2933701554056565,
+      "months": 63
+    },
+    {
+      "factor": "equity_growth_12m",
+      "category": "other",
+      "median_spearman": 0.2905719943183404,
+      "abs_median_spearman": 0.2905719943183404,
+      "months": 63
+    },
+    {
+      "factor": "market_leverage_change_18m",
+      "category": "other",
+      "median_spearman": 0.2626832881267505,
+      "abs_median_spearman": 0.2626832881267505,
+      "months": 63
+    },
+    {
+      "factor": "capital_stock_yield",
+      "category": "value",
+      "median_spearman": 0.26258598936153643,
+      "abs_median_spearman": 0.26258598936153643,
+      "months": 63
+    },
+    {
+      "factor": "market_leverage_change_30m",
+      "category": "other",
+      "median_spearman": 0.2609177284137503,
+      "abs_median_spearman": 0.2609177284137503,
+      "months": 60
+    },
+    {
+      "factor": "current_liabilities_growth_12m",
+      "category": "other",
+      "median_spearman": 0.2600194601583351,
+      "abs_median_spearman": 0.2600194601583351,
+      "months": 63
+    },
+    {
+      "factor": "noncurrent_liabilities_growth_12m",
+      "category": "other",
+      "median_spearman": 0.25635536088943567,
+      "abs_median_spearman": 0.25635536088943567,
+      "months": 63
+    },
+    {
+      "factor": "amihud_volatility_12m",
+      "category": "other",
+      "median_spearman": -0.21785767041648488,
+      "abs_median_spearman": 0.21785767041648488,
+      "months": 63
+    },
+    {
+      "factor": "amihud_mean_18m",
+      "category": "other",
+      "median_spearman": 0.2177483663471921,
+      "abs_median_spearman": 0.2177483663471921,
+      "months": 63
+    },
+    {
+      "factor": "current_ratio_change_12m",
+      "category": "quality",
+      "median_spearman": 0.21469461878348886,
+      "abs_median_spearman": 0.21469461878348886,
+      "months": 63
+    },
+    {
+      "factor": "amihud_volatility_18m",
+      "category": "other",
+      "median_spearman": -0.2141785969789576,
+      "abs_median_spearman": 0.2141785969789576,
+      "months": 63
+    },
+    {
+      "factor": "amihud_mean_24m",
+      "category": "other",
+      "median_spearman": 0.21335762411980855,
+      "abs_median_spearman": 0.21335762411980855,
+      "months": 63
+    },
+    {
+      "factor": "small_value",
+      "category": "value",
+      "median_spearman": 0.20900506835657975,
+      "abs_median_spearman": 0.20900506835657975,
+      "months": 63
+    },
+    {
+      "factor": "amihud_volatility_24m",
+      "category": "other",
+      "median_spearman": -0.20770600030481504,
+      "abs_median_spearman": 0.20770600030481504,
+      "months": 63
+    },
+    {
+      "factor": "amihud_volatility_6m",
+      "category": "other",
+      "median_spearman": -0.20508582504822812,
+      "abs_median_spearman": 0.20508582504822812,
+      "months": 63
+    },
+    {
+      "factor": "working_capital_accruals_24m",
+      "category": "earnings",
+      "median_spearman": -0.20402251411752767,
+      "abs_median_spearman": 0.20402251411752767,
+      "months": 63
+    },
+    {
+      "factor": "amihud_mean_6m",
+      "category": "other",
+      "median_spearman": 0.2039657175624729,
+      "abs_median_spearman": 0.2039657175624729,
+      "months": 63
+    },
+    {
+      "factor": "amihud_mean_36m",
+      "category": "other",
+      "median_spearman": 0.1996683763778218,
+      "abs_median_spearman": 0.1996683763778218,
+      "months": 63
+    },
+    {
+      "factor": "size",
+      "category": "size",
+      "median_spearman": 0.19650867056815802,
+      "abs_median_spearman": 0.19650867056815802,
+      "months": 63
+    },
+    {
+      "factor": "earnings_confirmed_small_value",
+      "category": "earnings",
+      "median_spearman": 0.19431891064268705,
+      "abs_median_spearman": 0.19431891064268705,
+      "months": 63
+    },
+    {
+      "factor": "noncurrent_assets_to_capital_stock",
+      "category": "quality",
+      "median_spearman": -0.19396570082771586,
+      "abs_median_spearman": 0.19396570082771586,
+      "months": 63
+    },
+    {
+      "factor": "sales_growth_12m",
+      "category": "other",
+      "median_spearman": 0.19054199523757526,
+      "abs_median_spearman": 0.19054199523757526,
+      "months": 63
+    },
+    {
+      "factor": "amihud_illiquidity_1m",
+      "category": "other",
+      "median_spearman": 0.18911559237810796,
+      "abs_median_spearman": 0.18911559237810796,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_growth_12m",
+      "category": "quality",
+      "median_spearman": -0.18508475089679965,
+      "abs_median_spearman": 0.18508475089679965,
+      "months": 63
+    },
+    {
+      "factor": "amihud_volatility_36m",
+      "category": "other",
+      "median_spearman": -0.1830018505519667,
+      "abs_median_spearman": 0.1830018505519667,
+      "months": 63
+    },
+    {
+      "factor": "equity_growth_6m",
+      "category": "other",
+      "median_spearman": 0.18105878901681255,
+      "abs_median_spearman": 0.18105878901681255,
+      "months": 63
+    },
+    {
+      "factor": "capital_stock_share_change_12m",
+      "category": "other",
+      "median_spearman": -0.17566480559400616,
+      "abs_median_spearman": 0.17566480559400616,
+      "months": 63
+    },
+    {
+      "factor": "paid_in_capital_ratio",
+      "category": "quality",
+      "median_spearman": -0.17551552477082863,
+      "abs_median_spearman": 0.17551552477082863,
+      "months": 63
+    },
+    {
+      "factor": "capital_stock_to_assets",
+      "category": "other",
+      "median_spearman": -0.17416277575992772,
+      "abs_median_spearman": 0.17416277575992772,
+      "months": 63
+    },
+    {
+      "factor": "net_income_to_capital_stock",
+      "category": "quality",
+      "median_spearman": -0.1697533874628336,
+      "abs_median_spearman": 0.1697533874628336,
+      "months": 63
+    },
+    {
+      "factor": "market_leverage_change_12m",
+      "category": "other",
+      "median_spearman": 0.16810778602856524,
+      "abs_median_spearman": 0.16810778602856524,
+      "months": 63
+    },
+    {
+      "factor": "defensive_small_value",
+      "category": "value",
+      "median_spearman": 0.16701949702689228,
+      "abs_median_spearman": 0.16701949702689228,
+      "months": 63
+    },
+    {
+      "factor": "current_assets_yield",
+      "category": "value",
+      "median_spearman": 0.16632969228102873,
+      "abs_median_spearman": 0.16632969228102873,
+      "months": 63
+    },
+    {
+      "factor": "capital_stock_growth_18m",
+      "category": "other",
+      "median_spearman": 0.16503734736782383,
+      "abs_median_spearman": 0.16503734736782383,
+      "months": 63
+    },
+    {
+      "factor": "pretax_profit_margin",
+      "category": "quality",
+      "median_spearman": -0.16486157644194757,
+      "abs_median_spearman": 0.16486157644194757,
+      "months": 63
+    },
+    {
+      "factor": "working_capital_accruals_12m",
+      "category": "quality",
+      "median_spearman": -0.16450844567047365,
+      "abs_median_spearman": 0.16450844567047365,
+      "months": 63
+    },
+    {
+      "factor": "long_term_reversal_36_12",
+      "category": "momentum",
+      "median_spearman": 0.1643086269299707,
+      "abs_median_spearman": 0.1643086269299707,
+      "months": 63
+    },
+    {
+      "factor": "asset_turnover_change_12m",
+      "category": "quality",
+      "median_spearman": 0.16219515822915906,
+      "abs_median_spearman": 0.16219515822915906,
+      "months": 63
+    },
+    {
+      "factor": "operating_income_to_capital_stock",
+      "category": "quality",
+      "median_spearman": -0.15821690756177165,
+      "abs_median_spearman": 0.15821690756177165,
+      "months": 63
+    },
+    {
+      "factor": "qual_opm",
+      "category": "quality",
+      "median_spearman": -0.15631134704214136,
+      "abs_median_spearman": 0.15631134704214136,
+      "months": 63
+    },
+    {
+      "factor": "net_profit_margin",
+      "category": "quality",
+      "median_spearman": -0.15630836302674825,
+      "abs_median_spearman": 0.15630836302674825,
+      "months": 63
+    },
+    {
+      "factor": "revenue_to_noncurrent_assets",
+      "category": "quality",
+      "median_spearman": 0.1558122490377607,
+      "abs_median_spearman": 0.1558122490377607,
+      "months": 63
+    },
+    {
+      "factor": "pretax_income_to_current_assets",
+      "category": "quality",
+      "median_spearman": -0.15152739439818774,
+      "abs_median_spearman": 0.15152739439818774,
+      "months": 63
+    },
+    {
+      "factor": "capital_stock_growth_12m",
+      "category": "other",
+      "median_spearman": 0.15142768044163693,
+      "abs_median_spearman": 0.15142768044163693,
+      "months": 63
+    },
+    {
+      "factor": "qual_roe",
+      "category": "quality",
+      "median_spearman": -0.15053342540886222,
+      "abs_median_spearman": 0.15053342540886222,
+      "months": 63
+    },
+    {
+      "factor": "net_income_to_current_assets",
+      "category": "quality",
+      "median_spearman": -0.14972845301535898,
+      "abs_median_spearman": 0.14972845301535898,
+      "months": 63
+    },
+    {
+      "factor": "value_sp",
+      "category": "value",
+      "median_spearman": 0.1493405410823076,
+      "abs_median_spearman": 0.1493405410823076,
+      "months": 63
+    },
+    {
+      "factor": "pretax_income_to_equity",
+      "category": "quality",
+      "median_spearman": -0.14672733449277503,
+      "abs_median_spearman": 0.14672733449277503,
+      "months": 63
+    },
+    {
+      "factor": "capital_stock_to_liabilities",
+      "category": "quality",
+      "median_spearman": 0.14526345006512903,
+      "abs_median_spearman": 0.14526345006512903,
+      "months": 63
+    },
+    {
+      "factor": "operating_income_to_equity",
+      "category": "quality",
+      "median_spearman": -0.143691759779724,
+      "abs_median_spearman": 0.143691759779724,
+      "months": 63
+    },
+    {
+      "factor": "working_capital_growth_12m",
+      "category": "other",
+      "median_spearman": -0.1436812061989933,
+      "abs_median_spearman": 0.1436812061989933,
+      "months": 63
+    },
+    {
+      "factor": "equity_debt_coverage_change_12m",
+      "category": "quality",
+      "median_spearman": 0.140124233768182,
+      "abs_median_spearman": 0.140124233768182,
+      "months": 63
+    },
+    {
+      "factor": "net_roa",
+      "category": "quality",
+      "median_spearman": -0.13801429873047513,
+      "abs_median_spearman": 0.13801429873047513,
+      "months": 63
+    },
+    {
+      "factor": "market_leverage_change_6m",
+      "category": "other",
+      "median_spearman": 0.13773641235010214,
+      "abs_median_spearman": 0.13773641235010214,
+      "months": 63
+    },
+    {
+      "factor": "operating_roa",
+      "category": "quality",
+      "median_spearman": -0.13694105076945381,
+      "abs_median_spearman": 0.13694105076945381,
+      "months": 63
+    },
+    {
+      "factor": "operating_income_to_current_assets",
+      "category": "quality",
+      "median_spearman": -0.13599257043944163,
+      "abs_median_spearman": 0.13599257043944163,
+      "months": 63
+    },
+    {
+      "factor": "pretax_roa",
+      "category": "quality",
+      "median_spearman": -0.13444841281997863,
+      "abs_median_spearman": 0.13444841281997863,
+      "months": 63
+    },
+    {
+      "factor": "operating_return_on_capital_employed",
+      "category": "quality",
+      "median_spearman": -0.13323300250205825,
+      "abs_median_spearman": 0.13323300250205825,
+      "months": 63
+    },
+    {
+      "factor": "working_capital_accruals_6m",
+      "category": "earnings",
+      "median_spearman": -0.13313169366199293,
+      "abs_median_spearman": 0.13313169366199293,
+      "months": 63
+    },
+    {
+      "factor": "capital_stock_to_current_assets",
+      "category": "other",
+      "median_spearman": -0.13171699283976657,
+      "abs_median_spearman": 0.13171699283976657,
+      "months": 63
+    },
+    {
+      "factor": "turnover_volatility_12m",
+      "category": "other",
+      "median_spearman": -0.12954104533868369,
+      "abs_median_spearman": 0.12954104533868369,
+      "months": 63
+    },
+    {
+      "factor": "revenue_to_noncurrent_liabilities",
+      "category": "quality",
+      "median_spearman": 0.12803990715700092,
+      "abs_median_spearman": 0.12803990715700092,
+      "months": 63
+    },
+    {
+      "factor": "asset_turnover",
+      "category": "quality",
+      "median_spearman": 0.12707499274041978,
+      "abs_median_spearman": 0.12707499274041978,
+      "months": 63
+    },
+    {
+      "factor": "value_bp",
+      "category": "value",
+      "median_spearman": 0.1250463050497641,
+      "abs_median_spearman": 0.1250463050497641,
+      "months": 63
+    },
+    {
+      "factor": "capital_stock_growth_6m",
+      "category": "other",
+      "median_spearman": 0.12348535320259026,
+      "abs_median_spearman": 0.12348535320259026,
+      "months": 63
+    },
+    {
+      "factor": "net_income_to_noncurrent_assets",
+      "category": "quality",
+      "median_spearman": -0.12268346103602802,
+      "abs_median_spearman": 0.12268346103602802,
+      "months": 63
+    },
+    {
+      "factor": "asset_to_market",
+      "category": "value",
+      "median_spearman": 0.12230167676620073,
+      "abs_median_spearman": 0.12230167676620073,
+      "months": 63
+    },
+    {
+      "factor": "operating_income_to_current_liabilities",
+      "category": "quality",
+      "median_spearman": -0.12186967123884863,
+      "abs_median_spearman": 0.12186967123884863,
+      "months": 63
+    },
+    {
+      "factor": "profitable_small_value",
+      "category": "quality",
+      "median_spearman": 0.1198175913194662,
+      "abs_median_spearman": 0.1198175913194662,
+      "months": 63
+    },
+    {
+      "factor": "capital_stock_to_current_liabilities",
+      "category": "quality",
+      "median_spearman": 0.11747516191342514,
+      "abs_median_spearman": 0.11747516191342514,
+      "months": 63
+    },
+    {
+      "factor": "net_income_to_liabilities",
+      "category": "quality",
+      "median_spearman": -0.11546161829905643,
+      "abs_median_spearman": 0.11546161829905643,
+      "months": 63
+    },
+    {
+      "factor": "price_reversal_36_24",
+      "category": "momentum",
+      "median_spearman": 0.11539169786102137,
+      "abs_median_spearman": 0.11539169786102137,
+      "months": 63
+    },
+    {
+      "factor": "net_equity_issuance_price_adjusted_24m",
+      "category": "other",
+      "median_spearman": 0.11468462622722773,
+      "abs_median_spearman": 0.11468462622722773,
+      "months": 63
+    },
+    {
+      "factor": "pretax_income_to_liabilities",
+      "category": "quality",
+      "median_spearman": -0.1143929678889359,
+      "abs_median_spearman": 0.1143929678889359,
+      "months": 63
+    },
+    {
+      "factor": "current_liabilities_yield",
+      "category": "value",
+      "median_spearman": -0.11082488441963682,
+      "abs_median_spearman": 0.11082488441963682,
+      "months": 63
+    },
+    {
+      "factor": "operating_income_to_noncurrent_assets",
+      "category": "quality",
+      "median_spearman": -0.11039438203986758,
+      "abs_median_spearman": 0.11039438203986758,
+      "months": 63
+    },
+    {
+      "factor": "operating_income_to_liabilities",
+      "category": "quality",
+      "median_spearman": -0.11012265677565711,
+      "abs_median_spearman": 0.11012265677565711,
+      "months": 63
+    },
+    {
+      "factor": "revenue_to_equity",
+      "category": "quality",
+      "median_spearman": 0.10959026148395581,
+      "abs_median_spearman": 0.10959026148395581,
+      "months": 63
+    },
+    {
+      "factor": "noncurrent_asset_share",
+      "category": "other",
+      "median_spearman": 0.10860920789123249,
+      "abs_median_spearman": 0.10860920789123249,
+      "months": 63
+    },
+    {
+      "factor": "current_assets_to_noncurrent_assets",
+      "category": "other",
+      "median_spearman": 0.10744477998863547,
+      "abs_median_spearman": 0.10744477998863547,
+      "months": 63
+    },
+    {
+      "factor": "revenue_to_total_liabilities",
+      "category": "quality",
+      "median_spearman": 0.10488470713588104,
+      "abs_median_spearman": 0.10488470713588104,
+      "months": 63
+    },
+    {
+      "factor": "net_equity_issuance_price_adjusted_36m",
+      "category": "other",
+      "median_spearman": 0.10407278426013655,
+      "abs_median_spearman": 0.10407278426013655,
+      "months": 63
+    },
+    {
+      "factor": "value_ep",
+      "category": "value",
+      "median_spearman": -0.10379655969907997,
+      "abs_median_spearman": 0.10379655969907997,
+      "months": 63
+    },
+    {
+      "factor": "current_liability_concentration",
+      "category": "quality",
+      "median_spearman": -0.10364818495759594,
+      "abs_median_spearman": 0.10364818495759594,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_to_capital_stock",
+      "category": "quality",
+      "median_spearman": -0.10335594241198169,
+      "abs_median_spearman": 0.10335594241198169,
+      "months": 63
+    },
+    {
+      "factor": "current_assets_to_assets",
+      "category": "quality",
+      "median_spearman": 0.10255801730945344,
+      "abs_median_spearman": 0.10255801730945344,
+      "months": 63
+    },
+    {
+      "factor": "book_to_market_change_12m",
+      "category": "value",
+      "median_spearman": -0.10121835822389685,
+      "abs_median_spearman": 0.10121835822389685,
+      "months": 63
+    },
+    {
+      "factor": "net_equity_issuance_price_adjusted_12m",
+      "category": "other",
+      "median_spearman": 0.09702850053717471,
+      "abs_median_spearman": 0.09702850053717471,
+      "months": 63
+    },
+    {
+      "factor": "net_equity_issuance_12m",
+      "category": "other",
+      "median_spearman": 0.09620170994762478,
+      "abs_median_spearman": 0.09620170994762478,
+      "months": 63
+    },
+    {
+      "factor": "price_momentum_24_6",
+      "category": "momentum",
+      "median_spearman": -0.09604242843698975,
+      "abs_median_spearman": 0.09604242843698975,
+      "months": 63
+    },
+    {
+      "factor": "asset_turnover_volatility_36m",
+      "category": "quality",
+      "median_spearman": 0.09602813909144195,
+      "abs_median_spearman": 0.09602813909144195,
+      "months": 52
+    },
+    {
+      "factor": "noncurrent_liability_share_change_12m",
+      "category": "other",
+      "median_spearman": -0.09586691007475681,
+      "abs_median_spearman": 0.09586691007475681,
+      "months": 63
+    },
+    {
+      "factor": "current_assets_to_equity",
+      "category": "quality",
+      "median_spearman": 0.09483721423363427,
+      "abs_median_spearman": 0.09483721423363427,
+      "months": 63
+    },
+    {
+      "factor": "noncurrent_liabilities_to_assets",
+      "category": "quality",
+      "median_spearman": 0.09212522208421797,
+      "abs_median_spearman": 0.09212522208421797,
+      "months": 63
+    },
+    {
+      "factor": "price_reversal_24_12",
+      "category": "momentum",
+      "median_spearman": 0.09108957273040906,
+      "abs_median_spearman": 0.09108957273040906,
+      "months": 63
+    },
+    {
+      "factor": "revenue_to_capital_stock",
+      "category": "quality",
+      "median_spearman": -0.09013858190935259,
+      "abs_median_spearman": 0.09013858190935259,
+      "months": 63
+    },
+    {
+      "factor": "market_relative_momentum_24_6",
+      "category": "momentum",
+      "median_spearman": -0.08984459512052714,
+      "abs_median_spearman": 0.08984459512052714,
+      "months": 63
+    },
+    {
+      "factor": "net_margin_change_6m",
+      "category": "earnings",
+      "median_spearman": 0.08529789473871562,
+      "abs_median_spearman": 0.08529789473871562,
+      "months": 63
+    },
+    {
+      "factor": "net_profit_margin_change_12m",
+      "category": "earnings",
+      "median_spearman": 0.08453651174667777,
+      "abs_median_spearman": 0.08453651174667777,
+      "months": 63
+    },
+    {
+      "factor": "defensive_value",
+      "category": "value",
+      "median_spearman": 0.08431996377900584,
+      "abs_median_spearman": 0.08431996377900584,
+      "months": 63
+    },
+    {
+      "factor": "operating_roa_change_12m",
+      "category": "earnings",
+      "median_spearman": 0.08312278544836683,
+      "abs_median_spearman": 0.08312278544836683,
+      "months": 63
+    },
+    {
+      "factor": "market_leverage",
+      "category": "other",
+      "median_spearman": 0.08300681386297479,
+      "abs_median_spearman": 0.08300681386297479,
+      "months": 63
+    },
+    {
+      "factor": "operating_income_to_noncurrent_liabilities",
+      "category": "quality",
+      "median_spearman": -0.08026950557635452,
+      "abs_median_spearman": 0.08026950557635452,
+      "months": 63
+    },
+    {
+      "factor": "adv20_to_book_equity",
+      "category": "other",
+      "median_spearman": 0.07918124687204935,
+      "abs_median_spearman": 0.07918124687204935,
+      "months": 63
+    },
+    {
+      "factor": "solvent_value",
+      "category": "value",
+      "median_spearman": 0.0788391677523658,
+      "abs_median_spearman": 0.0788391677523658,
+      "months": 63
+    },
+    {
+      "factor": "book_to_market_change_6m",
+      "category": "value",
+      "median_spearman": -0.07819133307250553,
+      "abs_median_spearman": 0.07819133307250553,
+      "months": 63
+    },
+    {
+      "factor": "operating_coverage_change_12m",
+      "category": "earnings",
+      "median_spearman": 0.07817865846477932,
+      "abs_median_spearman": 0.07817865846477932,
+      "months": 63
+    },
+    {
+      "factor": "operating_margin_acceleration_12m",
+      "category": "earnings",
+      "median_spearman": 0.07775032652731094,
+      "abs_median_spearman": 0.07775032652731094,
+      "months": 51
+    },
+    {
+      "factor": "operating_margin_change_6m",
+      "category": "earnings",
+      "median_spearman": 0.07628935046158328,
+      "abs_median_spearman": 0.07628935046158328,
+      "months": 63
+    },
+    {
+      "factor": "operating_margin_change_12m",
+      "category": "earnings",
+      "median_spearman": 0.07600520404973368,
+      "abs_median_spearman": 0.07600520404973368,
+      "months": 63
+    },
+    {
+      "factor": "net_working_capital_yield",
+      "category": "value",
+      "median_spearman": 0.07516443432262311,
+      "abs_median_spearman": 0.07516443432262311,
+      "months": 63
+    },
+    {
+      "factor": "enterprise_earnings_yield_change_12m",
+      "category": "value",
+      "median_spearman": 0.07469269487089435,
+      "abs_median_spearman": 0.07469269487089435,
+      "months": 63
+    },
+    {
+      "factor": "operating_earnings_yield",
+      "category": "value",
+      "median_spearman": -0.06913912916732487,
+      "abs_median_spearman": 0.06913912916732487,
+      "months": 63
+    },
+    {
+      "factor": "current_liabilities_to_assets",
+      "category": "quality",
+      "median_spearman": -0.06880720305453146,
+      "abs_median_spearman": 0.06880720305453146,
+      "months": 63
+    },
+    {
+      "factor": "noncurrent_asset_encumbrance",
+      "category": "quality",
+      "median_spearman": 0.06865784716239658,
+      "abs_median_spearman": 0.06865784716239658,
+      "months": 63
+    },
+    {
+      "factor": "noncurrent_liabilities_to_equity",
+      "category": "other",
+      "median_spearman": 0.06810070980525831,
+      "abs_median_spearman": 0.06810070980525831,
+      "months": 63
+    },
+    {
+      "factor": "current_assets_growth_12m",
+      "category": "other",
+      "median_spearman": 0.06728124632930985,
+      "abs_median_spearman": 0.06728124632930985,
+      "months": 63
+    },
+    {
+      "factor": "price_trend_efficiency_24m",
+      "category": "momentum",
+      "median_spearman": -0.06703632641091352,
+      "abs_median_spearman": 0.06703632641091352,
+      "months": 63
+    },
+    {
+      "factor": "current_liabilities_to_sales",
+      "category": "quality",
+      "median_spearman": 0.06448129846426352,
+      "abs_median_spearman": 0.06448129846426352,
+      "months": 63
+    },
+    {
+      "factor": "pretax_yield_change_12m",
+      "category": "value",
+      "median_spearman": 0.06422189266165465,
+      "abs_median_spearman": 0.06422189266165465,
+      "months": 63
+    },
+    {
+      "factor": "equity_to_noncurrent_liabilities",
+      "category": "quality",
+      "median_spearman": 0.06376049777088413,
+      "abs_median_spearman": 0.06376049777088413,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_growth_acceleration_12m",
+      "category": "quality",
+      "median_spearman": 0.06302183089468372,
+      "abs_median_spearman": 0.06302183089468372,
+      "months": 63
+    },
+    {
+      "factor": "noncurrent_assets_yield",
+      "category": "value",
+      "median_spearman": 0.062157055545589125,
+      "abs_median_spearman": 0.062157055545589125,
+      "months": 63
+    },
+    {
+      "factor": "revenue_to_current_liabilities",
+      "category": "quality",
+      "median_spearman": 0.061272431433655995,
+      "abs_median_spearman": 0.061272431433655995,
+      "months": 63
+    },
+    {
+      "factor": "current_asset_turnover",
+      "category": "quality",
+      "median_spearman": 0.059041754929047056,
+      "abs_median_spearman": 0.059041754929047056,
+      "months": 63
+    },
+    {
+      "factor": "revenue_to_current_assets",
+      "category": "quality",
+      "median_spearman": 0.059041754929047056,
+      "abs_median_spearman": 0.059041754929047056,
+      "months": 63
+    },
+    {
+      "factor": "realized_daily_volatility_instability_18m",
+      "category": "quality",
+      "median_spearman": -0.05737122599475868,
+      "abs_median_spearman": 0.05737122599475868,
+      "months": 63
+    },
+    {
+      "factor": "earnings_yield_change_12m",
+      "category": "value",
+      "median_spearman": 0.057329729423460415,
+      "abs_median_spearman": 0.057329729423460415,
+      "months": 63
+    },
+    {
+      "factor": "posttax_income_conversion",
+      "category": "quality",
+      "median_spearman": -0.05661630313978305,
+      "abs_median_spearman": 0.05661630313978305,
+      "months": 63
+    },
+    {
+      "factor": "noncurrent_assets_to_equity",
+      "category": "other",
+      "median_spearman": 0.056149979825355606,
+      "abs_median_spearman": 0.056149979825355606,
+      "months": 63
+    },
+    {
+      "factor": "realized_daily_volatility_change_24m",
+      "category": "quality",
+      "median_spearman": -0.05437938064833902,
+      "abs_median_spearman": 0.05437938064833902,
+      "months": 63
+    },
+    {
+      "factor": "max_daily_return_instability_18m",
+      "category": "quality",
+      "median_spearman": -0.05394952680791455,
+      "abs_median_spearman": 0.05394952680791455,
+      "months": 63
+    },
+    {
+      "factor": "pretax_yield_change_6m",
+      "category": "value",
+      "median_spearman": 0.05370731230971823,
+      "abs_median_spearman": 0.05370731230971823,
+      "months": 63
+    },
+    {
+      "factor": "return_kurtosis_24m",
+      "category": "other",
+      "median_spearman": -0.05346663830401919,
+      "abs_median_spearman": 0.05346663830401919,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_to_assets_volatility_12m",
+      "category": "earnings",
+      "median_spearman": 0.052371064285489315,
+      "abs_median_spearman": 0.052371064285489315,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_yield_change_12m",
+      "category": "value",
+      "median_spearman": -0.05171998426210391,
+      "abs_median_spearman": 0.05171998426210391,
+      "months": 63
+    },
+    {
+      "factor": "equity_to_current_liabilities",
+      "category": "quality",
+      "median_spearman": -0.050403482273420085,
+      "abs_median_spearman": 0.050403482273420085,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_to_current_assets",
+      "category": "quality",
+      "median_spearman": -0.050277137327689375,
+      "abs_median_spearman": 0.050277137327689375,
+      "months": 63
+    },
+    {
+      "factor": "positive_return_share_24m",
+      "category": "momentum",
+      "median_spearman": -0.050114563701792285,
+      "abs_median_spearman": 0.050114563701792285,
+      "months": 63
+    },
+    {
+      "factor": "realized_daily_volatility_instability_6m",
+      "category": "quality",
+      "median_spearman": -0.048964778336342475,
+      "abs_median_spearman": 0.048964778336342475,
+      "months": 63
+    },
+    {
+      "factor": "current_assets_to_total_liabilities",
+      "category": "quality",
+      "median_spearman": 0.04472554037065503,
+      "abs_median_spearman": 0.04472554037065503,
+      "months": 63
+    },
+    {
+      "factor": "earnings_change_to_assets",
+      "category": "earnings",
+      "median_spearman": 0.043857225829267696,
+      "abs_median_spearman": 0.043857225829267696,
+      "months": 63
+    },
+    {
+      "factor": "operating_income_growth_12m",
+      "category": "earnings",
+      "median_spearman": -0.041809227308910964,
+      "abs_median_spearman": 0.041809227308910964,
+      "months": 63
+    },
+    {
+      "factor": "adv_turnover_volatility_24m",
+      "category": "other",
+      "median_spearman": -0.04067517029374009,
+      "abs_median_spearman": 0.04067517029374009,
+      "months": 63
+    },
+    {
+      "factor": "adv_turnover_volatility_18m",
+      "category": "other",
+      "median_spearman": -0.03833334601032383,
+      "abs_median_spearman": 0.03833334601032383,
+      "months": 63
+    },
+    {
+      "factor": "price_momentum_18_6",
+      "category": "momentum",
+      "median_spearman": -0.038014228293506216,
+      "abs_median_spearman": 0.038014228293506216,
+      "months": 63
+    },
+    {
+      "factor": "daily_volatility_change_12m",
+      "category": "other",
+      "median_spearman": -0.03796442786928477,
+      "abs_median_spearman": 0.03796442786928477,
+      "months": 63
+    },
+    {
+      "factor": "current_assets_growth_acceleration_12m",
+      "category": "other",
+      "median_spearman": -0.03726960184408677,
+      "abs_median_spearman": 0.03726960184408677,
+      "months": 63
+    },
+    {
+      "factor": "idiosyncratic_volatility_24m",
+      "category": "other",
+      "median_spearman": 0.03692299128485006,
+      "abs_median_spearman": 0.03692299128485006,
+      "months": 63
+    },
+    {
+      "factor": "adv_turnover_mean_36m",
+      "category": "other",
+      "median_spearman": 0.036531926057996045,
+      "abs_median_spearman": 0.036531926057996045,
+      "months": 63
+    },
+    {
+      "factor": "trading_turnover_20d",
+      "category": "other",
+      "median_spearman": 0.03606323633438776,
+      "abs_median_spearman": 0.03606323633438776,
+      "months": 63
+    },
+    {
+      "factor": "max_daily_return_instability_6m",
+      "category": "quality",
+      "median_spearman": -0.035752234894096374,
+      "abs_median_spearman": 0.035752234894096374,
+      "months": 63
+    },
+    {
+      "factor": "nonoperating_burden_to_assets",
+      "category": "quality",
+      "median_spearman": -0.03570787537490024,
+      "abs_median_spearman": 0.03570787537490024,
+      "months": 63
+    },
+    {
+      "factor": "high_12m_proximity",
+      "category": "momentum",
+      "median_spearman": 0.0349647108035273,
+      "abs_median_spearman": 0.0349647108035273,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_yield",
+      "category": "value",
+      "median_spearman": 0.03381267454936507,
+      "abs_median_spearman": 0.03381267454936507,
+      "months": 63
+    },
+    {
+      "factor": "working_capital_to_sales",
+      "category": "quality",
+      "median_spearman": -0.03229656980875941,
+      "abs_median_spearman": 0.03229656980875941,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_to_current_liabilities",
+      "category": "quality",
+      "median_spearman": -0.03205415456112053,
+      "abs_median_spearman": 0.03205415456112053,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_to_equity",
+      "category": "quality",
+      "median_spearman": -0.030950224479797686,
+      "abs_median_spearman": 0.030950224479797686,
+      "months": 63
+    },
+    {
+      "factor": "pretax_income_growth_acceleration_12m",
+      "category": "earnings",
+      "median_spearman": 0.030643381243686096,
+      "abs_median_spearman": 0.030643381243686096,
+      "months": 51
+    },
+    {
+      "factor": "return_persistence_24m",
+      "category": "momentum",
+      "median_spearman": -0.030049047194280146,
+      "abs_median_spearman": 0.030049047194280146,
+      "months": 63
+    },
+    {
+      "factor": "adv_turnover_volatility_6m",
+      "category": "other",
+      "median_spearman": -0.02988076914958225,
+      "abs_median_spearman": 0.02988076914958225,
+      "months": 63
+    },
+    {
+      "factor": "operating_yield_change_12m",
+      "category": "value",
+      "median_spearman": 0.028804252936498256,
+      "abs_median_spearman": 0.028804252936498256,
+      "months": 63
+    },
+    {
+      "factor": "realized_daily_volatility_change_6m",
+      "category": "quality",
+      "median_spearman": -0.028605379882833053,
+      "abs_median_spearman": 0.028605379882833053,
+      "months": 63
+    },
+    {
+      "factor": "rev_1m",
+      "category": "momentum",
+      "median_spearman": -0.02837177478046145,
+      "abs_median_spearman": 0.02837177478046145,
+      "months": 63
+    },
+    {
+      "factor": "price_range_12m",
+      "category": "other",
+      "median_spearman": 0.02803006431364037,
+      "abs_median_spearman": 0.02803006431364037,
+      "months": 63
+    },
+    {
+      "factor": "price_recovery_24m",
+      "category": "momentum",
+      "median_spearman": -0.02640950646941169,
+      "abs_median_spearman": 0.02640950646941169,
+      "months": 63
+    },
+    {
+      "factor": "net_income_growth_12m",
+      "category": "earnings",
+      "median_spearman": -0.02622732930124157,
+      "abs_median_spearman": 0.02622732930124157,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_to_assets",
+      "category": "quality",
+      "median_spearman": -0.02591396709556193,
+      "abs_median_spearman": 0.02591396709556193,
+      "months": 63
+    },
+    {
+      "factor": "max_daily_return_1m",
+      "category": "other",
+      "median_spearman": 0.025798767799713778,
+      "abs_median_spearman": 0.025798767799713778,
+      "months": 63
+    },
+    {
+      "factor": "max_daily_return_change_18m",
+      "category": "quality",
+      "median_spearman": -0.02563369439940058,
+      "abs_median_spearman": 0.02563369439940058,
+      "months": 63
+    },
+    {
+      "factor": "medium_term_momentum_6_2",
+      "category": "momentum",
+      "median_spearman": 0.02498024233088823,
+      "abs_median_spearman": 0.02498024233088823,
+      "months": 63
+    },
+    {
+      "factor": "price_momentum_6_1",
+      "category": "momentum",
+      "median_spearman": 0.02498024233088823,
+      "abs_median_spearman": 0.02498024233088823,
+      "months": 63
+    },
+    {
+      "factor": "price_momentum_9_2",
+      "category": "momentum",
+      "median_spearman": 0.0239926634821398,
+      "abs_median_spearman": 0.0239926634821398,
+      "months": 63
+    },
+    {
+      "factor": "sue",
+      "category": "earnings",
+      "median_spearman": 0.023945680969876083,
+      "abs_median_spearman": 0.023945680969876083,
+      "months": 63
+    },
+    {
+      "factor": "market_relative_momentum_18_3",
+      "category": "momentum",
+      "median_spearman": -0.022506892615324153,
+      "abs_median_spearman": 0.022506892615324153,
+      "months": 63
+    },
+    {
+      "factor": "downside_vol_12m",
+      "category": "other",
+      "median_spearman": 0.02224460301244205,
+      "abs_median_spearman": 0.02224460301244205,
+      "months": 63
+    },
+    {
+      "factor": "equity_growth_acceleration_12m",
+      "category": "other",
+      "median_spearman": -0.022167884414448554,
+      "abs_median_spearman": 0.022167884414448554,
+      "months": 63
+    },
+    {
+      "factor": "adv_turnover_mean_24m",
+      "category": "other",
+      "median_spearman": 0.022030378475554335,
+      "abs_median_spearman": 0.022030378475554335,
+      "months": 63
+    },
+    {
+      "factor": "enterprise_sales_yield_change_12m",
+      "category": "value",
+      "median_spearman": 0.02163012760217335,
+      "abs_median_spearman": 0.02163012760217335,
+      "months": 63
+    },
+    {
+      "factor": "market_relative_momentum_6_1",
+      "category": "momentum",
+      "median_spearman": 0.021591533871646956,
+      "abs_median_spearman": 0.021591533871646956,
+      "months": 63
+    },
+    {
+      "factor": "asset_growth_acceleration_12m",
+      "category": "other",
+      "median_spearman": -0.02158091891168213,
+      "abs_median_spearman": 0.02158091891168213,
+      "months": 63
+    },
+    {
+      "factor": "price_reversal_6_3",
+      "category": "momentum",
+      "median_spearman": -0.02026422566113255,
+      "abs_median_spearman": 0.02026422566113255,
+      "months": 63
+    },
+    {
+      "factor": "short_term_reversal_3m",
+      "category": "momentum",
+      "median_spearman": -0.019711720304696142,
+      "abs_median_spearman": 0.019711720304696142,
+      "months": 63
+    },
+    {
+      "factor": "realized_daily_volatility_instability_36m",
+      "category": "quality",
+      "median_spearman": -0.019499962039023187,
+      "abs_median_spearman": 0.019499962039023187,
+      "months": 63
+    },
+    {
+      "factor": "trading_value_turnover_change_12m",
+      "category": "other",
+      "median_spearman": -0.0193226480776199,
+      "abs_median_spearman": 0.0193226480776199,
+      "months": 63
+    },
+    {
+      "factor": "net_margin_volatility_36m",
+      "category": "quality",
+      "median_spearman": -0.018505406311634328,
+      "abs_median_spearman": 0.018505406311634328,
+      "months": 52
+    },
+    {
+      "factor": "pretax_income_growth_12m",
+      "category": "earnings",
+      "median_spearman": -0.01786750898520134,
+      "abs_median_spearman": 0.01786750898520134,
+      "months": 63
+    },
+    {
+      "factor": "capital_stock_yield_change_12m",
+      "category": "value",
+      "median_spearman": 0.017380215421356985,
+      "abs_median_spearman": 0.017380215421356985,
+      "months": 63
+    },
+    {
+      "factor": "price_trend_efficiency_12m",
+      "category": "momentum",
+      "median_spearman": 0.01730657594374755,
+      "abs_median_spearman": 0.01730657594374755,
+      "months": 63
+    },
+    {
+      "factor": "high_24m_proximity",
+      "category": "momentum",
+      "median_spearman": 0.017189872018342107,
+      "abs_median_spearman": 0.017189872018342107,
+      "months": 63
+    },
+    {
+      "factor": "market_relative_momentum_12_1",
+      "category": "momentum",
+      "median_spearman": 0.017138602392802772,
+      "abs_median_spearman": 0.017138602392802772,
+      "months": 63
+    },
+    {
+      "factor": "net_income_growth_acceleration_12m",
+      "category": "earnings",
+      "median_spearman": 0.017109556557536907,
+      "abs_median_spearman": 0.017109556557536907,
+      "months": 51
+    },
+    {
+      "factor": "high_52w_price_proximity",
+      "category": "momentum",
+      "median_spearman": 0.01678044920382942,
+      "abs_median_spearman": 0.01678044920382942,
+      "months": 63
+    },
+    {
+      "factor": "return_gain_loss_ratio_12m",
+      "category": "momentum",
+      "median_spearman": 0.016658706686837856,
+      "abs_median_spearman": 0.016658706686837856,
+      "months": 63
+    },
+    {
+      "factor": "net_working_capital_to_assets",
+      "category": "quality",
+      "median_spearman": 0.016463685147824886,
+      "abs_median_spearman": 0.016463685147824886,
+      "months": 63
+    },
+    {
+      "factor": "adv_turnover_volatility_36m",
+      "category": "other",
+      "median_spearman": -0.016459774788733172,
+      "abs_median_spearman": 0.016459774788733172,
+      "months": 63
+    },
+    {
+      "factor": "adv_turnover_mean_18m",
+      "category": "other",
+      "median_spearman": 0.0164534217990406,
+      "abs_median_spearman": 0.0164534217990406,
+      "months": 63
+    },
+    {
+      "factor": "operating_roa_volatility_36m",
+      "category": "quality",
+      "median_spearman": 0.015785523649731098,
+      "abs_median_spearman": 0.015785523649731098,
+      "months": 52
+    },
+    {
+      "factor": "market_return_correlation_18m",
+      "category": "quality",
+      "median_spearman": 0.015640607517333868,
+      "abs_median_spearman": 0.015640607517333868,
+      "months": 63
+    },
+    {
+      "factor": "max_daily_return_mean_6m",
+      "category": "quality",
+      "median_spearman": 0.014879949925064612,
+      "abs_median_spearman": 0.014879949925064612,
+      "months": 63
+    },
+    {
+      "factor": "return_skewness_24m",
+      "category": "other",
+      "median_spearman": 0.014616201226473701,
+      "abs_median_spearman": 0.014616201226473701,
+      "months": 63
+    },
+    {
+      "factor": "adv20_change_12m",
+      "category": "other",
+      "median_spearman": -0.01437111778196001,
+      "abs_median_spearman": 0.01437111778196001,
+      "months": 63
+    },
+    {
+      "factor": "net_roa_volatility_36m",
+      "category": "quality",
+      "median_spearman": -0.01435596947283071,
+      "abs_median_spearman": 0.01435596947283071,
+      "months": 52
+    },
+    {
+      "factor": "price_reversal_3_1",
+      "category": "momentum",
+      "median_spearman": -0.013896187335664313,
+      "abs_median_spearman": 0.013896187335664313,
+      "months": 63
+    },
+    {
+      "factor": "positive_return_share_12m",
+      "category": "momentum",
+      "median_spearman": 0.013563679879171347,
+      "abs_median_spearman": 0.013563679879171347,
+      "months": 63
+    },
+    {
+      "factor": "market_beta_9m",
+      "category": "quality",
+      "median_spearman": -0.013409982256660524,
+      "abs_median_spearman": 0.013409982256660524,
+      "months": 63
+    },
+    {
+      "factor": "market_return_correlation_9m",
+      "category": "quality",
+      "median_spearman": 0.013294707317323514,
+      "abs_median_spearman": 0.013294707317323514,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_to_liabilities",
+      "category": "quality",
+      "median_spearman": -0.013020253630229794,
+      "abs_median_spearman": 0.013020253630229794,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_to_noncurrent_liabilities",
+      "category": "quality",
+      "median_spearman": 0.012684468406955316,
+      "abs_median_spearman": 0.012684468406955316,
+      "months": 63
+    },
+    {
+      "factor": "mom_12_1",
+      "category": "momentum",
+      "median_spearman": 0.012623276845160476,
+      "abs_median_spearman": 0.012623276845160476,
+      "months": 63
+    },
+    {
+      "factor": "pretax_margin_volatility_36m",
+      "category": "quality",
+      "median_spearman": -0.012547273326317474,
+      "abs_median_spearman": 0.012547273326317474,
+      "months": 52
+    },
+    {
+      "factor": "market_return_correlation_12m",
+      "category": "quality",
+      "median_spearman": 0.01252351239290606,
+      "abs_median_spearman": 0.01252351239290606,
+      "months": 63
+    },
+    {
+      "factor": "market_return_correlation_6m",
+      "category": "quality",
+      "median_spearman": 0.012193655385582739,
+      "abs_median_spearman": 0.012193655385582739,
+      "months": 63
+    },
+    {
+      "factor": "return_seasonality_12m",
+      "category": "momentum",
+      "median_spearman": -0.012101793112833714,
+      "abs_median_spearman": 0.012101793112833714,
+      "months": 63
+    },
+    {
+      "factor": "operating_margin_volatility_12m",
+      "category": "earnings",
+      "median_spearman": 0.01183218113171018,
+      "abs_median_spearman": 0.01183218113171018,
+      "months": 63
+    },
+    {
+      "factor": "price_recovery_12m",
+      "category": "momentum",
+      "median_spearman": 0.011688444059248905,
+      "abs_median_spearman": 0.011688444059248905,
+      "months": 63
+    },
+    {
+      "factor": "max_daily_return_change_12m",
+      "category": "other",
+      "median_spearman": -0.011175908498465505,
+      "abs_median_spearman": 0.011175908498465505,
+      "months": 63
+    },
+    {
+      "factor": "low_vol_12m",
+      "category": "other",
+      "median_spearman": 0.01104421461622179,
+      "abs_median_spearman": 0.01104421461622179,
+      "months": 63
+    },
+    {
+      "factor": "current_liabilities_growth_acceleration_12m",
+      "category": "other",
+      "median_spearman": 0.010935000683942828,
+      "abs_median_spearman": 0.010935000683942828,
+      "months": 63
+    },
+    {
+      "factor": "enterprise_sales_yield_change_6m",
+      "category": "value",
+      "median_spearman": 0.010701908371206976,
+      "abs_median_spearman": 0.010701908371206976,
+      "months": 63
+    },
+    {
+      "factor": "trading_value_turnover_change_6m",
+      "category": "other",
+      "median_spearman": -0.010517346638553589,
+      "abs_median_spearman": 0.010517346638553589,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_to_noncurrent_assets",
+      "category": "quality",
+      "median_spearman": -0.010514707801721295,
+      "abs_median_spearman": 0.010514707801721295,
+      "months": 63
+    },
+    {
+      "factor": "turnover_change_6m",
+      "category": "other",
+      "median_spearman": -0.01013352089268378,
+      "abs_median_spearman": 0.01013352089268378,
+      "months": 63
+    },
+    {
+      "factor": "current_ratio",
+      "category": "quality",
+      "median_spearman": -0.009601643282749674,
+      "abs_median_spearman": 0.009601643282749674,
+      "months": 63
+    },
+    {
+      "factor": "asset_turnover_acceleration_12m",
+      "category": "quality",
+      "median_spearman": 0.009494129589958577,
+      "abs_median_spearman": 0.009494129589958577,
+      "months": 51
+    },
+    {
+      "factor": "net_working_capital_to_liabilities",
+      "category": "quality",
+      "median_spearman": 0.009436245563721963,
+      "abs_median_spearman": 0.009436245563721963,
+      "months": 63
+    },
+    {
+      "factor": "net_to_operating_income_conversion",
+      "category": "earnings",
+      "median_spearman": 0.009361241619341468,
+      "abs_median_spearman": 0.009361241619341468,
+      "months": 63
+    },
+    {
+      "factor": "positive_return_share_18m",
+      "category": "momentum",
+      "median_spearman": -0.00932968071718791,
+      "abs_median_spearman": 0.00932968071718791,
+      "months": 63
+    },
+    {
+      "factor": "momentum_acceleration_6m",
+      "category": "momentum",
+      "median_spearman": -0.009318613481433678,
+      "abs_median_spearman": 0.009318613481433678,
+      "months": 63
+    },
+    {
+      "factor": "market_beta_24m",
+      "category": "quality",
+      "median_spearman": 0.00930434193804288,
+      "abs_median_spearman": 0.00930434193804288,
+      "months": 63
+    },
+    {
+      "factor": "nonoperating_burden_margin",
+      "category": "quality",
+      "median_spearman": -0.008300820858468465,
+      "abs_median_spearman": 0.008300820858468465,
+      "months": 63
+    },
+    {
+      "factor": "return_persistence_12m",
+      "category": "momentum",
+      "median_spearman": -0.008290468437221633,
+      "abs_median_spearman": 0.008290468437221633,
+      "months": 63
+    },
+    {
+      "factor": "trading_value_turnover_volatility_6m",
+      "category": "other",
+      "median_spearman": 0.00814975188561509,
+      "abs_median_spearman": 0.00814975188561509,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_to_assets_change_6m",
+      "category": "earnings",
+      "median_spearman": 0.00802115188547785,
+      "abs_median_spearman": 0.00802115188547785,
+      "months": 63
+    },
+    {
+      "factor": "pretax_to_operating_income_conversion",
+      "category": "earnings",
+      "median_spearman": 0.0077854421510076335,
+      "abs_median_spearman": 0.0077854421510076335,
+      "months": 63
+    },
+    {
+      "factor": "operating_income_growth_acceleration_12m",
+      "category": "earnings",
+      "median_spearman": 0.007175906735573798,
+      "abs_median_spearman": 0.007175906735573798,
+      "months": 51
+    },
+    {
+      "factor": "pretax_roa_volatility_36m",
+      "category": "quality",
+      "median_spearman": -0.006910209940022772,
+      "abs_median_spearman": 0.006910209940022772,
+      "months": 52
+    },
+    {
+      "factor": "max_daily_return_change_6m",
+      "category": "quality",
+      "median_spearman": -0.0067882966213404245,
+      "abs_median_spearman": 0.0067882966213404245,
+      "months": 63
+    },
+    {
+      "factor": "realized_volatility_252d",
+      "category": "other",
+      "median_spearman": 0.006744565334570094,
+      "abs_median_spearman": 0.006744565334570094,
+      "months": 63
+    },
+    {
+      "factor": "max_monthly_return_12m",
+      "category": "other",
+      "median_spearman": 0.0064533515442601495,
+      "abs_median_spearman": 0.0064533515442601495,
+      "months": 63
+    },
+    {
+      "factor": "trading_value_turnover_change_3m",
+      "category": "other",
+      "median_spearman": 0.006116746329117657,
+      "abs_median_spearman": 0.006116746329117657,
+      "months": 63
+    },
+    {
+      "factor": "market_beta_6m",
+      "category": "quality",
+      "median_spearman": -0.005534092683809694,
+      "abs_median_spearman": 0.005534092683809694,
+      "months": 63
+    },
+    {
+      "factor": "retained_earnings_to_assets_change_12m",
+      "category": "quality",
+      "median_spearman": 0.0051371792990997115,
+      "abs_median_spearman": 0.0051371792990997115,
+      "months": 63
+    },
+    {
+      "factor": "market_return_correlation_24m",
+      "category": "quality",
+      "median_spearman": 0.004518230434332411,
+      "abs_median_spearman": 0.004518230434332411,
+      "months": 63
+    },
+    {
+      "factor": "price_momentum_12_3",
+      "category": "momentum",
+      "median_spearman": 0.004343643959069258,
+      "abs_median_spearman": 0.004343643959069258,
+      "months": 63
+    },
+    {
+      "factor": "amihud_change_12m",
+      "category": "other",
+      "median_spearman": 0.004096327431958158,
+      "abs_median_spearman": 0.004096327431958158,
+      "months": 63
+    },
+    {
+      "factor": "trading_value_turnover_volatility_24m",
+      "category": "other",
+      "median_spearman": -0.004079481654101064,
+      "abs_median_spearman": 0.004079481654101064,
+      "months": 63
+    },
+    {
+      "factor": "qual_lev",
+      "category": "quality",
+      "median_spearman": -0.003737585256690873,
+      "abs_median_spearman": 0.003737585256690873,
+      "months": 63
+    },
+    {
+      "factor": "price_momentum_15_3",
+      "category": "momentum",
+      "median_spearman": 0.003205844888073047,
+      "abs_median_spearman": 0.003205844888073047,
+      "months": 63
+    },
+    {
+      "factor": "liability_growth_acceleration_12m",
+      "category": "other",
+      "median_spearman": 0.0029829537219317652,
+      "abs_median_spearman": 0.0029829537219317652,
+      "months": 63
+    },
+    {
+      "factor": "trading_value_volatility_12m",
+      "category": "other",
+      "median_spearman": -0.002838329370592311,
+      "abs_median_spearman": 0.002838329370592311,
+      "months": 63
+    },
+    {
+      "factor": "intermediate_momentum_12_7",
+      "category": "momentum",
+      "median_spearman": 0.0025978936326434875,
+      "abs_median_spearman": 0.0025978936326434875,
+      "months": 63
+    },
+    {
+      "factor": "quality_stability",
+      "category": "quality",
+      "median_spearman": -0.0022028488302234367,
+      "abs_median_spearman": 0.0022028488302234367,
+      "months": 63
+    },
+    {
+      "factor": "market_beta_36m",
+      "category": "other",
+      "median_spearman": -0.0016459060789434982,
+      "abs_median_spearman": 0.0016459060789434982,
+      "months": 63
+    },
+    {
+      "factor": "noncurrent_liabilities_yield",
+      "category": "value",
+      "median_spearman": 0.0014193431827065463,
+      "abs_median_spearman": 0.0014193431827065463,
+      "months": 63
+    },
+    {
+      "factor": "net_margin_volatility_12m",
+      "category": "earnings",
+      "median_spearman": -0.0012717392595206548,
+      "abs_median_spearman": 0.0012717392595206548,
+      "months": 63
+    },
+    {
+      "factor": "sales_growth_acceleration_12m",
+      "category": "earnings",
+      "median_spearman": 0.00104367599088744,
+      "abs_median_spearman": 0.00104367599088744,
+      "months": 51
+    },
+    {
+      "factor": "market_beta_12m",
+      "category": "quality",
+      "median_spearman": -0.0009405080985108496,
+      "abs_median_spearman": 0.0009405080985108496,
+      "months": 63
+    },
+    {
+      "factor": "market_beta_18m",
+      "category": "quality",
+      "median_spearman": 0.0004862473174170557,
+      "abs_median_spearman": 0.0004862473174170557,
+      "months": 63
+    }
+  ]
+}

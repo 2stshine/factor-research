@@ -29,7 +29,7 @@
 가장 가까운 기존 팩터: <4절 목록에서 하나> — 차이: <한 줄>
 ```
 
-붙일 대상이 떠오르지 않으면 4절을 다시 읽는다. 목록이 198건이라 "없다"는 답은 거의 틀린다.
+붙일 대상이 떠오르지 않으면 4절을 다시 읽는다. 목록이 228건이라 "없다"는 답은 거의 틀린다.
 같은 변수를 부호나 표현만 뒤집은 것(예: 고점 대비 근접도 ↔ 고점 대비 낙폭,
 변동성 ↔ 안정성)은 **새 후보가 아니라 같은 후보**다.
 
@@ -48,7 +48,7 @@
 - Short-Term Reversal: 1건 등록
 - Size: 1건 등록
 - Value: 10건 등록
-- (미매칭): 150건
+- (미매칭): 180건
 
 ### 구조적 교훈
 
@@ -335,9 +335,51 @@
 - `net_to_operating_income_conversion` (net_to_operating_income_conversion) — 시행함
 - 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
 
+**campaign-20260816-005 / epoch-0001**
+
+- `adv_turnover_mean_18m` (adv_turnover_mean_18m) — 시행함
+- `price_momentum_6_1` (price_momentum_6_1) — 시행함
+- `market_beta_24m` (market_beta_24m) — 시행함
+- `max_daily_return_mean_6m` (max_daily_return_mean_6m) — 시행함
+- `operating_yield_change_12m` (operating_yield_change_12m) — 시행함
+- `market_leverage_change_6m` (market_leverage_change_6m) — 시행함
+- `noncurrent_asset_growth_6m` (noncurrent_asset_growth_6m) — 시행함
+- `price_trend_efficiency_24m` (price_trend_efficiency_24m) — 시행함
+- `net_margin_volatility_12m` (net_margin_volatility_12m) — 시행함
+- `working_capital_accruals_6m` (working_capital_accruals_6m) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
+
+**campaign-20260816-006 / epoch-0001**
+
+- `adv_turnover_mean_24m` (adv_turnover_mean_24m) — 시행함
+- `price_reversal_3_1` (price_reversal_3_1) — 시행함
+- `market_return_correlation_6m` (market_return_correlation_6m) — 시행함
+- `max_daily_return_change_18m` (max_daily_return_change_18m) — 시행함
+- `pretax_yield_change_12m` (pretax_yield_change_12m) — 시행함
+- `market_leverage_change_18m` (market_leverage_change_18m) — 시행함
+- `noncurrent_asset_growth_18m` (noncurrent_asset_growth_18m) — 시행함
+- `net_equity_issuance_price_adjusted_36m` (net_equity_issuance_price_adjusted_36m) — 시행함
+- `pretax_to_operating_income_conversion` (pretax_to_operating_income_conversion) — 시행함
+- `working_capital_accruals_24m` (working_capital_accruals_24m) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
+
+**campaign-20260816-007 / epoch-0001**
+
+- `adv_turnover_mean_36m` (adv_turnover_mean_36m) — 시행함
+- `price_reversal_6_3` (price_reversal_6_3) — 시행함
+- `market_return_correlation_9m` (market_return_correlation_9m) — 시행함
+- `max_daily_return_instability_18m` (max_daily_return_instability_18m) — 시행함
+- `enterprise_earnings_yield_change_12m` (enterprise_earnings_yield_change_12m) — 시행함
+- `market_leverage_change_24m` (market_leverage_change_24m) — 시행함
+- `noncurrent_asset_growth_24m` (noncurrent_asset_growth_24m) — 시행함
+- `retained_earnings_to_assets_volatility_12m` (retained_earnings_to_assets_volatility_12m) — 시행함
+- `trading_value_turnover_change_3m` (trading_value_turnover_change_3m) — 시행함
+- `market_relative_momentum_6_1` (market_relative_momentum_6_1) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
+
 ## 4. 시행 전량
 
-시행 198건 · 생략 없음
+시행 228건 · 생략 없음
 
 | cycle | factor | family | ruleset | 테마 | 데이터 |
 |---|---|---|---|---|---|
@@ -539,3 +581,33 @@
 | `cycle-0196-equity_growth_24m` | `equity_growth_24m` | `equity_growth_24m` | `fr-3.16.0` | - | - |
 | `cycle-0197-enterprise_sales_yield_change_6m` | `enterprise_sales_yield_change_6m` | `enterprise_sales_yield_change_6m` | `fr-3.16.0` | - | - |
 | `cycle-0198-net_to_operating_income_conversion` | `net_to_operating_income_conversion` | `net_to_operating_income_conversion` | `fr-3.16.0` | - | - |
+| `cycle-0199-adv_turnover_mean_18m` | `adv_turnover_mean_18m` | `adv_turnover_mean_18m` | `fr-3.16.0` | - | - |
+| `cycle-0200-price_momentum_6_1` | `price_momentum_6_1` | `price_momentum_6_1` | `fr-3.16.0` | - | - |
+| `cycle-0201-market_beta_24m` | `market_beta_24m` | `market_beta_24m` | `fr-3.16.0` | - | - |
+| `cycle-0202-max_daily_return_mean_6m` | `max_daily_return_mean_6m` | `max_daily_return_mean_6m` | `fr-3.16.0` | - | - |
+| `cycle-0203-operating_yield_change_12m` | `operating_yield_change_12m` | `operating_yield_change_12m` | `fr-3.16.0` | - | - |
+| `cycle-0204-market_leverage_change_6m` | `market_leverage_change_6m` | `market_leverage_change_6m` | `fr-3.16.0` | - | - |
+| `cycle-0205-noncurrent_asset_growth_6m` | `noncurrent_asset_growth_6m` | `noncurrent_asset_growth_6m` | `fr-3.16.0` | - | - |
+| `cycle-0206-price_trend_efficiency_24m` | `price_trend_efficiency_24m` | `price_trend_efficiency_24m` | `fr-3.16.0` | - | - |
+| `cycle-0207-net_margin_volatility_12m` | `net_margin_volatility_12m` | `net_margin_volatility_12m` | `fr-3.16.0` | - | - |
+| `cycle-0208-working_capital_accruals_6m` | `working_capital_accruals_6m` | `working_capital_accruals_6m` | `fr-3.16.0` | - | - |
+| `cycle-0209-adv_turnover_mean_24m` | `adv_turnover_mean_24m` | `adv_turnover_mean_24m` | `fr-3.16.0` | - | - |
+| `cycle-0210-price_reversal_3_1` | `price_reversal_3_1` | `price_reversal_3_1` | `fr-3.16.0` | - | - |
+| `cycle-0211-market_return_correlation_6m` | `market_return_correlation_6m` | `market_return_correlation_6m` | `fr-3.16.0` | - | - |
+| `cycle-0212-max_daily_return_change_18m` | `max_daily_return_change_18m` | `max_daily_return_change_18m` | `fr-3.16.0` | - | - |
+| `cycle-0213-pretax_yield_change_12m` | `pretax_yield_change_12m` | `pretax_yield_change_12m` | `fr-3.16.0` | - | - |
+| `cycle-0214-market_leverage_change_18m` | `market_leverage_change_18m` | `market_leverage_change_18m` | `fr-3.16.0` | - | - |
+| `cycle-0215-noncurrent_asset_growth_18m` | `noncurrent_asset_growth_18m` | `noncurrent_asset_growth_18m` | `fr-3.16.0` | - | - |
+| `cycle-0216-net_equity_issuance_price_adjusted_36m` | `net_equity_issuance_price_adjusted_36m` | `net_equity_issuance_price_adjusted_36m` | `fr-3.16.0` | - | - |
+| `cycle-0217-pretax_to_operating_income_conversion` | `pretax_to_operating_income_conversion` | `pretax_to_operating_income_conversion` | `fr-3.16.0` | - | - |
+| `cycle-0218-working_capital_accruals_24m` | `working_capital_accruals_24m` | `working_capital_accruals_24m` | `fr-3.16.0` | - | - |
+| `cycle-0219-adv_turnover_mean_36m` | `adv_turnover_mean_36m` | `adv_turnover_mean_36m` | `fr-3.16.0` | - | - |
+| `cycle-0220-price_reversal_6_3` | `price_reversal_6_3` | `price_reversal_6_3` | `fr-3.16.0` | - | - |
+| `cycle-0221-market_return_correlation_9m` | `market_return_correlation_9m` | `market_return_correlation_9m` | `fr-3.16.0` | - | - |
+| `cycle-0222-max_daily_return_instability_18m` | `max_daily_return_instability_18m` | `max_daily_return_instability_18m` | `fr-3.16.0` | - | - |
+| `cycle-0223-enterprise_earnings_yield_change_12m` | `enterprise_earnings_yield_change_12m` | `enterprise_earnings_yield_change_12m` | `fr-3.16.0` | - | - |
+| `cycle-0224-market_leverage_change_24m` | `market_leverage_change_24m` | `market_leverage_change_24m` | `fr-3.16.0` | - | - |
+| `cycle-0225-noncurrent_asset_growth_24m` | `noncurrent_asset_growth_24m` | `noncurrent_asset_growth_24m` | `fr-3.16.0` | - | - |
+| `cycle-0226-retained_earnings_to_assets_volatility_12m` | `retained_earnings_to_assets_volatility_12m` | `retained_earnings_to_assets_volatility_12m` | `fr-3.16.0` | - | - |
+| `cycle-0227-trading_value_turnover_change_3m` | `trading_value_turnover_change_3m` | `trading_value_turnover_change_3m` | `fr-3.16.0` | - | - |
+| `cycle-0228-market_relative_momentum_6_1` | `market_relative_momentum_6_1` | `market_relative_momentum_6_1` | `fr-3.16.0` | - | - |

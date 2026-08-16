@@ -5,20 +5,20 @@
 ## Frozen research state
 
 - Silver source: `RDS public Silver`
-- Raw Silver period inside context boundary: `1995-05` ~ `2026-08`
-- Visible Silver data period: `2015-01` ~ `2026-08`
+- Raw Silver period inside context boundary: `1995-05` ~ `2023-05`
+- Visible Silver data period: `2015-01` ~ `2023-05`
 - Research input floor: `2015-01`
 - Maximum factor lookback: `36` months
-- Discovery signal evaluation period: `2018-03` ~ `2026-08`
-- Discovery return-support cutoff: `-`
-- Rows/months/assets: `317,530` / `140` / `3,146`
+- Discovery signal evaluation period: `2018-03` ~ `2023-04`
+- Discovery return-support cutoff: `2023-05-31`
+- Rows/months/assets: `215,794` / `101` / `2,758`
 - Historical feature return: `adj_close` / `krx_split_adjusted_price_return_v1`
 - Forward-label return: `total_return_close` / `krx_gross_dividend_reinvested_v3` / `forward_return_labels_only` / revision=`latest_revision_ex_post_realized` / candidate_access=`False`
 - Gate ruleset: `fr-3.16.0`
 - Research protocol: `epoch-1.9`
-- Recorded autonomous cycles: `198`
-- Active sealed campaign: `-`
-- Strategy context cutoff: `-`
+- Recorded autonomous cycles: `228`
+- Active sealed campaign: `campaign-20260816-007`; OOS rows and post-cutoff outcomes are hidden from strategy context
+- Strategy context cutoff: `2023-05-31`
 
 ## Sealed-OOS campaigns
 
@@ -51,6 +51,9 @@
 | `campaign-20260816-002` | REVEALED | `2023-05-31` | REVEALED | `2023-06` | 1 | 1 | `research/campaigns/campaign-20260816-002/epochs/epoch-001/reflection.md` |
 | `campaign-20260816-003` | REVEALED | `2023-05-31` | REVEALED | `2023-06` | 1 | 2 | `research/campaigns/campaign-20260816-003/epochs/epoch-001/reflection.md` |
 | `campaign-20260816-004` | REVEALED | `2023-05-31` | REVEALED | `2023-06` | 1 | 2 | `research/campaigns/campaign-20260816-004/epochs/epoch-0001/reflection.md` |
+| `campaign-20260816-005` | REVEALED | `2023-05-31` | REVEALED | `2023-06` | 1 | 2 | `research/campaigns/campaign-20260816-005/epochs/epoch-0001/reflection.md` |
+| `campaign-20260816-006` | REVEALED | `2023-05-31` | REVEALED | `2023-06` | 1 | 1 | `research/campaigns/campaign-20260816-006/epochs/epoch-0001/reflection.md` |
+| `campaign-20260816-007` | READY_FOR_CONFIRMATION | `2023-05-31` | SEALED | `2023-06` | 1 | 2 | `research/campaigns/campaign-20260816-007/epochs/epoch-0001/reflection.md` |
 
 ## Available strategy inputs
 
@@ -58,38 +61,38 @@
 |---|---:|---:|
 | `adj_close` | 100.0% | 100.0% |
 | `adv20` | 100.0% | 100.0% |
-| `amihud_illiquidity_1m` | 97.3% | 95.8% |
+| `amihud_illiquidity_1m` | 97.7% | 96.8% |
 | `amihud_observations_1m` | 100.0% | 100.0% |
-| `capital_stock` | 80.5% | 99.4% |
-| `comprehensive_income` | 27.4% | 98.8% |
-| `comprehensive_income_ttm` | 17.1% | 93.6% |
-| `current_assets` | 86.1% | 97.2% |
-| `current_liabilities` | 86.1% | 97.1% |
+| `capital_stock` | 72.2% | 93.8% |
+| `comprehensive_income` | 0.0% | 0.1% |
+| `comprehensive_income_ttm` | 0.0% | 0.0% |
+| `current_assets` | 81.5% | 94.1% |
+| `current_liabilities` | 81.5% | 94.1% |
 | `daily_return_observations_252d` | 100.0% | 100.0% |
-| `daily_volatility_252d` | 99.9% | 100.0% |
+| `daily_volatility_252d` | 99.9% | 99.9% |
 | `market` | 100.0% | 100.0% |
 | `market_cap` | 100.0% | 100.0% |
 | `max_daily_return_1m` | 100.0% | 100.0% |
 | `max_daily_return_observations_1m` | 100.0% | 100.0% |
-| `net_income` | 85.6% | 99.3% |
-| `net_income_ttm` | 74.3% | 94.5% |
-| `net_income_yoy_change` | 71.6% | 94.6% |
-| `noncurrent_assets` | 85.9% | 96.8% |
-| `noncurrent_liabilities` | 86.0% | 97.1% |
-| `operating_income` | 85.6% | 99.3% |
-| `operating_income_ttm` | 74.4% | 94.6% |
-| `pretax_income` | 85.6% | 99.3% |
-| `pretax_income_ttm` | 74.4% | 94.6% |
+| `net_income` | 79.8% | 94.0% |
+| `net_income_ttm` | 66.5% | 89.0% |
+| `net_income_yoy_change` | 63.3% | 88.8% |
+| `noncurrent_assets` | 81.4% | 94.1% |
+| `noncurrent_liabilities` | 81.3% | 94.0% |
+| `operating_income` | 79.8% | 94.0% |
+| `operating_income_ttm` | 66.5% | 89.0% |
+| `pretax_income` | 79.9% | 94.0% |
+| `pretax_income_ttm` | 66.4% | 88.9% |
 | `price_high_252d` | 100.0% | 100.0% |
 | `price_high_observations_252d` | 100.0% | 100.0% |
-| `retained_earnings` | 86.4% | 99.5% |
-| `revenue` | 84.6% | 97.2% |
-| `revenue_ttm` | 72.9% | 91.6% |
+| `retained_earnings` | 80.8% | 94.0% |
+| `revenue` | 79.5% | 93.2% |
+| `revenue_ttm` | 65.6% | 87.6% |
 | `shares` | 100.0% | 100.0% |
-| `sue_score` | 62.3% | 89.6% |
-| `total_assets` | 86.9% | 99.5% |
-| `total_equity` | 86.9% | 99.5% |
-| `total_liabilities` | 86.9% | 99.5% |
+| `sue_score` | 51.8% | 84.8% |
+| `total_assets` | 81.6% | 94.1% |
+| `total_equity` | 81.6% | 94.1% |
+| `total_liabilities` | 81.6% | 94.1% |
 | `trading_value` | 100.0% | 100.0% |
 
 ## Registered factors
@@ -375,35 +378,35 @@
 
 | cycle | factor | family | ruleset | verdict | failed checks | strongest relation | report |
 |---|---|---|---|---|---|---|---|
-| `cycle-0169-price_momentum_15_3` | `price_momentum_15_3` | `price_momentum_15_3` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | market_relative_momentum_18_3 (0.84) | `research/runs/cycle-0169-price_momentum_15_3/report.md` |
-| `cycle-0170-price_recovery_24m` | `price_recovery_24m` | `price_recovery_24m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | price_recovery_12m (0.85) | `research/runs/cycle-0170-price_recovery_24m/report.md` |
-| `cycle-0171-amihud_mean_18m` | `amihud_mean_18m` | `amihud_mean_18m` | `fr-3.16.0` | REJECT | 시장구분·유동성·비의도 규모 노출 제거 후 IC·유지율 | amihud_mean_24m (0.98) | `research/runs/cycle-0171-amihud_mean_18m/report.md` |
-| `cycle-0172-amihud_volatility_18m` | `amihud_volatility_18m` | `amihud_volatility_18m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | amihud_volatility_24m (0.98) | `research/runs/cycle-0172-amihud_volatility_18m/report.md` |
-| `cycle-0173-max_daily_return_change_6m` | `max_daily_return_change_6m` | `max_daily_return_change_6m` | `fr-3.16.0` | REJECT | 시장구분·유동성·비의도 규모 노출 제거 후 IC·유지율 | turnover_change_6m (0.63) | `research/runs/cycle-0173-max_daily_return_change_6m/report.md` |
-| `cycle-0174-market_beta_9m` | `market_beta_9m` | `market_beta_9m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | market_beta_12m (0.90) | `research/runs/cycle-0174-market_beta_9m/report.md` |
-| `cycle-0175-total_asset_growth_18m` | `total_asset_growth_18m` | `total_asset_growth_18m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 다중검정 FDR | total_asset_growth_24m (0.86) | `research/runs/cycle-0175-total_asset_growth_18m/report.md` |
-| `cycle-0176-capital_stock_growth_18m` | `capital_stock_growth_18m` | `capital_stock_growth_18m` | `fr-3.16.0` | PROVISIONAL | - | capital_stock_growth_24m (0.90) | `research/runs/cycle-0176-capital_stock_growth_18m/report.md` |
-| `cycle-0177-earnings_yield_change_12m` | `earnings_yield_change_12m` | `earnings_yield_change_12m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건 | enterprise_earnings_yield_change_12m (0.95) | `research/runs/cycle-0177-earnings_yield_change_12m/report.md` |
-| `cycle-0178-net_margin_change_6m` | `net_margin_change_6m` | `net_margin_change_6m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건 | pretax_yield_change_6m (0.68) | `research/runs/cycle-0178-net_margin_change_6m/report.md` |
-| `cycle-0179-price_momentum_18_6` | `price_momentum_18_6` | `price_momentum_18_6` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | market_relative_momentum_18_3 (0.86) | `research/runs/cycle-0179-price_momentum_18_6/report.md` |
-| `cycle-0180-positive_return_share_24m` | `positive_return_share_24m` | `positive_return_share_24m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | positive_return_share_18m (0.85) | `research/runs/cycle-0180-positive_return_share_24m/report.md` |
-| `cycle-0181-amihud_mean_24m` | `amihud_mean_24m` | `amihud_mean_24m` | `fr-3.16.0` | REJECT | 시장구분·유동성·비의도 규모 노출 제거 후 IC·유지율 | amihud_mean_18m (0.98) | `research/runs/cycle-0181-amihud_mean_24m/report.md` |
-| `cycle-0182-amihud_volatility_24m` | `amihud_volatility_24m` | `amihud_volatility_24m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | amihud_mean_24m (-0.98) | `research/runs/cycle-0182-amihud_volatility_24m/report.md` |
-| `cycle-0183-realized_daily_volatility_change_24m` | `realized_daily_volatility_change_24m` | `realized_daily_volatility_change_24m` | `fr-3.16.0` | PROVISIONAL | - | daily_volatility_change_12m (0.51) | `research/runs/cycle-0183-realized_daily_volatility_change_24m/report.md` |
-| `cycle-0184-market_beta_12m` | `market_beta_12m` | `market_beta_12m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | market_beta_18m (0.90) | `research/runs/cycle-0184-market_beta_12m/report.md` |
-| `cycle-0185-total_asset_growth_24m` | `total_asset_growth_24m` | `total_asset_growth_24m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 다중검정 FDR | total_asset_growth_30m (0.90) | `research/runs/cycle-0185-total_asset_growth_24m/report.md` |
-| `cycle-0186-equity_growth_6m` | `equity_growth_6m` | `equity_growth_6m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | equity_growth_12m (0.71) | `research/runs/cycle-0186-equity_growth_6m/report.md` |
-| `cycle-0187-pretax_yield_change_6m` | `pretax_yield_change_6m` | `pretax_yield_change_6m` | `fr-3.16.0` | PROVISIONAL | - | pretax_yield_change_12m (0.69) | `research/runs/cycle-0187-pretax_yield_change_6m/report.md` |
-| `cycle-0188-retained_earnings_to_assets_change_6m` | `retained_earnings_to_assets_change_6m` | `retained_earnings_to_assets_change_6m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건 | retained_earnings_to_assets_change_12m (0.67) | `research/runs/cycle-0188-retained_earnings_to_assets_change_6m/report.md` |
-| `cycle-0189-price_momentum_24_6` | `price_momentum_24_6` | `price_momentum_24_6` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | market_relative_momentum_24_6 (1.00) | `research/runs/cycle-0189-price_momentum_24_6/report.md` |
-| `cycle-0190-return_seasonality_12m` | `return_seasonality_12m` | `return_seasonality_12m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 다중검정 FDR | max_daily_return_change_12m (0.33) | `research/runs/cycle-0190-return_seasonality_12m/report.md` |
-| `cycle-0191-amihud_mean_36m` | `amihud_mean_36m` | `amihud_mean_36m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건 | amihud_volatility_36m (-0.98) | `research/runs/cycle-0191-amihud_mean_36m/report.md` |
-| `cycle-0192-amihud_volatility_36m` | `amihud_volatility_36m` | `amihud_volatility_36m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | amihud_mean_36m (-0.98) | `research/runs/cycle-0192-amihud_volatility_36m/report.md` |
-| `cycle-0193-realized_daily_volatility_instability_6m` | `realized_daily_volatility_instability_6m` | `realized_daily_volatility_instability_6m` | `fr-3.16.0` | PROVISIONAL | - | max_daily_return_instability_18m (0.62) | `research/runs/cycle-0193-realized_daily_volatility_instability_6m/report.md` |
-| `cycle-0194-market_beta_18m` | `market_beta_18m` | `market_beta_18m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | market_beta_24m (0.90) | `research/runs/cycle-0194-market_beta_18m/report.md` |
-| `cycle-0195-total_asset_growth_30m` | `total_asset_growth_30m` | `total_asset_growth_30m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 다중검정 FDR | total_asset_growth_24m (0.90) | `research/runs/cycle-0195-total_asset_growth_30m/report.md` |
-| `cycle-0196-equity_growth_24m` | `equity_growth_24m` | `equity_growth_24m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 투자가능 Rank ICIR 최소요건, 다중검정 FDR | operating_asset_growth_24m (0.82) | `research/runs/cycle-0196-equity_growth_24m/report.md` |
-| `cycle-0197-enterprise_sales_yield_change_6m` | `enterprise_sales_yield_change_6m` | `enterprise_sales_yield_change_6m` | `fr-3.16.0` | PROVISIONAL | - | enterprise_sales_yield_change_12m (0.64) | `research/runs/cycle-0197-enterprise_sales_yield_change_6m/report.md` |
-| `cycle-0198-net_to_operating_income_conversion` | `net_to_operating_income_conversion` | `net_to_operating_income_conversion` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | pretax_to_operating_income_conversion (0.88) | `research/runs/cycle-0198-net_to_operating_income_conversion/report.md` |
+| `cycle-0199-adv_turnover_mean_18m` | `adv_turnover_mean_18m` | `adv_turnover_mean_18m` | `fr-3.16.0` | REJECT | 시장구분·유동성·비의도 규모 노출 제거 후 IC·유지율 | adv_turnover_mean_24m (0.97) | `research/runs/cycle-0199-adv_turnover_mean_18m/report.md` |
+| `cycle-0200-price_momentum_6_1` | `price_momentum_6_1` | `price_momentum_6_1` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | medium_term_momentum_6_2 (1.00) | `research/runs/cycle-0200-price_momentum_6_1/report.md` |
+| `cycle-0201-market_beta_24m` | `market_beta_24m` | `market_beta_24m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | market_beta_18m (0.90) | `research/runs/cycle-0201-market_beta_24m/report.md` |
+| `cycle-0202-max_daily_return_mean_6m` | `max_daily_return_mean_6m` | `max_daily_return_mean_6m` | `fr-3.16.0` | PROVISIONAL | - | max_daily_return_instability_6m (0.85) | `research/runs/cycle-0202-max_daily_return_mean_6m/report.md` |
+| `cycle-0203-operating_yield_change_12m` | `operating_yield_change_12m` | `operating_yield_change_12m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건 | operating_income_growth_12m (0.79) | `research/runs/cycle-0203-operating_yield_change_12m/report.md` |
+| `cycle-0204-market_leverage_change_6m` | `market_leverage_change_6m` | `market_leverage_change_6m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | book_to_market_change_6m (-0.59) | `research/runs/cycle-0204-market_leverage_change_6m/report.md` |
+| `cycle-0205-noncurrent_asset_growth_6m` | `noncurrent_asset_growth_6m` | `noncurrent_asset_growth_6m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 투자가능 Rank ICIR 최소요건, 다중검정 FDR | noncurrent_assets_growth_12m (0.72) | `research/runs/cycle-0205-noncurrent_asset_growth_6m/report.md` |
+| `cycle-0206-price_trend_efficiency_24m` | `price_trend_efficiency_24m` | `price_trend_efficiency_24m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | price_momentum_24_6 (0.79) | `research/runs/cycle-0206-price_trend_efficiency_24m/report.md` |
+| `cycle-0207-net_margin_volatility_12m` | `net_margin_volatility_12m` | `net_margin_volatility_12m` | `fr-3.16.0` | PROVISIONAL | - | net_margin_volatility_36m (0.82) | `research/runs/cycle-0207-net_margin_volatility_12m/report.md` |
+| `cycle-0208-working_capital_accruals_6m` | `working_capital_accruals_6m` | `working_capital_accruals_6m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | working_capital_accruals_12m (0.65) | `research/runs/cycle-0208-working_capital_accruals_6m/report.md` |
+| `cycle-0209-adv_turnover_mean_24m` | `adv_turnover_mean_24m` | `adv_turnover_mean_24m` | `fr-3.16.0` | REJECT | 시장구분·유동성·비의도 규모 노출 제거 후 IC·유지율 | adv_turnover_mean_18m (0.97) | `research/runs/cycle-0209-adv_turnover_mean_24m/report.md` |
+| `cycle-0210-price_reversal_3_1` | `price_reversal_3_1` | `price_reversal_3_1` | `fr-3.16.0` | REJECT | 전체 IC 최소요건 | short_term_reversal_3m (0.79) | `research/runs/cycle-0210-price_reversal_3_1/report.md` |
+| `cycle-0211-market_return_correlation_6m` | `market_return_correlation_6m` | `market_return_correlation_6m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | market_return_correlation_9m (0.82) | `research/runs/cycle-0211-market_return_correlation_6m/report.md` |
+| `cycle-0212-max_daily_return_change_18m` | `max_daily_return_change_18m` | `max_daily_return_change_18m` | `fr-3.16.0` | REJECT | 시장구분·유동성·비의도 규모 노출 제거 후 IC·유지율 | max_daily_return_1m (0.61) | `research/runs/cycle-0212-max_daily_return_change_18m/report.md` |
+| `cycle-0213-pretax_yield_change_12m` | `pretax_yield_change_12m` | `pretax_yield_change_12m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건 | earnings_yield_change_12m (0.93) | `research/runs/cycle-0213-pretax_yield_change_12m/report.md` |
+| `cycle-0214-market_leverage_change_18m` | `market_leverage_change_18m` | `market_leverage_change_18m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | market_leverage_change_24m (0.79) | `research/runs/cycle-0214-market_leverage_change_18m/report.md` |
+| `cycle-0215-noncurrent_asset_growth_18m` | `noncurrent_asset_growth_18m` | `noncurrent_asset_growth_18m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 다중검정 FDR | noncurrent_asset_growth_24m (0.87) | `research/runs/cycle-0215-noncurrent_asset_growth_18m/report.md` |
+| `cycle-0216-net_equity_issuance_price_adjusted_36m` | `net_equity_issuance_price_adjusted_36m` | `net_equity_issuance_price_adjusted_36m` | `fr-3.16.0` | PROVISIONAL | - | net_equity_issuance_price_adjusted_24m (0.85) | `research/runs/cycle-0216-net_equity_issuance_price_adjusted_36m/report.md` |
+| `cycle-0217-pretax_to_operating_income_conversion` | `pretax_to_operating_income_conversion` | `pretax_to_operating_income_conversion` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | net_to_operating_income_conversion (0.88) | `research/runs/cycle-0217-pretax_to_operating_income_conversion/report.md` |
+| `cycle-0218-working_capital_accruals_24m` | `working_capital_accruals_24m` | `working_capital_accruals_24m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | working_capital_accruals_12m (0.66) | `research/runs/cycle-0218-working_capital_accruals_24m/report.md` |
+| `cycle-0219-adv_turnover_mean_36m` | `adv_turnover_mean_36m` | `adv_turnover_mean_36m` | `fr-3.16.0` | REJECT | 시장구분·유동성·비의도 규모 노출 제거 후 IC·유지율 | adv_turnover_mean_24m (0.96) | `research/runs/cycle-0219-adv_turnover_mean_36m/report.md` |
+| `cycle-0220-price_reversal_6_3` | `price_reversal_6_3` | `price_reversal_6_3` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 다중검정 FDR | medium_term_momentum_6_2 (-0.73) | `research/runs/cycle-0220-price_reversal_6_3/report.md` |
+| `cycle-0221-market_return_correlation_9m` | `market_return_correlation_9m` | `market_return_correlation_9m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | market_return_correlation_12m (0.89) | `research/runs/cycle-0221-market_return_correlation_9m/report.md` |
+| `cycle-0222-max_daily_return_instability_18m` | `max_daily_return_instability_18m` | `max_daily_return_instability_18m` | `fr-3.16.0` | PROVISIONAL | - | realized_volatility_252d (0.82) | `research/runs/cycle-0222-max_daily_return_instability_18m/report.md` |
+| `cycle-0223-enterprise_earnings_yield_change_12m` | `enterprise_earnings_yield_change_12m` | `enterprise_earnings_yield_change_12m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건 | earnings_yield_change_12m (0.95) | `research/runs/cycle-0223-enterprise_earnings_yield_change_12m/report.md` |
+| `cycle-0224-market_leverage_change_24m` | `market_leverage_change_24m` | `market_leverage_change_24m` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | market_leverage_change_30m (0.83) | `research/runs/cycle-0224-market_leverage_change_24m/report.md` |
+| `cycle-0225-noncurrent_asset_growth_24m` | `noncurrent_asset_growth_24m` | `noncurrent_asset_growth_24m` | `fr-3.16.0` | REJECT | 전체 IC 최소요건, 투자가능 IC 최소요건, 다중검정 FDR | noncurrent_asset_growth_30m (0.90) | `research/runs/cycle-0225-noncurrent_asset_growth_24m/report.md` |
+| `cycle-0226-retained_earnings_to_assets_volatility_12m` | `retained_earnings_to_assets_volatility_12m` | `retained_earnings_to_assets_volatility_12m` | `fr-3.16.0` | PROVISIONAL | - | net_roa_volatility_36m (0.52) | `research/runs/cycle-0226-retained_earnings_to_assets_volatility_12m/report.md` |
+| `cycle-0227-trading_value_turnover_change_3m` | `trading_value_turnover_change_3m` | `trading_value_turnover_change_3m` | `fr-3.16.0` | REJECT | 시장구분·유동성·비의도 규모 노출 제거 후 IC·유지율 | trading_value_turnover_change_6m (0.50) | `research/runs/cycle-0227-trading_value_turnover_change_3m/report.md` |
+| `cycle-0228-market_relative_momentum_6_1` | `market_relative_momentum_6_1` | `market_relative_momentum_6_1` | `fr-3.16.0` | REJECT | 종착수익률 3점 방향, 다중검정 FDR | medium_term_momentum_6_2 (0.99) | `research/runs/cycle-0228-market_relative_momentum_6_1/report.md` |
 
-> 위 표는 최근 30건만 담는다. 오래된 168건은 생략됐다. 전문은 `research/history.jsonl`.
+> 위 표는 최근 30건만 담는다. 오래된 198건은 생략됐다. 전문은 `research/history.jsonl`.
