@@ -1,7 +1,26 @@
 """전략 파라미터. 확정된 설계는 strategies/README.md 참조."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CONTEXT_FILE = REPO_ROOT / "research" / "context" / "latest.md"
+_CUTOFF_RE = re.compile(r"^- Strategy context cutoff: `(\d{4})-(\d{2})-\d{2}`", re.M)
+
+
+def context_cutoff_ym() -> str | None:
+    """연구 컨텍스트가 고지한 전략 컨텍스트 컷오프(신호월).
+
+    봉인된 캠페인이 있는 동안 전략은 컷오프 뒤 결과를 보면 안 된다. 값을 하드코딩하지
+    않고 `research/context/latest.md`에서 읽으므로, 캠페인이 공개되면 컨텍스트를 다시
+    만드는 것만으로 창이 넓어진다.
+    """
+    if not CONTEXT_FILE.exists():
+        return None
+    found = _CUTOFF_RE.search(CONTEXT_FILE.read_text(encoding="utf-8"))
+    return f"{found.group(1)}-{found.group(2)}" if found else None
 
 
 # 팩터 목록은 gold.factor에서 조회한다(`strategies/gold.py`). 캐시가 없을 때만 아래 기본값을
@@ -27,6 +46,15 @@ GOLD_FACTORS: tuple[str, ...] = _gold_factors()
 class StrategyConfig:
     # --- 입력 팩터 ---
     factors: tuple[str, ...] = GOLD_FACTORS
+
+    # --- 표본 주기 ---
+    # "daily"   README의 확정 설계. 일별 표본으로 학습하며 daily_* 캐시가 필요하다.
+    # "monthly" 승인 팩터 월말 값만으로 학습. gold signal 캐시만 있으면 되고 RDS도
+    #           daily 캐시도 필요 없다. 이때 아래 `fwd_days`·`train_window_days`·
+    #           `min_train_days`의 단위는 거래일이 아니라 **월**이다.
+    sample_frequency: str = "daily"
+    # 봉인 캠페인이 있는 동안 전략이 볼 수 있는 마지막 신호월(`YYYY-MM`). None이면 무제한.
+    context_cutoff_ym: str | None = None
 
     # --- 1단계: 예측(ridge) ---
     # 학습 표본은 **매 거래일**이다. 각 (종목, 거래일)이 한 행이고 타깃은 fwd_days
@@ -76,6 +104,10 @@ class StrategyConfig:
     cov_window_days: int = 500
     cov_min_days: int = 250
     cov_min_obs_ratio: float = 0.8     # 창 내 관측 비율이 이보다 낮은 종목은 제외
+    # 표본공분산은 N > T에서 랭크가 T로 막혀 N−T개 방향의 위험이 0이 된다. 옵티마이저가
+    # 그 방향을 공짜로 쓰므로 축소가 필요하다. "ledoit_wolf"(상수상관 타깃, 축소강도는
+    # 닫힌형으로 결정) / "none"(비교용 표본공분산). cov.py 참조.
+    cov_shrinkage: str = "ledoit_wolf"
 
     # --- 비용/턴오버 ---
     cost_bps_per_side: float = 30.0    # 편도 거래비용(수수료+세금 근사, bp)
@@ -92,3 +124,25 @@ class StrategyConfig:
     @property
     def turnover_gamma(self) -> float:
         return self.cost_bps_per_side / 1e4
+
+
+def monthly_config(**overrides) -> StrategyConfig:
+    """월말 표본 프리셋.
+
+    일별 설계를 그대로 두고 단위만 월로 바꾼 것이다 — `fwd_days=1`은 엔진 `fwd_mid`와
+    같은 1개월 forward이고, 창 길이도 월 단위가 된다. 36개월 창을 쓰는 이유는 승인
+    팩터 값이 2018-03부터라 컷오프 안에서 60개월 창을 잡으면 예측할 월이 남지 않기
+    때문이다.
+
+    컷오프는 연구 컨텍스트에서 읽는다. 봉인 구간을 일부러 포함하려면
+    `monthly_config(context_cutoff_ym=None)`.
+    """
+    base = StrategyConfig(
+        sample_frequency="monthly",
+        context_cutoff_ym=context_cutoff_ym(),
+        fwd_days=1,               # 1개월 forward
+        train_window_days=36,     # 롤링 36개월
+        min_train_days=24,        # 최소 24개월
+        min_train_rows=10_000,
+    )
+    return replace(base, **overrides) if overrides else base

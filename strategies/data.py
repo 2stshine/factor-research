@@ -61,6 +61,62 @@ def strategy_frame(panel, cfg: StrategyConfig) -> pd.DataFrame:
     return out.sort_values(["ym", "asset_id"]).reset_index(drop=True)
 
 
+def monthly_frame(panel, cfg: StrategyConfig, verbose: bool = True) -> pd.DataFrame:
+    """월말 학습·예측 프레임. `daily_frame()`과 같은 스키마를 월 주기로 낸다.
+
+    컬럼: trade_date, asset_id, ym, target, f_<factor>...
+
+    - 팩터: `gold.factor` APPROVED의 월말 값(`strategies.gold_signals`). 엔진 빌드
+      캐시는 팩터 값을 담지 않으므로 패널의 `f_` 컬럼에 의존하지 않는다. 부호는
+      로더가 이미 적용했다.
+    - 유니버스·타깃: 같은 신호월의 엔진 패널 판정(`in_universe`·`adv20`·`fwd_mid`).
+    - trade_date: 그 달의 **마지막 거래일 하나**로 통일한 신호일.
+
+    패널의 `trade_date`는 종목별로 그 달 마지막 유효 거래일이라 한 달 안에서도 값이
+    갈린다. 그대로 두면 `predict_returns`가 날짜 단위로 표본을 쪼개 학습창(36)과 PIT
+    시차(1)가 월이 아닌 날짜 수로 세어진다 — 63개월이 166개 날짜가 되어 창은 절반으로
+    줄고, 같은 달의 이른 날짜가 학습에 들어가 타깃이 아직 실현되지 않는다. 월 하나에
+    신호일 하나를 강제해 두 단위를 일치시킨다.
+    """
+    from strategies import gold_signals
+
+    signed = gold_signals.load_signed(cfg.factors, verbose=verbose)
+    fcols = [f"f_{name}" for name in cfg.factors]
+
+    monthly = panel.monthly.copy()
+    monthly["ym"] = monthly["ym"].astype("period[M]")
+    if cfg.target_col not in monthly.columns:
+        raise SystemExit(f"패널에 타깃 컬럼이 없습니다: {cfg.target_col}")
+    cols = ["asset_id", "ym", "trade_date", "in_universe", "adv20", cfg.target_col]
+    out = signed.merge(monthly[cols], on=["asset_id", "ym"], how="inner")
+
+    out = out[out["in_universe"].fillna(False)]
+    if cfg.require_investable:
+        out = out[out["adv20"].fillna(0) > 0]
+    if cfg.context_cutoff_ym is not None:
+        cutoff = pd.Period(cfg.context_cutoff_ym, freq="M")
+        before = out["ym"].nunique()
+        out = out[out["ym"] <= cutoff]
+        if verbose:
+            print(f"  [monthly_frame] 전략 컨텍스트 컷오프 {cutoff} 적용: "
+                  f"{before} → {out['ym'].nunique()}개월")
+
+    out = out.rename(columns={cfg.target_col: "target"})
+    out["trade_date"] = pd.to_datetime(out["trade_date"]).astype("datetime64[ns]")
+    out["trade_date"] = out.groupby("ym")["trade_date"].transform("max")
+    keep = ["trade_date", "asset_id", "ym", "target"] + fcols
+    return out[keep].sort_values(["trade_date", "asset_id"]).reset_index(drop=True)
+
+
+def build_frame(panel, cfg: StrategyConfig, verbose: bool = True) -> pd.DataFrame:
+    """`cfg.sample_frequency`에 맞는 학습 프레임을 만든다."""
+    if cfg.sample_frequency == "monthly":
+        return monthly_frame(panel, cfg, verbose=verbose)
+    if cfg.sample_frequency == "daily":
+        return daily_frame(panel, cfg, verbose=verbose)
+    raise SystemExit(f"알 수 없는 sample_frequency: {cfg.sample_frequency}")
+
+
 def daily_frame(panel, cfg: StrategyConfig, verbose: bool = True) -> pd.DataFrame:
     """일별 학습·예측 프레임.
 

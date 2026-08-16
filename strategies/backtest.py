@@ -45,7 +45,7 @@ def run_backtest(frame: pd.DataFrame, preds: pd.DataFrame,
 
         used_ids, Sigma = estimate_cov(
             daily_returns, t, cand, cfg.cov_window_days, cfg.cov_min_days,
-            cfg.cov_min_obs_ratio)
+            cfg.cov_min_obs_ratio, cfg.cov_shrinkage)
         if not used_ids:
             continue
 
@@ -83,10 +83,15 @@ def run_backtest(frame: pd.DataFrame, preds: pd.DataFrame,
         uni_ids = [a for a in invest_by_month.get(t, set()) if pd.notna(target_t.get(a, np.nan))]
         uni_ret = float(np.mean([target_t[a] for a in uni_ids])) if uni_ids else np.nan
 
+        # 옵티마이저가 스스로 예측한 위험. 실현 변동성과 크게 벌어지면 Σ 추정이
+        # 무위험 방향을 만들어 주고 있다는 뜻이라, 성과보다 먼저 봐야 하는 진단이다.
+        pred_var = float(w @ Sigma @ w)
         log.append({
             "ym": t, "gross": gross, "net": net, "cost": cost,
             "turnover": dturn, "n_holdings": len(new_w),
             "ew_topn": ew_ret, "univ_ew": uni_ret,
+            "n_candidates": len(used_ids),
+            "pred_vol_ann": float(np.sqrt(max(pred_var, 0.0) * 12)),
         })
         w_prev = new_w
 

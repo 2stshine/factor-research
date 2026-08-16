@@ -1,6 +1,7 @@
 """예측 모델 진단 — 배분과 분리해 ridge 자체의 예측력을 본다.
 
-    uv run python -m strategies.evaluate
+    uv run python -m strategies.evaluate            # 일별 표본 (daily_* 캐시 필요)
+    uv run python -m strategies.evaluate monthly    # 승인 팩터 월말 표본
 
 예측은 롤링 OOS(각 월은 과거만으로 학습)이므로 아래 IC·R²는 표본외 값이다.
 수익률 예측에서 R²는 원래 ~0이 정상이므로(월 OOS R² 0.3~1%면 우수) **R²로 판단하지 말고**
@@ -16,7 +17,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from strategies.config import StrategyConfig
+from strategies.config import StrategyConfig, monthly_config
 from strategies import data, predict
 
 
@@ -35,12 +36,13 @@ def _ic_stats(ic: pd.Series, ppy: int = 12) -> dict:
             "pos": float((ic > 0).mean())}
 
 
-def main() -> None:
-    cfg = StrategyConfig()
-    print("[load] 패널...")
+def main(cfg: StrategyConfig | None = None) -> None:
+    cfg = cfg or StrategyConfig()
+    print(f"[load] 패널... (팩터 {len(cfg.factors)}개)")
     panel = data.load_panel()
-    frame = data.daily_frame(panel, cfg)
-    print("[predict] ridge (일별 표본, 롤링 OOS)...")
+    frame = data.build_frame(panel, cfg)
+    unit = "월말" if cfg.sample_frequency == "monthly" else "일별"
+    print(f"[predict] ridge ({unit} 표본, 롤링 OOS)...")
     preds = predict.predict_returns(frame, cfg)
 
     fcols = [f"f_{f}" for f in cfg.factors]
@@ -103,4 +105,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(monthly_config() if sys.argv[1:2] == ["monthly"] else StrategyConfig())

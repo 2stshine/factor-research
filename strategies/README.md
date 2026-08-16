@@ -68,12 +68,37 @@ $$
 
 ---
 
+## 팩터 값의 출처 — 월말 표본 경로
+
+엔진 빌드 캐시(`.cache/panel.pkl`)는 **Silver/PIT 입력만 보관하고 팩터 값을 담지 않는다**.
+승인 팩터의 월말 값은 엔진이 `.cache/gold-signals/<generation_digest>/signals.parquet`에
+wide로 캐시하므로 전략은 `strategies/gold_signals.py`로 그것을 읽는다.
+
+- 캐시는 **승인 exact set 일치**로 고른다(파일 시각이 아니라). 승인 목록이 바뀌었는데
+  캐시가 없으면 조용히 옛 집합을 쓰는 대신 실패한다.
+- `parquet_sha256`·`row_count`·컬럼 집합을 엔진이 쓴 매니페스트로 재검증한다.
+
+이 경로는 `daily_*` 캐시도 RDS도 필요 없다. `StrategyConfig.sample_frequency="monthly"`
+(`config.monthly_config()`)로 켜며, 이때 `fwd_days`·`train_window_days`·`min_train_days`의
+단위는 거래일이 아니라 **월**이다. 승인 팩터 값이 2018-03부터라 컷오프 안에서 60개월 창을
+잡으면 예측할 월이 남지 않아 기본값은 36개월 창이다.
+
+**전략 컨텍스트 컷오프** — 봉인된 캠페인이 있는 동안 전략은 컷오프 뒤를 보면 안 된다.
+`config.context_cutoff_ym()`이 `research/context/latest.md`의 `Strategy context cutoff`를
+읽어 오므로 캠페인이 공개되면 컨텍스트를 다시 만드는 것만으로 창이 넓어진다. 일부러
+봉인 구간을 포함하려면 `monthly_config(context_cutoff_ym=None)`.
+
 ## 부호 규약 (중요)
 
 패널의 `f_<name>` 컬럼은 **이미 `predicted_sign`이 곱해져 있다** — `engine/factors.py`의
 `compute_all`이 `f.compute(out) * f.predicted_sign`으로 저장한다. 따라서 어떤 팩터든
 `f_` 컬럼은 **값이 클수록 예측 고수익**이다(`predicted_sign = −1`인 팩터는 부호가 뒤집혀
 저장된다). 전략 레이어에서 `predicted_sign`을 다시 곱하면 이중 적용 버그가 된다.
+
+**`gold.factor_value.value`도 같은 규약이다** — 즉 이미 방향이 적용돼 있다. `engine/publish.py`의
+`value_contract`는 `value: "raw"` / `score: "value*predicted_sign"`이라 적고 있지만 적재된
+값은 그 문구와 다르다. 계약 문구를 그대로 따르면 `predicted_sign = −1` 팩터가 전부
+뒤집힌다. 확인 근거는 `strategies/gold_signals.py` docstring에 있다.
 
 ## 팩터의 일별 정의
 
@@ -155,6 +180,7 @@ strategies/
 | 파일 | 생성 |
 |---|---|
 | `.cache/panel.pkl` | `scripts/run.py build` (엔진) |
+| `.cache/gold-signals/<generation>/` | 엔진 (승인 팩터 월말 값) |
 | `.cache/gold_factors.json` | `strategies.gold` |
 | `.cache/daily_returns.parquet` | `strategies.daily` |
 | `.cache/daily_price.parquet` | `strategies.daily_factors price` |
@@ -186,6 +212,12 @@ uv run python -m strategies.daily_factors build
 # 4) 백테스트 / 예측 진단 (캐시만 있으면 RDS 불필요)
 uv run python -m strategies.run_backtest
 uv run python -m strategies.evaluate
+```
+
+월말 표본 경로는 `gold-signals` 캐시와 `panel.pkl`만 있으면 되므로 1)·3)을 건너뛴다.
+
+```bash
+uv run python -m strategies.evaluate monthly
 ```
 
 **추가 의존성**: `cvxpy`(+osqp/clarabel), `scikit-learn`. 엔진 core deps와 분리하려고
