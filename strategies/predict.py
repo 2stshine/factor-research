@@ -80,7 +80,15 @@ def predict_returns(frame: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     # 날짜별 표준화 행렬과 타깃을 한 번만 만든다.
     Z, Y = {}, {}
     for d, g in by_date.items():
-        Z[d] = _standardize_cross_section(g, fcols, cfg.winsor_q)
+        z = _standardize_cross_section(g, fcols, cfg.winsor_q)
+        if cfg.signal == "ew_composite":
+            # 팩터 간 상대 가중치를 학습하지 않고 동일가중으로 고정한다. 남은
+            # 자유도는 스칼라 스케일 하나뿐이고, 그것만 아래 롤링 릿지가 적합해
+            # r̂를 수익률 단위로 되돌린다.
+            z = z.mean(axis=1, keepdims=True)
+        elif cfg.signal != "ridge":
+            raise SystemExit(f"알 수 없는 signal: {cfg.signal}")
+        Z[d] = z
         Y[d] = g["target"].to_numpy(dtype=float)
 
     # 각 월의 마지막 거래일 = 신호일
