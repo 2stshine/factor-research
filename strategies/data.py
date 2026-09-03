@@ -167,6 +167,8 @@ def daily_frame(panel, cfg: StrategyConfig, verbose: bool = True) -> pd.DataFram
     fac = df_mod.load_daily_factors()
     # parquet 왕복에서 해상도가 달라질 수 있어 merge_asof 전에 통일한다.
     fac["trade_date"] = pd.to_datetime(fac["trade_date"]).astype("datetime64[ns]")
+    label_r = daily_returns.load_daily_labels()
+    label_r.index = pd.to_datetime(label_r.index).astype("datetime64[ns]")
     fcols = [f"f_{name}" for name in cfg.factors]
 
     # --- 일별 캐시에 없는 팩터·유니버스는 직전 월말 값을 asof로 붙인다 ---
@@ -203,22 +205,21 @@ def daily_frame(panel, cfg: StrategyConfig, verbose: bool = True) -> pd.DataFram
         out = out[out["adv20"].fillna(0) > 0]
 
     # --- target: fwd_days 거래일 뒤까지의 누적 수익률 (상폐는 terminal 부여) ---
-    r = daily_returns.load_daily()
-    level = (1.0 + r).cumprod()
+    level = (1.0 + label_r).cumprod()
     fwd = level.shift(-cfg.fwd_days) / level - 1.0
 
     # 상폐·비활성 종목이 forward 창 안에서 사라지면 수익률이 NaN이 되어 학습에서 빠진다.
     # 그대로 두면 모델이 "무엇이 상폐를 예측하는가"를 배울 기회가 없는데 백테스트는 그
     # 손실을 그대로 맞는다(엔진 `fwd_mid`가 terminal -0.50으로 막는 바로 그 함정).
     # 엔진과 같은 규칙으로 terminal을 부여한다.
-    valid = r.notna().to_numpy()
-    n_days = len(r)
+    valid = label_r.notna().to_numpy()
+    n_days = len(label_r)
     has_obs = valid.any(axis=0)
     last_pos = n_days - 1 - valid[::-1].argmax(axis=0)      # 종목별 마지막 관측 위치
     row = np.arange(n_days)[:, None]
     dies_in_window = (row <= last_pos[None, :]) & (last_pos[None, :] < row + cfg.fwd_days)
     dead_ids = set(getattr(panel, "dead", pd.Series(dtype=float)).index)
-    is_dead = np.array([a in dead_ids for a in r.columns]) & has_obs
+    is_dead = np.array([a in dead_ids for a in label_r.columns]) & has_obs
     terminal_mask = dies_in_window & is_dead[None, :]
 
     fwd_v = fwd.to_numpy()
@@ -233,5 +234,4 @@ def daily_frame(panel, cfg: StrategyConfig, verbose: bool = True) -> pd.DataFram
     keep = ["trade_date", "asset_id", "ym", "target"] + fcols
     out = out[[c for c in keep if c in out.columns]]
     return out.sort_values(["trade_date", "asset_id"]).reset_index(drop=True)
-
 

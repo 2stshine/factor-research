@@ -110,7 +110,8 @@ class StrategyConfig:
     # 상한을 풀면 옵티마이저가 한 종목에 70%까지 넣고 "위험 2.7%"라 주장하지만
     # 실현 변동성은 56.6%였다(상한 5%일 때 31.0%). 제약이 곧 shrinkage(Jagannathan-Ma 2003).
     weight_cap_u: float = 0.05
-    # Σ는 일별 수익률로 추정한다(월말만 쓰면 T=60 < N이라 표본공분산이 특이해진다).
+    # Σ는 PIT-safe `adj_close` 일별 가격수익률로 추정한다
+    # (월말만 쓰면 T=60 < N이라 표본공분산이 특이해진다).
     # 500거래일 ≈ 2년. 후보가 전 종목이라 N > T 이지만, 표본공분산은 PSD이고 제약이
     # 실행가능 영역을 컴팩트하게 만들므로 QP는 그대로 풀린다(역행렬을 쓰지 않는다).
     cov_window_days: int = 500
@@ -131,7 +132,8 @@ class StrategyConfig:
     # 일별 학습 타깃의 상폐 terminal. 엔진 fwd_mid와 같은 값을 써서 학습과 실현이
     # 상폐를 동일하게 취급하게 한다.
     terminal_return: float = -0.50
-    return_level_col: str = "return_close"  # 총수익 레벨(=total_return_close) → 월수익·Σ
+    # 타깃이 아닌 과거 feature 수익률은 PIT-safe `adj_close`만 사용한다.
+    return_level_col: str = "adj_close"
 
     @property
     def turnover_gamma(self) -> float:

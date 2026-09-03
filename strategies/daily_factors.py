@@ -74,7 +74,7 @@ WHERE p.source = 'KRX'
 class DailyInputs:
     """일별 팩터 정의가 쓸 수 있는 입력.
 
-    `returns`: (거래일 × 종목) 일별 총수익률
+    `returns`: (거래일 × 종목) `adj_close` 기반 PIT-safe 가격수익률
     `price`:   (거래일 × 종목) `market_cap / adj_close` = 분할조정 주식수 대용.
                `daily_price.parquet`이 없으면 None.
     """
@@ -152,7 +152,7 @@ def _load_inputs(verbose: bool = True) -> DailyInputs:
                               values="share_base").sort_index()
         share = share.reindex(index=r.index, columns=r.columns)
     if verbose:
-        print(f"  일별 수익률 {r.shape[0]:,}일 × {r.shape[1]:,}종목"
+        print(f"  일별 feature 수익률 {r.shape[0]:,}일 × {r.shape[1]:,}종목"
               f"{'  / 주식수 로드' if share is not None else '  / 주식수 없음'}")
     return DailyInputs(returns=r, share_base=share)
 

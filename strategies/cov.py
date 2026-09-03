@@ -1,4 +1,4 @@
-"""Σ 추정 — 일별 수익률 표본공분산 + Ledoit-Wolf 축소.
+"""Σ 추정 — PIT-safe `adj_close` 일별 가격수익률 + Ledoit-Wolf 축소.
 
 월말 관측만 쓰면 5년 창에서 T=60이라 후보 종목수 N보다 작다. 일별로 바꾸면 같은 기간에
 T가 500거래일이 되어 관측이 20배 이상 늘어난다. 추정은 일별 스케일로 하고 거래일 21일
@@ -77,7 +77,7 @@ def estimate_cov(
 ) -> tuple[list[int], np.ndarray]:
     """반환: (사용된 asset_id 순서, 월 스케일 Σ). 관측이 부족한 종목은 제외한다.
 
-    `daily`: index=trade_date, columns=asset_id 인 일별 수익률 행렬.
+    `daily`: index=trade_date, columns=asset_id 인 `adj_close` 일별 가격수익률 행렬.
     `signal_month` 월말까지의 마지막 `window_days` 거래일을 창으로 쓴다.
     """
     hist = daily.loc[daily.index <= signal_month.to_timestamp(how="end")]

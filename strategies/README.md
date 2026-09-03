@@ -60,8 +60,12 @@ $$
 
 ### Σ 추정 (일별)
 
-1. 일별 수익률 500거래일 창 (창 내 관측 80% 이상인 종목만, 남은 결측은 0 대체)
+1. PIT-safe `adj_close` 일별 가격수익률 500거래일 창
+   (창 내 관측 80% 이상인 종목만, 남은 결측은 0 대체)
 2. 표본공분산 → 거래일 21일 기준 월 환산
+
+`total_return_close`는 공분산에 쓰지 않고 향후 수익률 label에만 쓴다. 두 역할은
+버전이 다른 로컬 캐시로 물리적으로 분리된다.
 
 `N > T` 여도 표본공분산은 Gram 행렬이라 PSD이고, 제약이 실행가능 영역을 컴팩트하게
 만들므로 QP는 그대로 풀린다(Σ의 역행렬은 쓰지 않는다).
@@ -182,7 +186,8 @@ strategies/
 | `.cache/panel.pkl` | `scripts/run.py build` (엔진) |
 | `.cache/gold-signals/<generation>/` | 엔진 (승인 팩터 월말 값) |
 | `.cache/gold_factors.json` | `strategies.gold` |
-| `.cache/daily_returns.parquet` | `strategies.daily` |
+| `.cache/daily_price_returns_krx_split_adjusted_v1.parquet` | `strategies.daily` — 팩터·공분산 전용 |
+| `.cache/daily_label_returns_krx_gross_dividend_v3.parquet` | `strategies.daily` — 향후 label 전용 |
 | `.cache/daily_price.parquet` | `strategies.daily_factors price` |
 | `.cache/daily_factors.parquet` | `strategies.daily_factors build` (로컬) |
 
