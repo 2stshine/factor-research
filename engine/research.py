@@ -827,9 +827,11 @@ def write_context(
                 "전문은 `research/history.jsonl`.",
             ]
     lines.append("")
-    path = context_dir / "latest.md"
-    path.write_text("\n".join(lines), encoding="utf-8")
-    return path
+    from scripts.knowledge import refresh_knowledge
+    return refresh_knowledge(
+        root, context_text="\n".join(lines),
+        context_cutoff=str(visible_cutoff.date()) if visible_cutoff is not None else None,
+    )
 
 
 def record_cycle(

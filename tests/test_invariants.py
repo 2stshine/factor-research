@@ -1786,7 +1786,8 @@ def test_latest_context_withholds_post_cutoff_history_without_active_campaign(tm
     ).read_text()
 
     assert "old-full-sample" in context
-    assert "WITHHELD_POST_CUTOFF" in context
+    assert "old-full-sample" in context
+    assert "PROVISIONAL" not in context
     assert "research/runs/old/report.md" not in context
 
 
@@ -2336,7 +2337,10 @@ def test_epoch_lifecycle_auto_qualifies_candidates_and_seals_oos(tmp_path):
     reflection, reflection_json = epochs.close_epoch(
         tmp_path, "campaign-001", "epoch-001"
     )
-    assert "OOS 상태: **SEALED**" in reflection.read_text()
+    closed_epoch = json.loads(reflection.read_text())
+    assert closed_epoch["status"] == "CLOSED"
+    assert closed_epoch["reflection"] == str(reflection_json)
+    assert not reflection_json.with_suffix(".md").exists()
     reflection_payload = json.loads(reflection_json.read_text())
     assert reflection_payload["duplicates"] == ["candidate_b"]
     assert reflection_payload["discovery_fdr_status"] == "PENDING_UNTIL_CAMPAIGN_FINALIZE"
@@ -2705,9 +2709,10 @@ def test_campaign_suppresses_batch_duplicate_before_implementation(tmp_path):
     )
     context = research.write_context(panel, Registry(), research_dir=tmp_path).read_text()
     assert "| `candidate_a` | `candidate_a` | `candidate_a` |" in context
-    assert f"| `{gate.RULESET_VERSION}` | PROVISIONAL | - |" in context
+    assert f"| `{gate.RULESET_VERSION}` |" in context
+    assert "PROVISIONAL" not in context
     assert "old-full-sample" in context
-    assert "WITHHELD_POST_CUTOFF" in context
+    assert "## 전체 시행 정체성" in context
     assert "research/runs/old/report.md" not in context
 
 

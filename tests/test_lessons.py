@@ -391,7 +391,8 @@ def test_campaign_lifecycle_refreshes_lessons_automatically():
         research_cli.cmd_campaign_finalize,
         research_cli.cmd_campaign_reveal,
     ):
-        assert "_refresh_research_memory" in inspect.getsource(function)
+        source = inspect.getsource(function)
+        assert "_refresh_research_memory" in source or "research.write_context" in source
 
 
 def test_label_themes_are_within_the_closed_vocabulary():

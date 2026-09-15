@@ -568,9 +568,9 @@ def _validate_rendered_memory(text: str, sealed: set[tuple]) -> None:
                 )
 
 
-def refresh_lessons(
+def render_memory(
     root: Path | str = "research", *, context_cutoff: str | None = None,
-) -> Path:
+) -> str:
     """Synchronize lossless identity labels and atomically refresh lessons."""
     root = Path(root)
     sync_identity_labels(root)
@@ -589,6 +589,15 @@ def refresh_lessons(
         released_epochs=released_epochs,
     )
     _validate_rendered_memory(text, sealed)
+    return text
+
+
+def refresh_lessons(
+    root: Path | str = "research", *, context_cutoff: str | None = None,
+) -> Path:
+    """Legacy explicit export; the research loop writes KNOWLEDGE directly."""
+    root = Path(root)
+    text = render_memory(root, context_cutoff=context_cutoff)
     path = root / "memory" / "lessons.md"
     _atomic_write_text(path, text)
     return path
@@ -646,6 +655,9 @@ def main() -> None:
     elif args.view == "lessons":
         path = root / "memory" / "lessons.md"
         _atomic_write_text(path, text)
+        if (root / "context" / "latest.md").exists():
+            from scripts.knowledge import refresh_knowledge
+            refresh_knowledge(root)
         print(f"wrote {path}")
     else:
         print(text)

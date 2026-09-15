@@ -933,35 +933,17 @@ def close_epoch(
     }
     json_path = epoch_dir / "reflection.json"
     _write(json_path, reflection)
-    lines = [
-        f"# {campaign_id} / {epoch_id} 성찰", "",
-        "- OOS 상태: **SEALED**", "",
-        "- Discovery 다중검정: **PENDING** (campaign finalize에서 전체 후보 일괄 판정)", "",
-        "## 구조적 교훈", "",
-        "| factor | family | outcome | novelty | evidence |",
-        "|---|---|---|---|---|",
-    ]
-    for row in lessons:
-        lines.append(
-            f"| `{row['factor']}` | `{row['family']}` | {row['outcome']} | "
-            f"{row['novelty']} | `{row['evidence']}` |"
-        )
-    lines += ["", "## 다음 epoch에서 허용되는 학습", ""]
-    lines += [f"- {item}" for item in permitted]
-    lines += ["", "## 금지되는 사후 적응", ""]
-    lines += [f"- {item}" for item in reflection["forbidden_actions"]]
-    lines.append("")
-    markdown_path = epoch_dir / "reflection.md"
-    markdown_path.write_text("\n".join(lines), encoding="utf-8")
+    # Human-facing lessons live in candidate_lessons.jsonl / KNOWLEDGE.md.
+    # Keep machine evidence and historical Markdown untouched.
     epoch["status"] = "CLOSED"
     epoch["closed_at"] = _now()
-    epoch["reflection"] = str(markdown_path)
+    epoch["reflection"] = str(json_path)
     _write(_epoch_path(root, campaign_id, epoch_id), epoch)
     for reference in campaign["epochs"]:
         if reference["epoch_id"] == epoch_id:
             reference["status"] = "CLOSED"
     _write(_campaign_path(root, campaign_id), campaign)
-    return markdown_path, json_path
+    return _epoch_path(root, campaign_id, epoch_id), json_path
 
 
 def _preliminary_by_qualified(candidates: dict[str, dict]) -> list[str]:

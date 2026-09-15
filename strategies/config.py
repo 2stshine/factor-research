@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CONTEXT_FILE = REPO_ROOT / "research" / "context" / "latest.md"
+CONTEXT_FILE = REPO_ROOT / "research" / "KNOWLEDGE.md"
 _CUTOFF_RE = re.compile(r"^- Strategy context cutoff: `(\d{4})-(\d{2})-\d{2}`", re.M)
 
 
@@ -14,7 +14,7 @@ def context_cutoff_ym() -> str | None:
     """연구 컨텍스트가 고지한 전략 컨텍스트 컷오프(신호월).
 
     봉인된 캠페인이 있는 동안 전략은 컷오프 뒤 결과를 보면 안 된다. 값을 하드코딩하지
-    않고 `research/context/latest.md`에서 읽으므로, 캠페인이 공개되면 컨텍스트를 다시
+    않고 `research/KNOWLEDGE.md`에서 읽으므로, 캠페인이 공개되면 컨텍스트를 다시
     만드는 것만으로 창이 넓어진다.
     """
     if not CONTEXT_FILE.exists():

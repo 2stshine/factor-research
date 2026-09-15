@@ -32,7 +32,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def _refresh_research_memory(*, context_cutoff: str | None = None) -> Path:
     """Refresh lossless identity memory without exposing sealed outcomes."""
     try:
-        return research_lessons.refresh_lessons(
+        from scripts.knowledge import refresh_knowledge
+        return refresh_knowledge(
             REPO_ROOT / "research", context_cutoff=context_cutoff,
         )
     except (OSError, ValueError) as exc:
@@ -51,15 +52,11 @@ def cmd_context(_args) -> None:
         next_window = _campaign_snapshot_boundary(panel)
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
-    memory = _refresh_research_memory(
-        context_cutoff=next_window.discovery_data_cutoff,
-    )
     path = research.write_context(
         panel, F.REGISTRY,
         context_cutoff=next_window.discovery_data_cutoff,
     )
     print(f"연구 컨텍스트 갱신: {path}")
-    print(f"시행 전량 메모리 갱신: {memory}")
 
 
 def cmd_identity_audit(_args) -> None:
@@ -350,8 +347,8 @@ def cmd_campaign_start(args) -> None:
         expected_candidate_count=args.expected_candidates,
         input_generation=input_generation,
     )
-    memory = _refresh_research_memory()
     context = research.write_context(panel, F.REGISTRY)
+    memory = context
     print(f"campaign 생성: {path}")
     print(f"OOS mode: {window.mode}")
     print(f"사전 고정 epoch 수: {args.epochs}")
@@ -626,7 +623,7 @@ def cmd_epoch_close(args) -> None:
         raise SystemExit(str(exc)) from exc
     memory = _refresh_research_memory()
     print(f"epoch 종료: {report}")
-    print(f"구조화 성찰: {result}")
+    print(f"배치 검증 기록(JSON): {result}")
     print(f"시행 전량 메모리 갱신: {memory}")
     print("Discovery FDR: PENDING (campaign finalize에서 전체 후보 일괄 판정)")
     print("최종 OOS: SEALED")
@@ -652,8 +649,8 @@ def cmd_campaign_finalize(args) -> None:
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     campaign = epochs.load_campaign("research", args.campaign)
-    memory = _refresh_research_memory()
     context = research.write_context(panel, F.REGISTRY)
+    memory = context
     if campaign["status"] == "CLOSED_NO_QUALIFIED":
         print(f"campaign 종료(기준 통과 후보 없음): {path}")
     else:
