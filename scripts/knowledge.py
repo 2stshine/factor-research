@@ -34,6 +34,8 @@ def refresh_knowledge(
         "> 자동 생성. 지침은 INSTRUCTIONS.md에만 둔다. 논문 지식은 미포함.\n"
         "> 데이터 컨텍스트와 연구 원장에서 생성하며 기존 봉인 필터를 적용한다.\n"
         "> 이 파일 생성은 DB 재인증이 아니다. 아래 cutoff와 campaign 상태를 확인한다.\n\n"
+        "보유 데이터·적재 범위·운영 상태는 [DATA_INVENTORY.md](DATA_INVENTORY.md)를 참조한다. "
+        "아래 입력 목록은 현재 연구 패널에 연결된 데이터만 나타낸다.\n\n"
         + context_text + "\n## 공개 가능한 최근 성찰\n\n"
         + before.replace("## 1. 이번 회차의 제약", "### 관측된 제약")
         + "\n## 탐색 영역 분포\n" + distribution
