@@ -1,6 +1,9 @@
 # 데이터 보유 현황
 
-확인 기준: 2026-09-18. 아래는 운영 증거와 현재 연구 입력 목록에서 확인한 범위다.
+확인 기준: 기존 KRX/DART/한투/FMP 일일 항목은 2026-09-18,
+추가 FMP Bronze 두 묶음은 **2026-09-20 S3 적재·재조회 검증 증빙** 기준이다.
+이번 갱신은 FMP 추가 보유분 반영이며 기존 항목 전체를 재조회한 것은 아니다.
+아래는 운영 증거와 현재 연구 입력 목록에서 확인한 범위다.
 전체 DB의 실시간 카탈로그는 아니며, 목록에 없다는 이유만으로 미보유라고 판단하지 않는다.
 최신 적재일은 실행마다 달라진다. 표의 날짜는 마지막 확인값이며 실시간 보장을 뜻하지 않는다.
 
@@ -15,10 +18,46 @@
 | 한투 공매도 거래 | 공매도 체결수량·금액, 수정 전 전체 거래량, 이를 분모로 계산한 비율. 같은 종목군·기간의 예상 거래일 적재 확인 | 위 KIS 테이블·뷰의 `venue='J'`, `kind='short'` | RDS 보유 완료. 연구 패널 입력은 미연결. 공매도 **잔고**·대차잔고와 구분 |
 | NXT 거래 가능 이력·상장기간 | NXT 출범일 2025-03-04~2026-09-17의 해당 종목군 상태 대조 완료. 상장폐지 반영 | S3 reference 증거, RDS `asset_listing_snapshot`, KIS manifest/checkpoint | 수집 기대 범위를 정하는 기준 자료. 곧바로 연구 feature로 등록된 것은 아님 |
 | FMP 일일 데이터 | 2026-09-16까지 `fmp_daily` 인증 기록 확인 | TeamAlpha-data FMP 수집 경로 | 개별 시리즈·필드별 보유 기간과 연구 연결 여부는 별도 확인 필요. 전체 FMP 카탈로그를 보유한다고 해석하지 않음 |
+| FMP 한국 매크로·중국 PMI | 한국 13개 + 중국 NBS 제조업 PMI 1개, 선별 **1,932행**. 조회 범위 `2015-01-01~2026-09-18` | S3 Bronze `macro/fmp/economic-calendar/korea-coverage-v1/snapshot=backfill-20260920/` | **Bronze 보유 완료**. PIT 미승인, Silver/Gold 미적재·연구 입력 미연결. 추가 일일 수집 운영 배포 전 |
+| FMP 추가 환율·COT·ETF | 환율 5개 + COT 6개 + ETF 3개, **28,191행**. 조회 범위 `2015-01-01~2026-09-18` | S3 Bronze `regime/fmp-external/korea-external-v1/snapshot=backfill-20260920/` | **Bronze 보유 완료**. PIT 미승인, Silver/Gold 미적재·연구 입력 미연결. 추가 일일 수집 운영 배포 전 |
 
 DART 지분 공시, 업종 관측, 기업행사·배당 근거, 별도 KRX 수급·공매도 잔고 테이블은
 TeamAlpha-data 스키마/문서에 정의되어 있다. 이번 확인에서는 각각의 실제 행수·기간·
 연구 사용 상태를 전수 확인하지 않았으므로 보유 완료로 추가 표시하지 않았다.
+
+## FMP 추가 Bronze 상세
+
+두 묶음의 운영 버킷은 `soma-quant-bronze-31-159372032315-ap-northeast-2-an`이다.
+위 표의 경로는 해당 버킷 기준이며, 각 경로 아래
+`runs/from=2015-01-01/to=2026-09-18/manifest.json`이 전체 범위의 완료 증거다.
+
+| 묶음 | 확보한 계열 | 행 수 |
+|---|---|---:|
+| 한국 매크로·중국 PMI | 한국 기준금리 결정, CPI YoY/MoM, 무역수지, 산업생산 YoY/MoM, 소매판매 MoM, 실업률, 소비자심리, 기업경기, PPI YoY/MoM, 경상수지 + 중국 NBS 제조업 PMI | 1,932 |
+| 추가 환율 | `USDCNH`, `USDCNY`, `USDJPY`, `AUDUSD`, `EURUSD` | 15,690 |
+| COT 선물 포지션 | `HG` 구리, `CL` WTI, `DX` 달러지수, `J6` 엔화, `GC` 금, `VX` VIX | 3,666 |
+| ETF 가격 | `EWY`, `EEM`, `FXI` | 8,835 |
+
+- 매크로: 141개 월별 파티션·565개 S3 객체. 2026-09-20 **00:32 KST** 재조회 검증 완료.
+  원본·선별 payload 282개의 체크섬 및 원문 일치를 검증했다.
+  actual=null 1행과 동일 계열·제공시각 중복 초과 3행을 그대로 보존했다.
+- 환율/COT/ETF: 168개 연도·계열 파티션·673개 S3 객체. 2026-09-20 **14:22 KST** 재조회 검증 완료.
+  원본·관측 payload 336개의 체크섬과 로컬 원본과의 byte 일치를 확인했다.
+  FX 주말 날짜 433행을 삭제하지 않고 품질 플래그로 남겼다.
+- 표의 기간은 **API 조회 범위**다. 통계 대상기간·공식 발표일 범위나 모든 거래일의 완전성을
+  의미하지 않는다. 이번 매크로 스냅샷에서 CPI·경상수지의 첫 제공 날짜는 2015년 2월이며,
+  COT의 최신 보유 기준일은 2026-09-15, 추가 환율·ETF의 최신 제공 날짜는 2026-09-18이다.
+- 세계 경제캘린더 전체 원본 254,037행은 매크로 `raw/` 증빙에 들어 있다.
+  이 숫자를 허용 목록의 관측 수로 세거나, 포함된 미국·중국 통계를 연구 입력으로 자동 승인하지 않는다.
+- 두 묶음 모두 `pit_approved=false`, `publication_time_verified=false`,
+  `revision_history_verified=false`, `silver_publish_allowed=false`다.
+  환율/COT/ETF는 추가로 `historical_backtest_allowed=false`이며,
+  모든 관측의 미검증 `released_at`·`available_at`·`vintage`는 null이다.
+- 기준일과 실제 API 수집시각을 분리했다. COT 기준일에 임의의 발표시각을 붙이지 않았고,
+  S3로 옮길 때 실제 수집시각을 업로드 시각이나 과거 날짜로 바꾸지 않았다.
+  **Bronze 보유 완료는 과거 PIT 인증·백테스트 사용 승인·연구 패널 연결 완료가 아니다.**
+- 일일 연결 코드는 있으나 이 두 추가 수집기의 운영 배포는 아직 하지 않았다.
+  기존 `fmp_daily` 인증 기록과 별개다. VVIX·VIX3M·항셍·닛케이225는 조사 후보이며 이번 적재분에 없다.
 
 ## 한투 데이터 상세
 
@@ -45,10 +84,13 @@ TeamAlpha-data 스키마/문서에 정의되어 있다. 이번 확인에서는 �
 신뢰하기로 선택한 정책이다. KRX 브라우저 로그인·LLM·로컬 PC 상시 실행 없이 운영한다.
 NXT 공개 자료와 필요한 한투 상장폐지 메타데이터는 코드가 조회한다. 수량·금액 계산,
 원거래량 분모, J+NX와 UN 대조, 날짜·식별자·누락 검사는 유지한다.
-활성화 이후 첫 예약 실행은 2026-09-19 08:30 예정이며, 이 문서 작성 시 그 실행 성공까지
-확인한 것은 아니다. 실제 시험 실행 및 설정 활성화와 구분한다.
+2026-09-18 확인 당시 활성화 이후 첫 예약 실행은 2026-09-19 08:30 예정이었다.
+이번 FMP 인벤토리 갱신에서는 그 이후 한투 예약 실행 성공 여부를 재조회하지 않았다.
+실제 시험 실행 및 설정 활성화와 구분한다.
 
 ## 시점·인증 구분
+
+아래는 **한투 데이터의 시점 계약**이다. 추가 FMP Bronze에 이 가용시각 정책을 적용하지 않는다.
 
 `trade_date`는 거래일, `first_observed_at`은 실제 수집 시각이다.
 `research_available_at`은 다음 달력일 08:30 KST라는 정책 가정이며 제공자의 실제 공개시각
@@ -67,3 +109,8 @@ NXT 공개 자료와 필요한 한투 상장폐지 메타데이터는 코드가 
 - 운영 재현 증거: 이 작업 workspace의 `outputs/kis-daily-20260918/progress.json`,
   `outputs/kis-provider-daily-20260918/progress.json`, `activation.json` 및
   `outputs/kis-status-20260918/inspection.json`. 실행 ID·S3 증거 위치는 각 파일에 기록되어 있다.
+- [FMP 매크로 적재 문서](/Users/mac/Documents/GitHub/TeamAlpha-data/docs/fmp-macro-bronze.md),
+  [S3 재조회 검증 증빙](/Users/mac/Documents/GitHub/TeamAlpha-data/data/audits/fmp-macro-s3-20260920/verification.json).
+- [FMP 환율·COT·ETF 적재 문서](/Users/mac/Documents/GitHub/TeamAlpha-data/docs/fmp-external-bronze.md),
+  [S3 재조회 검증 증빙](/Users/mac/Documents/GitHub/TeamAlpha-data/data/audits/fmp-external-load-20260920/s3_verification.json).
+  FMP 링크는 같은 로컬 workspace의 TeamAlpha-data 파일이며, S3 위치는 각 증빙의 `manifest_uri`에도 있다.
