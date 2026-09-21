@@ -1,11 +1,17 @@
 # 데이터 보유 현황
 
 확인 기준: 기존 KRX/DART/한투/FMP 일일 항목은 2026-09-18,
-추가 FMP Bronze 두 묶음은 **2026-09-20 S3 적재·재조회 검증 증빙** 기준이다.
+추가 FMP Bronze 세 묶음은 **2026-09-20 S3 적재·재조회 검증 증빙** 기준이다.
 이번 갱신은 FMP 추가 보유분 반영이며 기존 항목 전체를 재조회한 것은 아니다.
 아래는 운영 증거와 현재 연구 입력 목록에서 확인한 범위다.
 전체 DB의 실시간 카탈로그는 아니며, 목록에 없다는 이유만으로 미보유라고 판단하지 않는다.
 최신 적재일은 실행마다 달라진다. 표의 날짜는 마지막 확인값이며 실시간 보장을 뜻하지 않는다.
+
+후속 PIT 상태: 한국 기준금리의 공식 결정 대조 **월말 진단 입력 1개(2015-01~2026-08)**를 승인하고
+새 캠페인 기본 입력에 등록했다. 로컬 Silver 정제본이며, Bronze 37계열 전체 승인이나 RDS 적재는 아니다.
+상세 근거는 문서 끝의 한국 정책금리 정제 승인 항목을 참조한다.
+2026-09-21 후속 검증에서는 나머지 36계열 47,378행을 검사하고 COT 전수 수치 대조,
+CPI 공식 발표자료 대조, ETF 최신 종가 표본 대조를 추가했다. 결과는 문서 끝의 후속 검증 항목을 참조한다.
 
 ## 보유와 연구 연결 상태
 
@@ -20,6 +26,7 @@
 | FMP 일일 데이터 | 2026-09-16까지 `fmp_daily` 인증 기록 확인 | TeamAlpha-data FMP 수집 경로 | 개별 시리즈·필드별 보유 기간과 연구 연결 여부는 별도 확인 필요. 전체 FMP 카탈로그를 보유한다고 해석하지 않음 |
 | FMP 한국 매크로·중국 PMI | 한국 13개 + 중국 NBS 제조업 PMI 1개, 선별 **1,932행**. 조회 범위 `2015-01-01~2026-09-18` | S3 Bronze `macro/fmp/economic-calendar/korea-coverage-v1/snapshot=backfill-20260920/` | **Bronze 보유 완료**. PIT 미승인, Silver/Gold 미적재·연구 입력 미연결. 추가 일일 수집 운영 배포 전 |
 | FMP 추가 환율·COT·ETF | 환율 5개 + COT 6개 + ETF 3개, **28,191행**. 조회 범위 `2015-01-01~2026-09-18` | S3 Bronze `regime/fmp-external/korea-external-v1/snapshot=backfill-20260920/` | **Bronze 보유 완료**. PIT 미승인, Silver/Gold 미적재·연구 입력 미연결. 추가 일일 수집 운영 배포 전 |
+| FMP 대만·변동성·금리 포지션 | EWT·USDTWD + 변동성 지수 3개 + 금리 COT 4개, **17,360행**. 조회 범위 `2015-01-01~2026-09-18` | S3 Bronze `regime/fmp-external/korea-risk-v1/snapshot=backfill-20260920/` | **Bronze 보유 완료**. PIT 미승인, Silver/Gold 미적재·연구 입력 미연결. 추가 일일 수집 운영 배포 전 |
 
 DART 지분 공시, 업종 관측, 기업행사·배당 근거, 별도 KRX 수급·공매도 잔고 테이블은
 TeamAlpha-data 스키마/문서에 정의되어 있다. 이번 확인에서는 각각의 실제 행수·기간·
@@ -27,7 +34,7 @@ TeamAlpha-data 스키마/문서에 정의되어 있다. 이번 확인에서는 �
 
 ## FMP 추가 Bronze 상세
 
-두 묶음의 운영 버킷은 `soma-quant-bronze-31-159372032315-ap-northeast-2-an`이다.
+세 묶음의 운영 버킷은 `soma-quant-bronze-31-159372032315-ap-northeast-2-an`이다.
 위 표의 경로는 해당 버킷 기준이며, 각 경로 아래
 `runs/from=2015-01-01/to=2026-09-18/manifest.json`이 전체 범위의 완료 증거다.
 
@@ -37,6 +44,9 @@ TeamAlpha-data 스키마/문서에 정의되어 있다. 이번 확인에서는 �
 | 추가 환율 | `USDCNH`, `USDCNY`, `USDJPY`, `AUDUSD`, `EURUSD` | 15,690 |
 | COT 선물 포지션 | `HG` 구리, `CL` WTI, `DX` 달러지수, `J6` 엔화, `GC` 금, `VX` VIX | 3,666 |
 | ETF 가격 | `EWY`, `EEM`, `FXI` | 8,835 |
+| 대만 ETF·환율 | `EWT`, `USDTWD` | 6,080 |
+| 변동성 지수 | `^VVIX`, `^VIX3M`, `^VIX9D` | 8,836 |
+| 미국 금리 COT | `ZT` 2년 국채, `ZN` 10년 국채, `ZB` 30년 국채, `ZQ` 연방기금 선물 | 2,444 |
 
 - 매크로: 141개 월별 파티션·565개 S3 객체. 2026-09-20 **00:32 KST** 재조회 검증 완료.
   원본·선별 payload 282개의 체크섬 및 원문 일치를 검증했다.
@@ -44,20 +54,26 @@ TeamAlpha-data 스키마/문서에 정의되어 있다. 이번 확인에서는 �
 - 환율/COT/ETF: 168개 연도·계열 파티션·673개 S3 객체. 2026-09-20 **14:22 KST** 재조회 검증 완료.
   원본·관측 payload 336개의 체크섬과 로컬 원본과의 byte 일치를 확인했다.
   FX 주말 날짜 433행을 삭제하지 않고 품질 플래그로 남겼다.
+- 대만/변동성/금리 포지션: 108개 연도·계열 파티션·433개 S3 객체.
+  2026-09-20 **21:29 KST** 재조회 검증 완료. 원본·관측 payload 216개의 체크섬,
+  전 행의 원문·source index·수집시각·PIT 차단 및 로컬 파일과의 byte 일치를 확인했다.
+  USDTWD 주말 날짜 78행은 품질 플래그로 보존했다. 실제 수집시각은 같은 날
+  **21:25:24~21:26:18 KST**이고, S3 승격 중 FMP 재호출은 0회다.
 - 표의 기간은 **API 조회 범위**다. 통계 대상기간·공식 발표일 범위나 모든 거래일의 완전성을
   의미하지 않는다. 이번 매크로 스냅샷에서 CPI·경상수지의 첫 제공 날짜는 2015년 2월이며,
   COT의 최신 보유 기준일은 2026-09-15, 추가 환율·ETF의 최신 제공 날짜는 2026-09-18이다.
 - 세계 경제캘린더 전체 원본 254,037행은 매크로 `raw/` 증빙에 들어 있다.
   이 숫자를 허용 목록의 관측 수로 세거나, 포함된 미국·중국 통계를 연구 입력으로 자동 승인하지 않는다.
-- 두 묶음 모두 `pit_approved=false`, `publication_time_verified=false`,
+- 세 묶음 모두 `pit_approved=false`, `publication_time_verified=false`,
   `revision_history_verified=false`, `silver_publish_allowed=false`다.
-  환율/COT/ETF는 추가로 `historical_backtest_allowed=false`이며,
+  외부 레짐 두 묶음은 추가로 `historical_backtest_allowed=false`이며,
   모든 관측의 미검증 `released_at`·`available_at`·`vintage`는 null이다.
 - 기준일과 실제 API 수집시각을 분리했다. COT 기준일에 임의의 발표시각을 붙이지 않았고,
   S3로 옮길 때 실제 수집시각을 업로드 시각이나 과거 날짜로 바꾸지 않았다.
   **Bronze 보유 완료는 과거 PIT 인증·백테스트 사용 승인·연구 패널 연결 완료가 아니다.**
-- 일일 연결 코드는 있으나 이 두 추가 수집기의 운영 배포는 아직 하지 않았다.
-  기존 `fmp_daily` 인증 기록과 별개다. VVIX·VIX3M·항셍·닛케이225는 조사 후보이며 이번 적재분에 없다.
+- 일일 연결 코드는 있으나 추가 수집기의 운영 배포는 아직 하지 않았다.
+  기존 `fmp_daily` 인증 기록과 별개다. 항셍·닛케이225·TIP·RSP 등 나머지 조사 후보는
+  이번 적재분에 없다. VVIX·VIX3M·VIX9D는 위 risk 묶음에 보유 완료로 반영했다.
 
 ## 한투 데이터 상세
 
@@ -113,4 +129,71 @@ NXT 공개 자료와 필요한 한투 상장폐지 메타데이터는 코드가 
   [S3 재조회 검증 증빙](/Users/mac/Documents/GitHub/TeamAlpha-data/data/audits/fmp-macro-s3-20260920/verification.json).
 - [FMP 환율·COT·ETF 적재 문서](/Users/mac/Documents/GitHub/TeamAlpha-data/docs/fmp-external-bronze.md),
   [S3 재조회 검증 증빙](/Users/mac/Documents/GitHub/TeamAlpha-data/data/audits/fmp-external-load-20260920/s3_verification.json).
+- [FMP 대만·변동성·금리 포지션 적재 문서](/Users/mac/Documents/GitHub/TeamAlpha-data/docs/fmp-risk-bronze.md),
+  [S3 재조회 검증 증빙](/Users/mac/Documents/GitHub/TeamAlpha-data/data/audits/fmp-risk-load-20260920/s3_verification.json).
   FMP 링크는 같은 로컬 workspace의 TeamAlpha-data 파일이며, S3 위치는 각 증빙의 `manifest_uri`에도 있다.
+
+### FMP PIT 심사 후속 (2026-09-20)
+
+[실원본 심사 보고서](../output/pit_audit/fmp-20260920/report.md): 37계열 47,483행을 로컬 검사했으며
+역사적 PIT 승인은 0개다. 23계열은 실제 backfill 원본, macro 14계열은 앞선 audit replay를 사용했고
+이번에 S3 동일본을 재인증하지 않았다. Cboe 현재 공식 종가와 74건 차이 및 추가 날짜 1건,
+COT 발표 예외를 반영하지 않을 때 90개 관측이 월말을 넘는 사례가 확인됐다.
+Bronze 보존 검사 통과와 역사적 사용 승인을 구분한다. 원본·Silver/Gold·기존 연구 입력은 변경하지 않았다.
+
+### 한국 정책금리 월말 정제 승인 (동일 날짜의 후속 작업)
+
+위 0개 판정 후 [정제 입력 1개를 승인](../output/regime_inputs/kr-policy-pit-20260920/README.md)했다.
+정확한 S3 매크로 141 partition·1,932행을 재검증했고, 정책금리 105행을 공식 결정 103건과 대조했다.
+actual은 모두 일치, 날짜 36행 정규화, 중복 2행은 원본 연결을 보존하여 해소했다.
+2014년 워밍업 포함 한국은행 결정문 115건과 금리 변경 27건의 근거를 확보했다.
+
+`KR_POLICY_DIRECTION_3M`: 2015-01~2026-08 140개월, 월말 공표 목표금리의 3개월 변화 부호로 분류.
+공식 발표일 종료를 보수적 가용시각 상한으로 쓰는 **월말 진단 전용** 승인이다.
+원본 FMP 시각·estimate/previous·장중 사용·팩터 feature는 승인하지 않았다.
+`research/regime_sources.json`에 등록되어 새 캠페인에서 기본 동결하며 기존 캠페인은 바꾸지 않는다.
+저장은 로컬 불변 Silver artifact(`output/regime_inputs/kr-policy-pit-20260920/silver/context.json`)이며
+RDS/S3 Silver 적재는 아니다. 나머지 36계열과 공식 시장지수 입력은 여전히 별도 심사가 필요하다.
+
+### 잔여 FMP 36계열 실검증 (2026-09-21)
+
+[종합 검증 보고서](../output/pit_audit/fmp-20260921/report.md),
+[기계 판독 결과](../output/pit_audit/fmp-20260921/verification.json).
+정책금리 포함 37계열 47,483행의 원본 무결성 및 기초 품질을 재검사했다.
+매크로는 정확한 S3 backfill 미러를 사용했다. 이번 실행에서 S3를 새로 다운로드한 것은 아니다.
+
+- COT 10계열 6,110행의 10개 핵심 필드 **61,100개 값 전부 CFTC 현행 공식 이력과 일치**.
+  실제 발표·정정 달력과 최초 vintage 승인은 별도이며, 수치 대조 통과를 PIT 승인으로 바꾸지 않았다.
+- CPI MoM/YoY는 공식 월별 발표 페이지 140건·280개 값 중 **279개 일치, 1개 차이**.
+  2017-09분 FMP 날짜가 공식 발표보다 4일 늦고, 2026-01분 페이지에는 3월 수정 공지가 있다.
+  PDF 표지로 2026-01분의 원래 발표시점(2월 3일)을 게시일과 구분했다.
+  2024-04 MoM은 FMP 0.0%, 현재 공식 PDF 0.1%로 정정 전후/오류 여부 추가 확인이 필요하다.
+- ETF 4계열의 2026-09-18 종가는 운용사 공시값과 모두 일치. 장기 운용사 XLS는 NAV이므로
+  과거 종가 전수 대조로 주장하지 않는다. FX 6계열 511개 주말 행은 모두 일요일이다.
+- 나머지 매크로 11계열의 최초 발표자료 전수 대조, FX 동일 fixing 값 및 ETF 역사 종가 대조는 미완료.
+  기존 Cboe 현재 공식값 차이 74개와 추가 날짜 1개는 재확인했다.
+
+새 PIT 승인 0개, 기존 정책금리 월말 진단 입력 승인 1개 유지. 원본·registry·기존 캠페인·OOS·DB는 변경하지 않았다.
+
+### 사용자 PIT 가정 수용·실제 레짐 연결 (2026-09-21 후속)
+
+위는 검증 당시의 기록이다. 이후 사용자가 추가 PIT 전수검증·영향측정 없이 레짐 진단에 사용하도록
+요청하여 [별도 가정 정책](regime_assumption_policy.json)을 만들고 **새 캠페인 기본 입력 38축**을 연결했다.
+원본의 검증 flags·실제 수집시각·기존 캠페인은 변경하지 않았다. 파생 로컬 artifact이며 RDS/Gold 적재가 아니다.
+
+- 기존 검증 한국 정책금리 1축: 2015-01~2026-08, 140개월.
+- `PIT_ASSUMED` FMP 36축: 매크로 13·FX 6·ETF 4·COT 10·변동성지수 3.
+  47,378행 원본 연결을 보존. 2015-01~2026-08 5,040축·월 중 4,313개 판독, 727개 UNKNOWN.
+  2026-08 36축 모두 판독. 가격 방향은 2015-04, 나머지 축은 2017-01/02부터 워밍업 완료.
+- `PIT_ASSUMED` KOSPI 1축: 로컬 완전월 2015-01~2026-06 138개.
+  장·단기 추세/변동성 네 축 판독은 2018-01~2026-06 102개월. 2026-07~08은 UNKNOWN.
+- 기존 FMP 9계열은 로컬 2026년 9월 표본(18개 manifest)뿐이어서 이번 장기 입력에서 제외했다.
+  API 자체의 장기 coverage 부재를 주장하지 않는다.
+
+검증되지 않은 최초 vintage와 가용시각은 가정으로 표시한다. 실제 receipt·raw hash와 가정시각을 분리하고
+월 t 상태를 t+1 진단에만 연결한다. 추가 팩터 실행·OOS 열람·기존 교훈 덮어쓰기는 하지 않았다.
+
+[레짐 정책과 재현 명령](REGIME_INPUTS.md),
+[38축 실제 판독 결과](../output/regime_inputs/assumed-regime-layer-20260921-v1/README.md),
+[FMP 입력](../output/regime_inputs/fmp-assumed-20260921-v1/README.md),
+[KOSPI 입력](../output/regime_inputs/kospi-assumed-20260921-v1/README.md).

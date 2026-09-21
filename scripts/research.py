@@ -270,6 +270,15 @@ def _prospective_campaign_boundary(
 
 
 def cmd_campaign_start(args) -> None:
+    from engine.regime_inputs import load_campaign_context
+    diagnostic_regimes = load_campaign_context(
+        explicit_path=getattr(args, "regime_context", None),
+        registry_path=REPO_ROOT / "research/regime_sources.json",
+        disabled=getattr(args, "no_regime_context", False),
+    )
+    if diagnostic_regimes:
+        print("동결할 승인 레짐 입력: " + ", ".join(
+            x["source"]["context_id"] for x in diagnostic_regimes["contexts"]))
     run.load_registry()
     panel = run._load()
     try:
@@ -346,6 +355,7 @@ def cmd_campaign_start(args) -> None:
         program_id=args.program,
         expected_candidate_count=args.expected_candidates,
         input_generation=input_generation,
+        diagnostic_regimes=diagnostic_regimes,
     )
     context = research.write_context(panel, F.REGISTRY)
     memory = context
@@ -364,6 +374,31 @@ def cmd_campaign_start(args) -> None:
     print(f"마지막 OOS 수익률 월: {window.oos_return_end}")
     print(f"campaign 전용 컨텍스트: {context}")
     print(f"시행 전량 메모리: {memory}")
+
+
+def cmd_candidate_input_check(args) -> None:
+    """Inspect fixed Discovery input availability without RDS or registration."""
+    run.load_registry()
+    missing = [name for name in args.factors if name not in F.REGISTRY]
+    if missing:
+        raise SystemExit(f"등록되지 않은 팩터: {missing}")
+    factors = [F.REGISTRY[name] for name in args.factors]
+    try:
+        campaign = epochs.load_campaign("research", args.campaign)
+        artifact = run.preflight_candidate_inputs(campaign, run._load(), factors)
+        print(json.dumps({
+            "stage": "LOCAL_INPUT_CHECK_ONLY",
+            "campaign_id": args.campaign,
+            "live_identity_checked": False,
+            "registration_authorized": False,
+            "input_feasibility": artifact,
+        }, ensure_ascii=False, indent=2))
+        research_policy.assert_input_feasibility_artifact(
+            artifact, factors,
+            snapshot_digest=campaign["snapshot"]["discovery_input_digest"],
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def cmd_epoch_start(args) -> None:
@@ -490,7 +525,7 @@ def cmd_evaluate(args) -> None:
         panel, df, factor, comparison_registry,
     )
     report, context = _persist_discovery_result(
-        args, panel, factor, result, relationships,
+        args, panel, factor, result, relationships, frame=df,
     )
     print(f"\n연구 사이클 기록: {report}")
     print(f"다음 루프 컨텍스트: {context}")
@@ -499,12 +534,25 @@ def cmd_evaluate(args) -> None:
     print("Gold write: 없음")
 
 
-def _persist_discovery_result(args, panel, factor, result, relationships):
+def _persist_discovery_result(args, panel, factor, result, relationships, *, frame=None):
     """Persist artifacts first and append the trial ledger last."""
+    mechanism_study = None
+    if frame is not None:
+        from engine.mechanism_capture import capture_discovery
+        campaign = epochs.load_campaign("research", args.campaign)
+        try:
+            mechanism_study = capture_discovery(
+                panel, frame, factor, result, campaign, RESEARCH_SPECS[factor.name],
+            )
+        except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
+            # Diagnostic failures must be visible, but do not reinterpret gates
+            # or force a second candidate evaluation just to persist the verdict.
+            mechanism_study = {"status": "ERROR", "reason": f"{type(exc).__name__}: {exc}"}
     report, context = research.record_cycle(
         panel, F.REGISTRY, factor, result, RESEARCH_SPECS[factor.name],
         relationships, campaign_id=args.campaign, epoch_id=args.epoch,
         phase="discovery",
+        mechanism_study=mechanism_study,
     )
     epochs.mark_evaluated(
         "research", args.campaign, args.epoch, factor, result,
@@ -604,7 +652,7 @@ def cmd_epoch_evaluate(args) -> None:
 
     for factor, result in zip(targets, results, strict=True):
         report, _context = _persist_discovery_result(
-            args, panel, factor, result, relationships[factor.name],
+            args, panel, factor, result, relationships[factor.name], frame=df,
         )
         print(
             f"batch 후보 기록: {factor.name} -> {report} "
@@ -909,6 +957,13 @@ def main() -> None:
     campaign_abort.add_argument("--reason", required=True)
     campaign_start = commands.add_parser("campaign-start", help="봉인 OOS campaign 시작")
     campaign_start.add_argument("--campaign", required=True)
+    regime_options = campaign_start.add_mutually_exclusive_group()
+    regime_options.add_argument(
+        "--regime-context", type=Path,
+        help="검증 또는 사용자 가정 수용 레짐 JSON 지정 (미지정 시 기본 registry 입력 동결)",
+    )
+    regime_options.add_argument("--no-regime-context", action="store_true",
+        help="이 새 캠페인에 한해 기본 레짐 입력을 명시적으로 사용하지 않음")
     campaign_start.add_argument(
         "--mode",
         choices=[HISTORICAL_HOLDOUT_MODE, PROSPECTIVE_HOLDOUT_MODE],
@@ -930,6 +985,12 @@ def main() -> None:
         "--expected-candidates", type=int,
         help="program 시작 전에 고정하는 전체 후보 수",
     )
+    input_check = commands.add_parser(
+        "candidate-input-check",
+        help="로컬 Discovery 입력 커버리지 확인 (DB 조회·연구 등록·수익률 평가 없음)",
+    )
+    input_check.add_argument("--campaign", required=True)
+    input_check.add_argument("--factors", nargs="+", required=True)
     epoch_start = commands.add_parser("epoch-start", help="후보 배치 사전등록")
     epoch_start.add_argument("--campaign", required=True)
     epoch_start.add_argument("--epoch", required=True)
@@ -980,6 +1041,7 @@ def main() -> None:
         "campaign-invalidate-input": cmd_campaign_invalidate_input,
         "campaign-abort": cmd_campaign_abort,
         "campaign-start": cmd_campaign_start,
+        "candidate-input-check": cmd_candidate_input_check,
         "epoch-start": cmd_epoch_start,
         "evaluate": cmd_evaluate,
         "epoch-evaluate": cmd_epoch_evaluate,

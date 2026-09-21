@@ -52,6 +52,13 @@ uv run python scripts/research.py identity-audit  # 활성 캐시 ↔ live RDS �
 
 ## 자율 연구 campaign/epoch
 
+시장·매크로 레짐을 연구 진단과 교훈 증거에 전달하는 입력 계약은
+[레짐 입력 연결](research/REGIME_INPUTS.md)을 참고하세요. 새 캠페인은 기본 registry의 검증 입력과
+사용자가 수용한 `PIT_ASSUMED` 입력을 사전 동결하며, `--regime-context`로 대체하거나
+`--no-regime-context`로 제외할 수 있습니다. 가정 수용은 최초 발표값의 PIT 인증이 아니며,
+미승인 Bronze나 기존 결과에 소급 적용하지 않습니다. 새 checkout에 필요한 파일과 검사 방법은
+[레짐 입력 배포](research/REGIME_ARTIFACTS.md)에 정리되어 있습니다.
+
 새 연구는 같은 후보의 OOS를 반복해서 보지 않는다. campaign이 현재 데이터의 마지막 36개월을
 처음부터 숨기고, epoch이
 결과를 보기 전에 여러 후보의 이름과 definition hash를 동결한다.

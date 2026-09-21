@@ -220,6 +220,10 @@ def load_epoch(root: str | Path, campaign_id: str, epoch_id: str) -> dict:
 
 def _assert_current_state(campaign: dict, epoch: dict | None = None) -> None:
     """Refuse to reinterpret finalized research with a newer protocol/ruleset."""
+    from engine.regime_inputs import frozen_digest
+    regime_digest = frozen_digest(campaign)
+    if epoch is not None and epoch.get("diagnostic_regimes_sha256") != regime_digest:
+        raise ValueError("사전등록 후 진단 레짐 입력이 변경됐습니다")
     if campaign.get("protocol_version") != PROTOCOL_VERSION:
         raise ValueError(
             "campaign protocol이 현재 엔진과 다릅니다: "
@@ -272,6 +276,7 @@ def start_campaign(
     program_id: str | None = None,
     expected_candidate_count: int | None = None,
     input_generation: dict | None = None,
+    diagnostic_regimes: dict | None = None,
 ) -> Path:
     """Create one historical or prospective holdout without exposing it."""
     campaign_id = _validate_id(campaign_id, "campaign id")
@@ -442,6 +447,12 @@ def start_campaign(
     }
     if input_generation is not None:
         payload["input_generation"] = input_generation
+    if diagnostic_regimes is not None:
+        from engine.regime_inputs import freeze_context
+        payload["diagnostic_regimes"] = freeze_context(
+            diagnostic_regimes, data_cutoff=window.discovery_data_cutoff,
+            oos_start=str(window.oos_signal_start),
+        )
     _write(path, payload)
     return path
 
@@ -735,6 +746,7 @@ def start_epoch(
         "created_at": _now(),
         "ruleset_version": campaign["ruleset_version"],
         "discovery_data_cutoff": campaign["discovery"]["data_cutoff"],
+        "diagnostic_regimes_sha256": campaign.get("diagnostic_regimes", {}).get("sha256"),
         "oos_status": "SEALED",
         "candidate_batch_policy": batch_policy,
         "input_feasibility": input_feasibility,

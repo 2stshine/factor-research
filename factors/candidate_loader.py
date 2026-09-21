@@ -407,6 +407,9 @@ def _validate_spec(path: Path, factor: Factor, value, *, source_digest: str) -> 
     if missing:
         raise ValueError(f"{path}: RESEARCH_SPEC 필드 누락 {sorted(missing)}")
     output = {str(key): item for key, item in value.items()}
+    if "mechanism_plan" in output:
+        from engine.scientist_review import validate_plan
+        validate_plan(output["mechanism_plan"])
     output["factor_name"] = factor.name
     try:
         strategy_file = path.resolve().relative_to(Path.cwd().resolve())

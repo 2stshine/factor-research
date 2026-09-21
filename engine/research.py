@@ -758,6 +758,8 @@ def write_context(
         "",
         "## Available strategy inputs",
         "",
+        "아래는 원시 컬럼의 결측 비율이며, 후보의 룩백·분모 조건을 적용한 계산 가능 비율이 아니다.",
+        "",
         "| column | overall coverage | latest-month coverage |",
         "|---|---:|---:|",
     ]
@@ -768,7 +770,9 @@ def write_context(
         )
     lines += [
         "",
-        "## Registered factors",
+        "## Registered factors (코드 정의 목록·연구 승인 아님)",
+        "",
+        "미평가·입력 부족 후보도 포함된다. epoch 사전등록, 검증 통과, Gold APPROVED는 별도 상태다.",
         "",
         "| factor | category | family | definition hash | inputs |",
         "|---|---|---|---|---|",
@@ -846,6 +850,7 @@ def record_cycle(
     campaign_id: str | None = None,
     epoch_id: str | None = None,
     phase: str = "full",
+    mechanism_study: dict | None = None,
 ) -> tuple[Path, Path]:
     """Persist an immutable result bundle, append history, and refresh context."""
     root = Path(research_dir)
@@ -881,6 +886,10 @@ def record_cycle(
         "evaluation": serialized,
         "relationships": relationships,
     }
+    if mechanism_study is not None:
+        if phase != "discovery":
+            raise ValueError("Mechanism capture is Discovery-only")
+        payload["mechanism_study"] = mechanism_study
     result_path = run_dir / "result.json"
     result_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, default=_jsonable) + "\n",
