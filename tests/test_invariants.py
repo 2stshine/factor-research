@@ -1376,8 +1376,8 @@ def test_approved_catalog_without_values_fails_t5_closed(monkeypatch):
         lambda _conn: ["approved_without_values"],
     )
     monkeypatch.setattr(
-        run_script.silver, "load_approved_values",
-        lambda _conn: pd.DataFrame(
+        run_script.silver, "load_approved_values_for_targets",
+        lambda _conn, _targets: pd.DataFrame(
             columns=["factor_key", "asset_id", "as_of_date", "value"]
         ),
     )
@@ -1747,10 +1747,13 @@ def test_latest_context_exposes_unused_pit_inputs_but_not_research_outputs(tmp_p
     )
     path = research.write_context(panel, Registry(), research_dir=tmp_path)
     context = path.read_text()
-    inputs = context.split("## Registered factors", maxsplit=1)[0]
+    inputs = context.split("## 무엇을 이미 정의·시도했나", maxsplit=1)[0]
     assert "`capital_stock`" in inputs
     assert "`fwd_mid`" not in inputs
     assert "`f_example`" not in inputs
+    assert "후보의 룩백·분모 조건을 적용한 계산 가능 비율이 아니다" in inputs
+    assert "## 무엇을 이미 정의·시도했나" in context
+    assert (tmp_path / "memory/factor_index.json").exists()
 
 
 def test_latest_context_withholds_post_cutoff_history_without_active_campaign(tmp_path):
@@ -1785,8 +1788,11 @@ def test_latest_context_withholds_post_cutoff_history_without_active_campaign(tm
         context_cutoff="2023-06-30",
     ).read_text()
 
-    assert "old-full-sample" in context
-    assert "old-full-sample" in context
+    index = (tmp_path / "memory/factor_index.json").read_text()
+    assert "old-full-sample" not in context
+    assert "old-full-sample" in index
+    assert "PROVISIONAL" not in index
+    assert "research/runs/old/report.md" not in index
     assert "PROVISIONAL" not in context
     assert "research/runs/old/report.md" not in context
 
@@ -2708,11 +2714,14 @@ def test_campaign_suppresses_batch_duplicate_before_implementation(tmp_path):
         meta={"source": "RDS public Silver", **RETURN_META},
     )
     context = research.write_context(panel, Registry(), research_dir=tmp_path).read_text()
-    assert "| `candidate_a` | `candidate_a` | `candidate_a` |" in context
-    assert f"| `{gate.RULESET_VERSION}` |" in context
+    index = (tmp_path / "memory/factor_index.json").read_text()
+    assert "candidate_a" in index
+    assert gate.RULESET_VERSION in index
     assert "PROVISIONAL" not in context
-    assert "old-full-sample" in context
-    assert "## 전체 시행 정체성" in context
+    assert "old-full-sample" in index
+    assert "PROVISIONAL" not in index
+    assert "old-full-sample" not in context
+    assert "## 전체 시행 정체성" not in context
     assert "research/runs/old/report.md" not in context
 
 

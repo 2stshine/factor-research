@@ -67,6 +67,11 @@ TOTAL_RETURN_PIT_SCOPE_CONTRACT = (
 TOTAL_RETURN_DISCLOSURE_OBSERVATION_CONTRACT = (
     "latest_manifest_coverage_end_mutable_list_fields_v1"
 )
+TOTAL_RETURN_DISCLOSURE_OBSERVATION_V3 = "latest_manifest_interval_mutable_list_fields_v3"
+TOTAL_RETURN_DISCLOSURE_OBSERVATION_CONTRACTS = frozenset({
+    TOTAL_RETURN_DISCLOSURE_OBSERVATION_CONTRACT,
+    TOTAL_RETURN_DISCLOSURE_OBSERVATION_V3,
+})
 TOTAL_RETURN_INPUT_SCOPE = {
     "prices": "CERTIFIED KRX common_stock KOSPI/KOSDAQ",
     "actions": (
@@ -658,10 +663,12 @@ TOTAL_RETURN_SCOPE_AUDIT_SQL = """
 WITH target AS (
     SELECT %s::uuid AS quality_run_id
 ), scoped AS (
-    SELECT p.*, q.status AS raw_quality_status
+    SELECT p.*, q.status AS raw_quality_status,
+           tr.status AS return_quality_status, tr.mode AS return_quality_mode
     FROM public.price_daily p
     JOIN public.asset a ON a.asset_id = p.asset_id
     LEFT JOIN public.dq_run q ON q.run_id = p.quality_run_id
+    LEFT JOIN public.dq_run tr ON tr.run_id = p.total_return_quality_run_id
     WHERE p.source = 'KRX'
       AND a.exchange = 'KRX'
       AND a.asset_type = 'stock'
@@ -692,6 +699,13 @@ SELECT
     count(*) FILTER (
         WHERE total_return_quality_run_id = target.quality_run_id
     ) AS total_return_run_row_count,
+    count(*) FILTER (
+        WHERE return_quality_status = 'CERTIFIED'
+          AND return_quality_mode = 'krx_total_return_rebuild'
+    ) AS certified_return_lineage_row_count,
+    array_agg(DISTINCT total_return_quality_run_id::text ORDER BY total_return_quality_run_id::text)
+        FILTER (WHERE total_return_quality_run_id IS NOT NULL)
+        AS total_return_lineage_run_ids,
     count(*) FILTER (
         WHERE total_return_close IS NOT NULL
           AND total_return_close > 0
@@ -1171,6 +1185,28 @@ ORDER BY factor_key, asset_id, as_of_date
 """
 
 
+APPROVED_TARGET_VALUES_SQL = """
+WITH targets AS MATERIALIZED (
+    SELECT asset_id, month_start
+    FROM unnest(%s::bigint[], %s::date[]) AS t(asset_id, month_start)
+)
+SELECT f.factor_key, t.asset_id, v.as_of_date,
+       v.value * coalesce((f.config->>'predicted_sign')::integer, 1) AS value
+FROM gold.factor f
+CROSS JOIN targets t
+CROSS JOIN LATERAL (
+    SELECT value, as_of_date
+    FROM gold.factor_value
+    WHERE factor_id = f.factor_id AND asset_id = t.asset_id
+      AND as_of_date >= t.month_start
+      AND as_of_date < (t.month_start + INTERVAL '1 month')::date
+    ORDER BY as_of_date DESC
+    LIMIT 1
+) v
+WHERE f.status = 'APPROVED'
+"""
+
+
 APPROVED_FACTOR_KEYS_SQL = """
 SELECT DISTINCT factor_key
 FROM gold.factor
@@ -1181,6 +1217,8 @@ ORDER BY factor_key
 
 GOLD_GENERATION_SQL = """
 SELECT count(*)::bigint AS approved_factor_count,
+       count(nullif(config->>'gold_generation_digest', ''))::bigint
+           AS generation_bound_factor_count,
        count(DISTINCT nullif(config->>'gold_generation_digest', ''))::integer
            AS generation_digest_count,
        min(nullif(config->>'gold_generation_digest', ''))
@@ -3137,8 +3175,14 @@ def _cash_scale_ratio_equal(
     return _cash_scale_decimal_equal(scale, ratio)
 
 
+# Producer contract: TeamAlpha-data 43ad47b (2026-09-15). This bound is
+# independent of candidate outcomes, and must not be tuned to pass a factor.
+MAX_STABLE_SCALE_LINEAGE_DRIFT = 6e-8
+CASH_SCALE_ROUNDING_CONTRACT = "krx_4dp_two_stage_stable_drift_6e8_v1"
+
+
 def _cash_scale_stored_scale_interval(
-    *, close: float, adjusted_close: float,
+    *, close: float, adjusted_close: float, uncertainty: float = 0.00005,
 ) -> tuple[float, float]:
     """Return the exact scale interval implied by a 4dp stored adj_close."""
     if not all(
@@ -3146,10 +3190,24 @@ def _cash_scale_stored_scale_interval(
         for value in (close, adjusted_close)
     ):
         raise ValueError("stored price scale inputs must be positive")
-    low = (adjusted_close - 0.00005) / close
-    high = (adjusted_close + 0.00005) / close
+    low = (adjusted_close - uncertainty) / close
+    high = (adjusted_close + uncertainty) / close
     ulp = max(math.ulp(low), math.ulp(high))
     return low - ulp, high + ulp
+
+
+def _cash_scale_stored_scales_may_match(
+    *, previous_close: float, previous_adj_close: float,
+    applied_close: float, applied_adj_close: float,
+) -> bool:
+    previous_low, previous_high = _cash_scale_stored_scale_interval(
+        close=previous_close, adjusted_close=previous_adj_close,
+    )
+    applied_low, applied_high = _cash_scale_stored_scale_interval(
+        close=applied_close, adjusted_close=applied_adj_close,
+    )
+    drift = abs((previous_adj_close / previous_close) / (applied_adj_close / applied_close) - 1.0)
+    return (previous_low <= applied_high and applied_low <= previous_high) or drift <= MAX_STABLE_SCALE_LINEAGE_DRIFT
 
 
 def _cash_scale_stored_scale_parity(
@@ -3177,9 +3235,11 @@ def _cash_scale_stored_factor_interval(
 ) -> tuple[float, float]:
     previous_low, previous_high = _cash_scale_stored_scale_interval(
         close=previous_close, adjusted_close=previous_adj_close,
+        uncertainty=0.0001,  # Two four-decimal source/persistence roundings.
     )
     applied_low, applied_high = _cash_scale_stored_scale_interval(
         close=applied_close, adjusted_close=applied_adj_close,
+        uncertainty=0.0001,
     )
     low = previous_low / applied_high
     high = previous_high / applied_low
@@ -3363,19 +3423,11 @@ def _cash_scale_resolution_semantic_checks(
             applied_close = float(row.applied_close)
             previous_scale = float(row.previous_adj_close) / previous_close
             applied_scale = float(row.applied_adj_close) / applied_close
-            previous_low, previous_high = (
-                _cash_scale_stored_scale_interval(
-                    close=previous_close,
-                    adjusted_close=float(row.previous_adj_close),
-                )
-            )
-            applied_low, applied_high = _cash_scale_stored_scale_interval(
-                close=applied_close,
-                adjusted_close=float(row.applied_adj_close),
-            )
-            expected_changed = not (
-                previous_low <= applied_high
-                and applied_low <= previous_high
+            expected_changed = not _cash_scale_stored_scales_may_match(
+                previous_close=previous_close,
+                previous_adj_close=float(row.previous_adj_close),
+                applied_close=applied_close,
+                applied_adj_close=float(row.applied_adj_close),
             )
             observed = previous_scale / applied_scale
             factor_low, factor_high = _cash_scale_stored_factor_interval(
@@ -3563,6 +3615,40 @@ def total_return_asset_identity_evidence(frame: pd.DataFrame) -> dict[str, Any]:
         "row_count": int(len(scoped)),
         "asset_count": int(scoped["asset_id"].nunique()),
     }
+
+
+def _valid_disclosure_observation_audit(audit: Any) -> bool:
+    """Accept only reviewed display-field reconciliation contracts.
+
+    V3 orders by manifest end/start and tolerates only the correction-order
+    prefix on report names. Economic/receipt identity changes remain forbidden
+    by the producer; the enclosing snapshot and return contract must agree.
+    """
+    if not isinstance(audit, dict) or audit.get("contract") not in TOTAL_RETURN_DISCLOSURE_OBSERVATION_CONTRACTS:
+        return False
+    if audit["contract"] == TOTAL_RETURN_DISCLOSURE_OBSERVATION_CONTRACT:
+        return True  # Historical evidence retains its original validation rule.
+    mutable = ["corp_cls", "corp_name", "flr_nm", "rm"]
+    counts = [audit.get(key) for key in (
+        "observation_count", "unique_receipt_count", "duplicate_receipt_count",
+        "mutable_conflict_receipt_count",
+    )]
+    if any(type(value) is not int or value < 0 for value in counts):
+        return False
+    observed, unique, duplicate, conflicts = counts
+    fields = audit.get("mutable_conflict_field_counts")
+    return (
+        audit.get("mutable_fields") == mutable
+        and audit.get("conditional_mutable_fields") == {
+            "report_nm": "leading_[정정명령부과]_display_marker_only",
+        }
+        and observed >= unique >= duplicate >= conflicts
+        and observed - unique >= duplicate
+        and isinstance(fields, dict)
+        and set(fields).issubset([*mutable, "report_nm"])
+        and all(type(value) is int and 0 <= value <= conflicts for value in fields.values())
+        and sum(fields.values()) >= conflicts
+    )
 
 
 def _validate_total_return_contract(
@@ -3851,6 +3937,30 @@ def _validate_total_return_contract(
         ),
     }
     parity = metadata.get("per_row_run_parity")
+    lineage_contract = parity.get("contract") if isinstance(parity, dict) else None
+    if lineage_contract not in (None, "certified_generation_lineage_v2"):
+        raise RuntimeError(f"알 수 없는 총수익 lineage 계약: {lineage_contract!r}")
+    lineage_ids = []
+    if lineage_contract == "certified_generation_lineage_v2":
+        observed_ids = scope.get("total_return_lineage_run_ids")
+        if isinstance(observed_ids, (list, tuple)):
+            lineage_ids = sorted(set(str(value) for value in observed_ids if value))
+        # The current certification binds the full scope, including inherited
+        # rows. Do not accept old runs based on metadata declarations alone.
+        price_checks["total_return_run_parity"] = (
+            int(scope.get("certified_return_lineage_row_count") or 0)
+            == observed_price_rows
+        )
+        price_checks.pop("one_total_return_run")
+        price_checks["lineage_run_set"] = (
+            bool(lineage_ids)
+            and len(lineage_ids) == int(scope.get("total_return_run_count") or 0)
+        )
+        price_checks["current_run_rows"] = (
+            type(parity.get("current_run_rows")) is int
+            and 0 <= parity["current_run_rows"] <= observed_price_rows
+            and parity["current_run_rows"] == int(scope.get("total_return_run_row_count") or 0)
+        )
     price_checks["declared_per_row_parity"] = (
         isinstance(parity, dict)
         and parity.get("quality_field") == "total_return_quality_run_id"
@@ -4310,8 +4420,7 @@ def _validate_total_return_contract(
         ),
         "disclosure_observation_binding": (
             action_disclosure_audit == snapshot_disclosure_audit
-            and action_disclosure_audit.get("contract")
-            == TOTAL_RETURN_DISCLOSURE_OBSERVATION_CONTRACT
+            and _valid_disclosure_observation_audit(action_disclosure_audit)
             and _sha256_text(
                 action_disclosure_audit.get("mutable_conflict_digest"),
                 label="disclosure_observation_audit.mutable_conflict_digest",
@@ -4605,7 +4714,7 @@ def _validate_total_return_contract(
             cash_scale_support_group_count
         ),
         "disclosure_observation_contract": (
-            TOTAL_RETURN_DISCLOSURE_OBSERVATION_CONTRACT
+            action_disclosure_audit["contract"]
         ),
         "disclosure_mutable_conflict_digest": (
             action_disclosure_audit["mutable_conflict_digest"]
@@ -4648,6 +4757,10 @@ def _validate_total_return_contract(
         "asset_identity_contract": identity["contract"],
         "asset_identity_digest": identity["digest"],
     }
+    evidence["cash_scale_rounding_contract"] = CASH_SCALE_ROUNDING_CONTRACT
+    if lineage_contract == "certified_generation_lineage_v2":
+        evidence["price_lineage_contract"] = lineage_contract
+        evidence["price_lineage_run_ids"] = lineage_ids
     evidence["evidence_sha256"] = total_return_evidence_sha256(evidence)
     return row.to_dict(), evidence
 
@@ -4671,10 +4784,20 @@ def _load_validated_total_return_contract(
         raise RuntimeError(
             "Silver 총수익 계약의 run/coverage/action snapshot binding이 없습니다"
         )
-    scope = read_frame(conn, TOTAL_RETURN_SCOPE_AUDIT_SQL, (run_id,))
     action = read_frame(
         conn, TOTAL_RETURN_ACTION_SNAPSHOT_AUDIT_SQL, (action_run_id,),
     )
+    # Reject unsupported producer metadata before scanning millions of prices.
+    # This is a preflight only; every full lineage check below still runs.
+    action_row = _one_row(action, label="DART action snapshot")
+    bound_audit = metadata.get("action_snapshot", {}).get("disclosure_observation_audit")
+    observed_audit = (action_row.get("snapshot_metadata") or {}).get("disclosure_observation_audit")
+    if bound_audit != observed_audit or not _valid_disclosure_observation_audit(bound_audit):
+        raise RuntimeError(
+            "Silver DART disclosure observation 계약 불일치 또는 미지원 버전: "
+            f"{bound_audit.get('contract') if isinstance(bound_audit, dict) else None!r}"
+        )
+    scope = read_frame(conn, TOTAL_RETURN_SCOPE_AUDIT_SQL, (run_id,))
     source_receipts = read_frame(
         conn, TOTAL_RETURN_SOURCE_RECEIPT_SQL, (action_run_id,),
     )
@@ -4733,6 +4856,24 @@ def _contract_attrs(
     }
     rendered["validation_evidence"] = dict(evidence)
     return rendered
+
+
+def total_return_lineage_run_ids(evidence: dict[str, Any]) -> list[str]:
+    """Allowed row lineage from verified, content-addressed scope evidence."""
+    contract = evidence.get("price_lineage_contract")
+    if contract is None:
+        if "price_lineage_run_ids" in evidence:
+            raise RuntimeError("총수익 lineage ID 목록의 계약이 없습니다")
+        return [str(evidence["quality_run_id"])]
+    ids = evidence.get("price_lineage_run_ids")
+    if (
+        contract != "certified_generation_lineage_v2"
+        or not isinstance(ids, list) or not ids
+        or any(not isinstance(value, str) or not value.strip() for value in ids)
+        or ids != sorted(set(ids))
+    ):
+        raise RuntimeError("총수익 lineage 계약 또는 인증 ID 목록이 잘못됐습니다")
+    return ids
 
 
 def verify_total_return_validation_evidence(
@@ -4812,6 +4953,9 @@ def verify_total_return_validation_evidence(
         payload.pop("evidence_sha256"), label="총수익 evidence_sha256",
     )
     actual_digest = total_return_evidence_sha256(payload)
+    if payload.get("cash_scale_rounding_contract") not in (None, CASH_SCALE_ROUNDING_CONTRACT):
+        raise RuntimeError("알 수 없는 총수익 rounding 계약")
+    total_return_lineage_run_ids(payload)
     _sha256_text(
         payload.get("cash_scale_source_evidence_digest"),
         label="총수익 cash-scale source evidence digest",
@@ -4959,7 +5103,7 @@ def verify_total_return_validation_evidence(
         ),
         "disclosure_observation_contract": (
             payload.get("disclosure_observation_contract")
-            == TOTAL_RETURN_DISCLOSURE_OBSERVATION_CONTRACT
+            in TOTAL_RETURN_DISCLOSURE_OBSERVATION_CONTRACTS
         ),
         "research_role": (
             payload.get("research_role") == TOTAL_RETURN_RESEARCH_ROLE
@@ -5201,6 +5345,36 @@ def load_approved_values(conn) -> pd.DataFrame:
         return pd.DataFrame(columns=["factor_key", "asset_id", "as_of_date", "value"])
 
 
+def load_approved_values_for_targets(conn, targets: pd.DataFrame) -> pd.DataFrame:
+    """Same monthly-last contract, using the existing factor/asset/date index.
+
+    For an uncacheable catalog, only aligned research asset-months are needed.
+    Whole calendar-month bounds preserve the old ROW_NUMBER semantics even
+    when an asset's last Gold observation precedes the Silver month-end date.
+    No metadata binding, cache write, DB object or value is changed here.
+    """
+    required = {"asset_id", "ym"}
+    if not required.issubset(targets.columns):
+        raise ValueError("Gold target 조회에는 asset_id와 ym이 필요합니다")
+    if targets.empty:
+        return pd.DataFrame(columns=["factor_key", "asset_id", "as_of_date", "value"])
+    ids = pd.to_numeric(targets["asset_id"], errors="raise")
+    if pd.api.types.is_bool_dtype(ids.dtype) or ids.isna().any() or not ids.map(
+        lambda value: (not isinstance(value, bool) and math.isfinite(float(value))
+                       and int(value) == value and 0 < value <= 2**63 - 1)
+    ).all():
+        raise ValueError("Gold target asset_id는 양의 정수여야 합니다")
+    months = pd.PeriodIndex(targets["ym"], freq="M")
+    if months.isna().any():
+        raise ValueError("Gold target month는 비어 있을 수 없습니다")
+    keys = pd.DataFrame({"asset_id": ids.to_numpy(dtype="int64"),
+                         "month_start": months.to_timestamp().date})
+    keys = keys.drop_duplicates().sort_values(["asset_id", "month_start"])
+    return read_frame(conn, APPROVED_TARGET_VALUES_SQL, (
+        keys["asset_id"].tolist(), keys["month_start"].tolist(),
+    ))
+
+
 def load_approved_factor_keys(conn) -> list[str]:
     """Return the APPROVED catalog even when a factor has no value rows.
 
@@ -5231,11 +5405,14 @@ def load_gold_generation(conn) -> dict | None:
         raise RuntimeError("Gold generation query는 정확히 한 행이어야 합니다")
     row = frame.iloc[0]
     count = int(row["approved_factor_count"])
+    bound_count = int(row["generation_bound_factor_count"])
     digest_count = int(row["generation_digest_count"])
     raw_keys = row["approved_factor_keys"]
     keys = [] if raw_keys is None else sorted(str(value) for value in raw_keys)
     if len(keys) != count or len(set(keys)) != count:
         raise RuntimeError("Gold generation approved factor exact set이 잘못되었습니다")
+    if not 0 <= bound_count <= count:
+        raise RuntimeError("Gold generation binding count가 잘못되었습니다")
     if count == 0:
         return {
             "gold_generation_digest": hashlib.sha256(b"[]").hexdigest(),
@@ -5244,6 +5421,8 @@ def load_gold_generation(conn) -> dict | None:
         }
     digest = row["gold_generation_digest"]
     if digest_count == 0 and digest is None:
+        if bound_count != 0:
+            raise RuntimeError("Gold generation binding count와 digest가 다릅니다")
         return None
     if (
         digest_count != 1
@@ -5251,6 +5430,11 @@ def load_gold_generation(conn) -> dict | None:
         or not re.fullmatch(r"[0-9a-f]{64}", digest)
     ):
         raise RuntimeError("Gold generation digest가 승인 집합 전체에 일치하지 않습니다")
+    if bound_count < count:
+        # COUNT(DISTINCT ...) ignores NULL: a partially tagged catalog is
+        # legacy/uncacheable, not a certified generation for the whole set.
+        # Read every APPROVED value in the caller's read-only snapshot instead.
+        return None
     return {
         "gold_generation_digest": digest,
         "approved_factor_count": count,

@@ -648,6 +648,11 @@ def preflight_candidate_registration(
         snapshot_digest=snapshot_digest,
         signal_end=signal_end,
     )
+    # A failed local input gate cannot register a candidate. Stop before any
+    # live identity or Gold query; neither can repair missing candidate inputs.
+    research_policy.assert_input_feasibility_artifact(
+        feasibility, factors, snapshot_digest=snapshot_digest,
+    )
     with silver.connect(read_only=True) as conn:
         if campaign.get("input_generation") is not None:
             silver.verify_live_research_generation(
@@ -851,7 +856,9 @@ def _approved_signals(conn, df: pd.DataFrame) -> dict[str, pd.Series]:
     # Legacy rows are intentionally not cached: without an atomically bound
     # generation a local cache cannot be proven current.
     approved_keys = silver.load_approved_factor_keys(conn)
-    values = silver.load_approved_values(conn)
+    if not approved_keys:
+        return {}
+    values = silver.load_approved_values_for_targets(conn, df[["asset_id", "ym"]])
     target = pd.MultiIndex.from_arrays([df["asset_id"], df["ym"]])
     output = {
         name: pd.Series(float("nan"), index=df.index, dtype=float)
@@ -859,13 +866,15 @@ def _approved_signals(conn, df: pd.DataFrame) -> dict[str, pd.Series]:
     }
     if values.empty:
         return output
-    values["ym"] = pd.to_datetime(values["as_of_date"]).dt.to_period("M")
-    for name, group in values.groupby("factor_key"):
-        keyed = (group.sort_values("as_of_date")
-                 .drop_duplicates(["asset_id", "ym"], keep="last")
-                 .set_index(["asset_id", "ym"])["value"])
-        output[str(name)] = pd.Series(keyed.reindex(target).to_numpy(dtype=float), index=df.index)
-    return output
+    # Legacy does not mean weaker identity validation. Reject duplicate months
+    # or values outside the APPROVED exact set, just as the cached path does.
+    wide = _wide_gold_signal_frame(values, approved_keys)
+    wide["ym"] = pd.PeriodIndex(wide["ym"], freq="M")
+    keyed = wide.set_index(["asset_id", "ym"])
+    return {
+        name: pd.Series(keyed[name].reindex(target).to_numpy(dtype=float), index=df.index)
+        for name in approved_keys
+    }
 
 
 def bootstrap_gold_signal_cache() -> dict:

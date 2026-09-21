@@ -665,6 +665,113 @@ def _refresh_cash_scale_source_contract(
     ] = deepcopy(metadata)
 
 
+def _incremental_evidence_frames():
+    frames = deepcopy(_evidence_frames())
+    frames["contract"].at[0, "metadata"]["per_row_run_parity"].update({
+        "contract": "certified_generation_lineage_v2", "current_run_rows": 60,
+    })
+    frames["scope"]["total_return_run_row_count"] = 60
+    frames["scope"]["certified_return_lineage_row_count"] = 100
+    frames["scope"]["total_return_run_count"] = 2
+    frames["scope"]["total_return_lineage_run_ids"] = [["prior-return-run", "return-run"]]
+    return frames
+
+
+def test_incremental_lineage_is_verified_and_digest_bound():
+    _, evidence = _validate(_incremental_evidence_frames())
+    assert silver.verify_total_return_validation_evidence(evidence) == evidence
+    assert silver.total_return_lineage_run_ids(evidence) == ["prior-return-run", "return-run"]
+    evidence["price_lineage_run_ids"].append("unverified-run")
+    with pytest.raises(RuntimeError):
+        silver.verify_total_return_validation_evidence(evidence)
+
+
+def _v3_disclosure_frames():
+    frames = _incremental_evidence_frames()
+    audit = {
+        "contract": silver.TOTAL_RETURN_DISCLOSURE_OBSERVATION_V3,
+        "mutable_fields": ["corp_cls", "corp_name", "flr_nm", "rm"],
+        "conditional_mutable_fields": {"report_nm": "leading_[정정명령부과]_display_marker_only"},
+        "observation_count": 6, "unique_receipt_count": 4,
+        "duplicate_receipt_count": 1, "mutable_conflict_receipt_count": 1,
+        "mutable_conflict_field_counts": {"report_nm": 1},
+        "mutable_conflict_digest": "c" * 64,
+    }
+    frames["contract"].at[0, "metadata"]["action_snapshot"]["disclosure_observation_audit"] = audit
+    frames["action"].at[0, "snapshot_metadata"]["disclosure_observation_audit"] = deepcopy(audit)
+    return frames
+
+
+def test_v3_disclosure_contract_keeps_actual_version_in_evidence():
+    _, evidence = _validate(_v3_disclosure_frames())
+    assert evidence["disclosure_observation_contract"] == silver.TOTAL_RETURN_DISCLOSURE_OBSERVATION_V3
+    assert silver.verify_total_return_validation_evidence(evidence) == evidence
+
+
+def test_disclosure_preflight_fails_before_expensive_price_scan(monkeypatch):
+    frames = _v3_disclosure_frames()
+    frames["contract"].at[0, "metadata"]["action_snapshot"]["disclosure_observation_audit"]["contract"] = "unsupported"
+    queries = []
+    def read(_conn, sql, params=None):
+        queries.append(sql)
+        return {
+            silver.TOTAL_RETURN_SCHEMA_AUDIT_SQL: frames["schema"],
+            silver.TOTAL_RETURN_CONTRACT_SQL: frames["contract"],
+            silver.TOTAL_RETURN_ACTION_SNAPSHOT_AUDIT_SQL: frames["action"],
+        }[sql]
+    monkeypatch.setattr(silver, "read_frame", read)
+    with pytest.raises(RuntimeError, match="disclosure observation"):
+        silver._load_validated_total_return_contract(object())
+    assert silver.TOTAL_RETURN_SCOPE_AUDIT_SQL not in queries
+
+
+@pytest.mark.parametrize("field,value", [
+    ("contract", "unreviewed-v4"),
+    ("mutable_fields", ["rcept_no"]),
+    ("conditional_mutable_fields", {"report_nm": "any_change"}),
+    ("observation_count", 3),
+    ("duplicate_receipt_count", 5),
+    ("mutable_conflict_field_counts", {"cash_amount": 1}),
+])
+def test_v3_disclosure_rejects_broader_or_invalid_contract(field, value):
+    frames = _v3_disclosure_frames()
+    frames["contract"].at[0, "metadata"]["action_snapshot"]["disclosure_observation_audit"][field] = value
+    frames["action"].at[0, "snapshot_metadata"]["disclosure_observation_audit"][field] = value
+    with pytest.raises(RuntimeError, match="action snapshot lineage"):
+        _validate(frames)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("certified_return_lineage_row_count", 99),
+    ("total_return_run_row_count", 59),
+    ("total_return_run_count", 3),
+    ("total_return_run_status", "FAILED"),
+    ("total_return_run_mode", "manual_patch"),
+    ("raw_certified_row_count", 99),
+    ("positive_total_return_row_count", 99),
+    ("total_return_lineage_run_ids", []),
+])
+def test_incremental_lineage_fails_closed(field, value):
+    frames = _incremental_evidence_frames()
+    frames["scope"].at[0, field] = value
+    with pytest.raises(RuntimeError, match="lineage parity"):
+        _validate(frames)
+
+
+def test_unknown_incremental_contract_rejected():
+    frames = _incremental_evidence_frames()
+    frames["contract"].at[0, "metadata"]["per_row_run_parity"]["contract"] = "unknown"
+    with pytest.raises(RuntimeError, match="lineage 계약"):
+        _validate(frames)
+
+
+def test_scope_sql_checks_each_inherited_run_status_and_mode():
+    sql = silver.TOTAL_RETURN_SCOPE_AUDIT_SQL
+    assert "tr.run_id = p.total_return_quality_run_id" in sql
+    assert "return_quality_status = 'CERTIFIED'" in sql
+    assert "return_quality_mode = 'krx_total_return_rebuild'" in sql
+
+
 def test_complete_total_return_lineage_is_content_addressed():
     _contract, evidence = _validate(_evidence_frames())
 
@@ -790,6 +897,34 @@ def test_four_decimal_intervals_do_not_hide_a_small_real_scale_reset():
 
     assert abs(1.0 - (99.99981 / 100.0)) < 0.000002
     assert previous[0] > applied[1]
+    assert not silver._cash_scale_stored_scales_may_match(
+        previous_close=100., previous_adj_close=100.,
+        applied_close=100., applied_adj_close=99.99981,
+    )
+
+
+@pytest.mark.parametrize("pc,pa,ac,aa", [
+    (1640., 7827.2725, 1625., 7755.6820),  # 018470 after five-to-one consolidation
+    (3085., 15366.1070, 3020., 15042.3480),
+    (2800., 7008.1870, 2870., 7183.3920),
+])
+def test_reviewed_rescaling_lineage_stays_stable(pc, pa, ac, aa):
+    assert silver._cash_scale_stored_scales_may_match(
+        previous_close=pc, previous_adj_close=pa, applied_close=ac, applied_adj_close=aa,
+    )
+
+
+@pytest.mark.parametrize("pc,pa,ac,aa,reference", [
+    (7850., 25953.4590, 7870., 26186.3745, .993630573248),
+    (4510., 22164.9640, 4385., 21767.8315, .990022172949),
+])
+def test_reference_factor_uses_two_rounding_stages(pc, pa, ac, aa, reference):
+    low, high = silver._cash_scale_stored_factor_interval(
+        previous_close=pc, previous_adj_close=pa, applied_close=ac, applied_adj_close=aa,
+    )
+    assert low <= reference <= high
+    assert not low <= math.nextafter(low, -math.inf) <= high
+    assert not low <= math.nextafter(high, math.inf) <= high
 
 
 def test_composite_collision_supports_multiple_actions_and_groups():
@@ -2440,8 +2575,12 @@ def test_live_contract_must_match_cached_lineage(monkeypatch):
         silver.verify_live_total_return_contract(object(), evidence)
 
 
-def test_raw_cache_keeps_pre2015_and_preferred_identity_but_masks_returns():
-    contract, evidence = _validate(_evidence_frames())
+@pytest.mark.parametrize("incremental", [False, True])
+@pytest.mark.parametrize("row_run", ["return-run", "prior-return-run", None, "unverified-run"])
+def test_raw_cache_keeps_pre2015_and_preferred_identity_but_masks_returns(incremental, row_run):
+    contract, evidence = _validate(
+        _incremental_evidence_frames() if incremental else _evidence_frames()
+    )
     rows = pd.DataFrame({
         "asset_id": [1, 1, 2],
         "Code": ["005930", "005930", "005935"],
@@ -2470,7 +2609,7 @@ def test_raw_cache_keeps_pre2015_and_preferred_identity_but_masks_returns():
             "1995-05-31", "1995-05-31", "1995-05-31",
         ]),
         "quality_run_id": ["raw", "raw", "raw"],
-        "total_return_quality_run_id": [None, "return-run", None],
+        "total_return_quality_run_id": [None, row_run, None],
         "amihud_illiquidity_1m": [None, 1e-12, None],
         "amihud_observations_1m": [0, 20, 0],
         "daily_volatility_252d": [None, .01, None],
@@ -2483,6 +2622,10 @@ def test_raw_cache_keeps_pre2015_and_preferred_identity_but_masks_returns():
     rows.attrs["return_contract"] = silver._contract_attrs(contract, evidence)
     rows.attrs["return_roles"] = silver.return_role_contract()
 
+    if row_run != "return-run" and not (incremental and row_run == "prior-return-run"):
+        with pytest.raises(RuntimeError, match="total_return_quality_run_id"):
+            from_silver_frame(rows, verbose=False)
+        return
     panel = from_silver_frame(rows, verbose=False)
 
     assert len(panel.monthly) == 3

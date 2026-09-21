@@ -247,8 +247,8 @@ def from_silver_frame(prices: pd.DataFrame, *, verbose: bool = True) -> Panel:
     if not certified_label_scope.any():
         raise RuntimeError("2015+ KRX common_stock 총수익 월말 행이 없습니다")
     observed_lineage = d["total_return_quality_run_id"].astype("string")
-    expected_run = str(return_evidence["quality_run_id"])
-    bad_lineage = certified_label_scope & observed_lineage.ne(expected_run).fillna(True)
+    allowed_runs = silver.total_return_lineage_run_ids(return_evidence)
+    bad_lineage = certified_label_scope & ~observed_lineage.isin(allowed_runs)
     if bad_lineage.any():
         raise RuntimeError(
             "Silver 월말 총수익 행의 total_return_quality_run_id가 인증 run과 "
