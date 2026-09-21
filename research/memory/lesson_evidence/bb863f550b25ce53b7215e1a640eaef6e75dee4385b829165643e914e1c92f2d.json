@@ -1,0 +1,293 @@
+{
+  "audience": "TERMINAL_RESULT_REVIEWER_ONLY",
+  "diagnostics": {
+    "charts": {
+      "needed": "위 진단 수치표에서 생성한 이미지와 대응 evidence_id",
+      "status": "NOT_COLLECTED"
+    },
+    "controlled_comparison": {
+      "needed": "업종·규모 통제 전후의 동일 표본 비교와 불확실성",
+      "status": "NOT_COLLECTED"
+    },
+    "economic_outcomes": {
+      "needed": "가설에 맞는 이후 실적 변화·성숙 여부·비교군",
+      "status": "NOT_COLLECTED"
+    },
+    "execution_costs": {
+      "needed": "실제 보유 규칙·회전율·거래비용 전후의 동일 표본 비교",
+      "status": "NOT_COLLECTED"
+    },
+    "input_quality": {
+      "needed": "원시 입력·공개시점·결측·이상치 분포",
+      "status": "NOT_COLLECTED"
+    },
+    "monthly_performance": {
+      "needed": "월별 IC·분위별 수익률·상하위 그룹 성과·비용과 표본 수",
+      "status": "NOT_COLLECTED"
+    },
+    "regime_comparison": {
+      "needed": "월초에 알려진 레짐별 성과·표본 수·독립 발생 구간 수",
+      "status": "NOT_COLLECTED"
+    },
+    "selection_profile": {
+      "needed": "분위별 업종·규모·부채·수익성·유동성 및 기존 신호 노출",
+      "status": "NOT_COLLECTED"
+    }
+  },
+  "evidence": [
+    {
+      "data": {
+        "data_notes": "Silver PIT adj_close로 월 가격수익을 만들고 종목별 달력월을 재색인한다. 결측 월은 채우지 않으며 정확한 다섯 월수익이 모두 있을 때만 신호를 낸다.",
+        "expected_relationship": "가장 가까운 기존 팩터: intermediate_momentum_12_7 — 차이: 더 최근인 t-6~t-2 구간만 사용하며 t-12~t-7의 오래된 정보확산과 구별한다. mom_12_1과 양의 관계는 예상하지만 정확한 형성 구간은 겹치지 않는다.",
+        "falsification": "사전등록한 양의 방향이 무결성·입력 커버리지·투자가능 IC·Rank ICIR·기간 및 중립화 강건성·campaign BY를 통과하지 못하거나 기존 신호와 중복되면 기각한다.",
+        "hypothesis": "Silver 분할조정 가격으로 측정한 t-6부터 t-2까지 다섯 월수익의 복리 누적값이 높은 종목은 다음 달 총수익률 순위가 높을 것이다.",
+        "inputs": [],
+        "mechanism": "기업 정보의 점진적 확산과 투자자 과소반응은 수개월 동안 가격 추세를 만들 수 있으며, 가장 최근 한 달을 제외하면 단기 반전과 미시구조 잡음을 줄일 수 있다.",
+        "params": {
+          "farthest_return_lag": 6,
+          "gap_policy": "calendar_months_no_fill",
+          "lookback_months": 6,
+          "nearest_return_lag": 2,
+          "skip_months": 1
+        },
+        "research_spec": {
+          "data_notes": "Silver PIT adj_close로 월 가격수익을 만들고 종목별 달력월을 재색인한다. 결측 월은 채우지 않으며 정확한 다섯 월수익이 모두 있을 때만 신호를 낸다.",
+          "expected_relationship": "가장 가까운 기존 팩터: intermediate_momentum_12_7 — 차이: 더 최근인 t-6~t-2 구간만 사용하며 t-12~t-7의 오래된 정보확산과 구별한다. mom_12_1과 양의 관계는 예상하지만 정확한 형성 구간은 겹치지 않는다.",
+          "factor_name": "medium_term_momentum_6_2",
+          "falsification": "사전등록한 양의 방향이 무결성·입력 커버리지·투자가능 IC·Rank ICIR·기간 및 중립화 강건성·campaign BY를 통과하지 못하거나 기존 신호와 중복되면 기각한다.",
+          "max_lookback_months": 6,
+          "mechanism": "기업 정보의 점진적 확산과 투자자 과소반응은 수개월 동안 가격 추세를 만들 수 있으며, 가장 최근 한 달을 제외하면 단기 반전과 미시구조 잡음을 줄일 수 있다.",
+          "strategy_file": "factors/candidates/medium_term_momentum_6_2.py",
+          "strategy_sha256": "99433d5b015890c98827d7c04662e3f89b9200b82b09e881778d39a87c3c6190",
+          "thesis": "Silver 분할조정 가격으로 측정한 t-6부터 t-2까지 다섯 월수익의 복리 누적값이 높은 종목은 다음 달 총수익률 순위가 높을 것이다."
+        },
+        "source": "def compute(frame):\n    ordered = frame.sort_values([\"asset_id\", \"ym\"], kind=\"mergesort\")\n    grouped = ordered.groupby(\"asset_id\", sort=False)\n    recent = grouped[\"adj_close\"].shift(SKIP_MONTHS)\n    distant = grouped[\"adj_close\"].shift(LOOKBACK_MONTHS)\n    recent_month = grouped[\"ym\"].shift(SKIP_MONTHS)\n    distant_month = grouped[\"ym\"].shift(LOOKBACK_MONTHS)\n    signal = recent / distant.where(distant > 0) - 1.0\n    exact_calendar = (\n        ordered[\"ym\"].eq(recent_month + SKIP_MONTHS)\n        & ordered[\"ym\"].eq(distant_month + LOOKBACK_MONTHS)\n    )\n    return signal.where(exact_calendar).reindex(frame.index)\n"
+      },
+      "id": "hypothesis",
+      "kind": "PREREGISTERED_CLAIM_NOT_FACT"
+    },
+    {
+      "data": {
+        "evaluation_phase": "discovery",
+        "research_start": "2018-03"
+      },
+      "id": "discovery.metrics",
+      "kind": "AGGREGATE_METRICS",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "미선언 상수",
+        "note": "[]",
+        "passed": true,
+        "threshold": "0개",
+        "tier": "T0.1",
+        "value": 0
+      },
+      "id": "discovery.check.0",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "단일 팩터 계약",
+        "note": "[]",
+        "passed": true,
+        "threshold": "합성 신호 0개",
+        "tier": "T0.2",
+        "value": 0
+      },
+      "id": "discovery.check.1",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "최대 룩백",
+        "note": "",
+        "passed": true,
+        "threshold": "<=36개월",
+        "tier": "T0.3",
+        "value": 6
+      },
+      "id": "discovery.check.2",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "연구 입력 하한",
+        "note": "",
+        "passed": true,
+        "threshold": ">=2015-01",
+        "tier": "T0.4",
+        "value": null
+      },
+      "id": "discovery.check.3",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "label 전용 입력 차단",
+        "note": "[]",
+        "passed": true,
+        "threshold": "0개",
+        "tier": "T0.5",
+        "value": 0
+      },
+      "id": "discovery.check.4",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "입력 계약",
+        "note": "[]",
+        "passed": true,
+        "threshold": "누락 0개",
+        "tier": "T0.6",
+        "value": 0
+      },
+      "id": "discovery.check.5",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "출력 타입·인덱스",
+        "note": "",
+        "passed": true,
+        "threshold": "numeric Series / 동일 index",
+        "tier": "T0.8",
+        "value": null
+      },
+      "id": "discovery.check.6",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "유한값",
+        "note": "",
+        "passed": true,
+        "threshold": "±inf 없음",
+        "tier": "T0.9",
+        "value": null
+      },
+      "id": "discovery.check.7",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "결정성",
+        "note": "",
+        "passed": true,
+        "threshold": "동일 입력 2회 일치",
+        "tier": "T0.10",
+        "value": null
+      },
+      "id": "discovery.check.8",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "36개월 인과성",
+        "note": "평가기간 전반의 결정적 anchor 7개에서 36개월 제한 재계산 일치",
+        "passed": true,
+        "threshold": "36개월 이전·미래 행 비의존",
+        "tier": "T0.11",
+        "value": null
+      },
+      "id": "discovery.check.9",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "캐시 정의 일치",
+        "note": "",
+        "passed": true,
+        "threshold": "현재 정의와 캐시 일치",
+        "tier": "T0.12",
+        "value": null
+      },
+      "id": "discovery.check.10",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "전체 커버리지",
+        "note": "",
+        "passed": true,
+        "threshold": ">=50%",
+        "tier": "T1.1",
+        "value": 0.9999082140753716
+      },
+      "id": "discovery.check.11",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "월별 커버리지 하위10%",
+        "note": "",
+        "passed": true,
+        "threshold": ">=30%",
+        "tier": "T1.1",
+        "value": 0.999509393297173
+      },
+      "id": "discovery.check.12",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "종착수익률 3점 방향",
+        "note": "{'opt': -0.0387, 'mid': -0.0385, 'pess': -0.0385}",
+        "passed": false,
+        "threshold": "세 시나리오 IC > 0",
+        "tier": "T1.2",
+        "value": null
+      },
+      "id": "discovery.check.13",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "배당 포함 총수익 계약",
+        "note": "",
+        "passed": true,
+        "threshold": "feature=adj_close / label=total_return_close v3(CERTIFIED) / candidate label 차단",
+        "tier": "T1.3",
+        "value": null
+      },
+      "id": "discovery.check.14",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    }
+  ],
+  "provenance": {
+    "campaign": "campaign-20260815-010",
+    "cycle": "cycle-0108-medium_term_momentum_6_2",
+    "definition_hash": "fe7484d4b16ecc1c",
+    "epoch": "epoch-001",
+    "result": "/Users/mac/Documents/GitHub/factor-research/research/runs/cycle-0108-medium_term_momentum_6_2/result.json"
+  },
+  "record_id": "campaign-20260815-010/epoch-001/medium_term_momentum_6_2",
+  "review_contract": {
+    "associations_do_not_prove_causation": true,
+    "facts_require_evidence_ids": true,
+    "forward_outcomes_are_diagnostic_only": true,
+    "hypothesis_is_not_verified_mechanism": true,
+    "missing_is_not_failed": true,
+    "raw_evidence_not_for_candidate_generation": true,
+    "same_window_is_not_independent_replication": true
+  },
+  "schema_version": "lesson-evidence-v1",
+  "source_sha256": "23634e32a26080709fd8f7ee5a5c6fc396c20cacabb96e844ecf8abef3f2ca21"
+}

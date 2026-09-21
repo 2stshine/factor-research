@@ -1,0 +1,334 @@
+{
+  "audience": "TERMINAL_RESULT_REVIEWER_ONLY",
+  "diagnostics": {
+    "charts": {
+      "needed": "위 진단 수치표에서 생성한 이미지와 대응 evidence_id",
+      "status": "NOT_COLLECTED"
+    },
+    "controlled_comparison": {
+      "needed": "업종·규모 통제 전후의 동일 표본 비교와 불확실성",
+      "status": "NOT_COLLECTED"
+    },
+    "economic_outcomes": {
+      "needed": "가설에 맞는 이후 실적 변화·성숙 여부·비교군",
+      "status": "NOT_COLLECTED"
+    },
+    "input_quality": {
+      "needed": "원시 입력·공개시점·결측·이상치 분포",
+      "status": "NOT_COLLECTED"
+    },
+    "monthly_performance": {
+      "needed": "월별 IC·분위별 수익률·상하위 그룹 성과·비용과 표본 수",
+      "status": "NOT_COLLECTED"
+    },
+    "regime_comparison": {
+      "needed": "월초에 알려진 레짐별 성과·표본 수·독립 발생 구간 수",
+      "status": "NOT_COLLECTED"
+    },
+    "selection_profile": {
+      "needed": "분위별 업종·규모·부채·수익성·유동성 및 기존 신호 노출",
+      "status": "NOT_COLLECTED"
+    }
+  },
+  "evidence": [
+    {
+      "data": {
+        "data_notes": "adj_close로 계산한 과거 동일월 수익만 사용하며 미래 수익률과 OOS 결과를 사용하지 않는다.",
+        "expected_relationship": "일반 모멘텀과 입력은 공유하지만 불연속적인 12개월 시차의 한 달 수익만 사용해 구분한다.",
+        "falsification": "사전등록 방향이 무결성·입력 커버리지·Discovery IC·강건성·campaign-wide BY·Gold 상관·SQL parity·귀무 보정·봉인 OOS 중 하나라도 통과하지 못하면 기각한다.",
+        "hypothesis": "같은 달의 12개월 전 월수익이 높은 종목은 반복되는 계절적 수요와 정보주기로 이후 상대수익이 높다.",
+        "inputs": [],
+        "mechanism": "연속 추세가 아니라 직전 연도의 동일 달력월 수익만 사용해 기업고유 계절성을 측정한다.",
+        "params": {
+          "lookback_months": 13,
+          "seasonal_lag": 12
+        },
+        "research_spec": {
+          "data_notes": "adj_close로 계산한 과거 동일월 수익만 사용하며 미래 수익률과 OOS 결과를 사용하지 않는다.",
+          "expected_relationship": "일반 모멘텀과 입력은 공유하지만 불연속적인 12개월 시차의 한 달 수익만 사용해 구분한다.",
+          "factor_name": "return_seasonality_12m",
+          "falsification": "사전등록 방향이 무결성·입력 커버리지·Discovery IC·강건성·campaign-wide BY·Gold 상관·SQL parity·귀무 보정·봉인 OOS 중 하나라도 통과하지 못하면 기각한다.",
+          "max_lookback_months": 13,
+          "mechanism": "연속 추세가 아니라 직전 연도의 동일 달력월 수익만 사용해 기업고유 계절성을 측정한다.",
+          "strategy_file": "factors/candidates/return_seasonality_12m.py",
+          "strategy_sha256": "45c05fa9a4e92a517c08313e403c2c7753b4bfe418003be5402496e20224260f",
+          "thesis": "같은 달의 12개월 전 월수익이 높은 종목은 반복되는 계절적 수요와 정보주기로 이후 상대수익이 높다."
+        },
+        "source": "def compute(frame):\n    ordered = frame.sort_values([\"asset_id\", \"ym\"], kind=\"mergesort\")\n    grouped = ordered.groupby(\"asset_id\", sort=False)\n    prior = grouped[\"adj_close\"].shift(1)\n    prior_month = grouped[\"ym\"].shift(1)\n    monthly = (ordered[\"adj_close\"] / prior.where(prior > 0) - 1.0).where(\n        ordered[\"ym\"].eq(prior_month + 1)\n    )\n    seasonal = monthly.groupby(ordered[\"asset_id\"], sort=False).shift(SEASONAL_LAG)\n    seasonal_month = grouped[\"ym\"].shift(SEASONAL_LAG)\n    return seasonal.where(\n        ordered[\"ym\"].eq(seasonal_month + SEASONAL_LAG)\n    ).reindex(frame.index)\n"
+      },
+      "id": "hypothesis",
+      "kind": "PREREGISTERED_CLAIM_NOT_FACT"
+    },
+    {
+      "data": {
+        "evaluation_phase": "discovery",
+        "ic_full": 0.010630046380648774,
+        "ic_investable": 0.009643320924455157,
+        "ic_p_full": 0.03393679736290136,
+        "ic_p_investable": 0.04138487521554372,
+        "ic_retention": 0.9071758089419178,
+        "ic_std_investable": 0.05746311514795085,
+        "ic_t_full": 1.8588538408610706,
+        "ic_t_investable": 1.763819427148542,
+        "rank_icir_investable": 0.16781758001852848,
+        "research_start": "2018-03"
+      },
+      "id": "discovery.metrics",
+      "kind": "AGGREGATE_METRICS",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "미선언 상수",
+        "note": "[]",
+        "passed": true,
+        "threshold": "0개",
+        "tier": "T0.1",
+        "value": 0
+      },
+      "id": "discovery.check.0",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "단일 팩터 계약",
+        "note": "[]",
+        "passed": true,
+        "threshold": "합성 신호 0개",
+        "tier": "T0.2",
+        "value": 0
+      },
+      "id": "discovery.check.1",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "최대 룩백",
+        "note": "",
+        "passed": true,
+        "threshold": "<=36개월",
+        "tier": "T0.3",
+        "value": 13
+      },
+      "id": "discovery.check.2",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "연구 입력 하한",
+        "note": "",
+        "passed": true,
+        "threshold": ">=2015-01",
+        "tier": "T0.4",
+        "value": null
+      },
+      "id": "discovery.check.3",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "label 전용 입력 차단",
+        "note": "[]",
+        "passed": true,
+        "threshold": "0개",
+        "tier": "T0.5",
+        "value": 0
+      },
+      "id": "discovery.check.4",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "입력 계약",
+        "note": "[]",
+        "passed": true,
+        "threshold": "누락 0개",
+        "tier": "T0.6",
+        "value": 0
+      },
+      "id": "discovery.check.5",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "출력 타입·인덱스",
+        "note": "",
+        "passed": true,
+        "threshold": "numeric Series / 동일 index",
+        "tier": "T0.8",
+        "value": null
+      },
+      "id": "discovery.check.6",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "유한값",
+        "note": "",
+        "passed": true,
+        "threshold": "±inf 없음",
+        "tier": "T0.9",
+        "value": null
+      },
+      "id": "discovery.check.7",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "결정성",
+        "note": "",
+        "passed": true,
+        "threshold": "동일 입력 2회 일치",
+        "tier": "T0.10",
+        "value": null
+      },
+      "id": "discovery.check.8",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "36개월 인과성",
+        "note": "평가기간 전반의 결정적 anchor 7개에서 36개월 제한 재계산 일치",
+        "passed": true,
+        "threshold": "36개월 이전·미래 행 비의존",
+        "tier": "T0.11",
+        "value": null
+      },
+      "id": "discovery.check.9",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "캐시 정의 일치",
+        "note": "",
+        "passed": true,
+        "threshold": "현재 정의와 캐시 일치",
+        "tier": "T0.12",
+        "value": null
+      },
+      "id": "discovery.check.10",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "전체 커버리지",
+        "note": "",
+        "passed": true,
+        "threshold": ">=50%",
+        "tier": "T1.1",
+        "value": 0.9967415996756898
+      },
+      "id": "discovery.check.11",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "월별 커버리지 하위10%",
+        "note": "",
+        "passed": true,
+        "threshold": ">=30%",
+        "tier": "T1.1",
+        "value": 0.9938504422982798
+      },
+      "id": "discovery.check.12",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "종착수익률 3점 방향",
+        "note": "{'opt': 0.0109, 'mid': 0.0106, 'pess': 0.0106}",
+        "passed": true,
+        "threshold": "세 시나리오 IC > 0",
+        "tier": "T1.2",
+        "value": null
+      },
+      "id": "discovery.check.13",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "배당 포함 총수익 계약",
+        "note": "",
+        "passed": true,
+        "threshold": "feature=adj_close / label=total_return_close v3(CERTIFIED) / candidate label 차단",
+        "tier": "T1.3",
+        "value": null
+      },
+      "id": "discovery.check.14",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "전체 IC 최소요건",
+        "note": "",
+        "passed": false,
+        "threshold": ">=0.03",
+        "tier": "T2.1",
+        "value": 0.010630046380648774
+      },
+      "id": "discovery.check.15",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "투자가능 IC 최소요건",
+        "note": "",
+        "passed": false,
+        "threshold": ">=0.03",
+        "tier": "T2.1",
+        "value": 0.009643320924455157
+      },
+      "id": "discovery.check.16",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "투자가능 Rank ICIR 최소요건",
+        "note": "",
+        "passed": true,
+        "threshold": ">=0.15 (월평균 Rank IC / 월별 Rank IC 표준편차, 비연율화)",
+        "tier": "T2.1",
+        "value": 0.16781758001852848
+      },
+      "id": "discovery.check.17",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    }
+  ],
+  "provenance": {
+    "campaign": "campaign-20260816-004",
+    "cycle": "cycle-0190-return_seasonality_12m",
+    "definition_hash": "4225bbe32cc2bf60",
+    "epoch": "epoch-0001",
+    "result": "research/runs/cycle-0190-return_seasonality_12m/result.json"
+  },
+  "record_id": "campaign-20260816-004/epoch-0001/return_seasonality_12m",
+  "review_contract": {
+    "associations_do_not_prove_causation": true,
+    "facts_require_evidence_ids": true,
+    "forward_outcomes_are_diagnostic_only": true,
+    "hypothesis_is_not_verified_mechanism": true,
+    "missing_is_not_failed": true,
+    "raw_evidence_not_for_candidate_generation": true,
+    "same_window_is_not_independent_replication": true
+  },
+  "schema_version": "lesson-evidence-v1",
+  "source_sha256": "e723da93e8cd675fffae3667f0951ed3955a3444198a7c42ea655314ffbfb489"
+}

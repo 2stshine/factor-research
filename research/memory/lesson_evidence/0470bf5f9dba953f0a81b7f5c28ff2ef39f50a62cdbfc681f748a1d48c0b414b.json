@@ -1,0 +1,430 @@
+{
+  "audience": "TERMINAL_RESULT_REVIEWER_ONLY",
+  "diagnostics": {
+    "charts": {
+      "needed": "위 진단 수치표에서 생성한 이미지와 대응 evidence_id",
+      "status": "NOT_COLLECTED"
+    },
+    "controlled_comparison": {
+      "needed": "업종·규모 통제 전후의 동일 표본 비교와 불확실성",
+      "status": "NOT_COLLECTED"
+    },
+    "economic_outcomes": {
+      "needed": "가설에 맞는 이후 실적 변화·성숙 여부·비교군",
+      "status": "NOT_COLLECTED"
+    },
+    "input_quality": {
+      "needed": "원시 입력·공개시점·결측·이상치 분포",
+      "status": "NOT_COLLECTED"
+    },
+    "monthly_performance": {
+      "needed": "월별 IC·분위별 수익률·상하위 그룹 성과·비용과 표본 수",
+      "status": "NOT_COLLECTED"
+    },
+    "regime_comparison": {
+      "needed": "월초에 알려진 레짐별 성과·표본 수·독립 발생 구간 수",
+      "status": "NOT_COLLECTED"
+    },
+    "selection_profile": {
+      "needed": "분위별 업종·규모·부채·수익성·유동성 및 기존 신호 노출",
+      "status": "NOT_COLLECTED"
+    }
+  },
+  "evidence": [
+    {
+      "data": {
+        "data_notes": "월말 거래대금·ADV20·시가총액과 정확한 달력 시차만 사용한다.",
+        "expected_relationship": "거래활동 수준과 일부 관계가 예상되지만 변화율이므로 0.70 Gold gate를 요구한다.",
+        "falsification": "사전등록 방향이 무결성·입력 커버리지·Discovery IC·강건성·campaign-wide BY·Gold 상관·SQL parity·귀무 보정·봉인 OOS 중 하나라도 통과하지 못하면 기각한다.",
+        "hypothesis": "최근 3개월 trading_value_turnover 급증이 작은 종목은 과도한 관심과 투기수요를 피하여 이후 상대수익이 높다.",
+        "inputs": [],
+        "mechanism": "거래활동 수준 대신 기업가치 정규화 회전의 변화를 측정해 기존 Gold 유동성 수준과 구분한다.",
+        "params": {
+          "lookback_months": 3,
+          "source": "trading_value_turnover"
+        },
+        "research_spec": {
+          "data_notes": "월말 거래대금·ADV20·시가총액과 정확한 달력 시차만 사용한다.",
+          "expected_relationship": "거래활동 수준과 일부 관계가 예상되지만 변화율이므로 0.70 Gold gate를 요구한다.",
+          "factor_name": "trading_value_turnover_change_3m",
+          "falsification": "사전등록 방향이 무결성·입력 커버리지·Discovery IC·강건성·campaign-wide BY·Gold 상관·SQL parity·귀무 보정·봉인 OOS 중 하나라도 통과하지 못하면 기각한다.",
+          "max_lookback_months": 3,
+          "mechanism": "거래활동 수준 대신 기업가치 정규화 회전의 변화를 측정해 기존 Gold 유동성 수준과 구분한다.",
+          "strategy_file": "factors/candidates/trading_value_turnover_change_3m.py",
+          "strategy_sha256": "66688c079ad5ae8b031c3aaf1a0009d609fa9332450a20a0fa1721e16c282259",
+          "thesis": "최근 3개월 trading_value_turnover 급증이 작은 종목은 과도한 관심과 투기수요를 피하여 이후 상대수익이 높다."
+        },
+        "source": "def compute(frame):\n    ordered = frame.sort_values([\"asset_id\", \"ym\"], kind=\"mergesort\")\n    asset = ordered[\"asset_id\"]\n    source = ordered[\"trading_value\"] / ordered[\"market_cap\"].where(ordered[\"market_cap\"] > 0)\n    prior = source.groupby(asset).shift(LOOKBACK_MONTHS)\n    prior_month = ordered[\"ym\"].groupby(asset).shift(LOOKBACK_MONTHS)\n    value = source / prior.where(prior > 0) - 1.0\n    return value.where(ordered[\"ym\"].eq(prior_month + LOOKBACK_MONTHS)).reindex(frame.index)\n"
+      },
+      "id": "hypothesis",
+      "kind": "PREREGISTERED_CLAIM_NOT_FACT"
+    },
+    {
+      "data": {
+        "evaluation_phase": "discovery",
+        "gold_signal_comparison_months": {
+          "adv20_to_book_equity": 62,
+          "asset_to_market": 62,
+          "book_to_market_change_12m": 62,
+          "book_to_market_change_6m": 62,
+          "capital_stock_growth_18m": 62,
+          "capital_stock_to_assets": 62,
+          "current_asset_turnover": 62,
+          "current_liabilities_to_sales": 62,
+          "enterprise_sales_yield_change_6m": 62,
+          "idiosyncratic_volatility_24m": 62,
+          "max_daily_return_mean_6m": 62,
+          "net_equity_issuance_price_adjusted_36m": 62,
+          "net_income_to_liabilities": 62,
+          "net_margin_volatility_12m": 62,
+          "net_working_capital_yield": 62,
+          "nonoperating_burden_margin": 62,
+          "operating_earnings_yield": 62,
+          "pretax_yield_change_6m": 62,
+          "price_range_12m": 62,
+          "realized_daily_volatility_change_24m": 62,
+          "realized_daily_volatility_instability_6m": 62,
+          "retained_earnings_to_equity": 62,
+          "revenue_to_noncurrent_assets": 62
+        },
+        "ic_full": 0.03399266978521635,
+        "ic_investable": 0.03415898696769665,
+        "ic_p_full": 1.1296812538154356e-05,
+        "ic_p_investable": 7.7959723429673e-06,
+        "ic_retention": 1.0048927366850315,
+        "ic_std_investable": 0.06317223690486867,
+        "ic_t_full": 4.59058881688282,
+        "ic_t_investable": 4.694386690623674,
+        "max_gold_signal_corr": 0.18046517900313802,
+        "n_trials": 239,
+        "neutral_ic": 0.009181578726690467,
+        "neutral_ic_p": 0.08413370392006368,
+        "neutral_ic_retention": 0.26878954974201286,
+        "neutral_ic_t": 1.3943581242408054,
+        "rank_icir_investable": 0.5407278361717158,
+        "research_start": "2018-03"
+      },
+      "id": "discovery.metrics",
+      "kind": "AGGREGATE_METRICS",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "미선언 상수",
+        "note": "[]",
+        "passed": true,
+        "threshold": "0개",
+        "tier": "T0.1",
+        "value": 0
+      },
+      "id": "discovery.check.0",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "단일 팩터 계약",
+        "note": "[]",
+        "passed": true,
+        "threshold": "합성 신호 0개",
+        "tier": "T0.2",
+        "value": 0
+      },
+      "id": "discovery.check.1",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "최대 룩백",
+        "note": "",
+        "passed": true,
+        "threshold": "<=36개월",
+        "tier": "T0.3",
+        "value": 3
+      },
+      "id": "discovery.check.2",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "연구 입력 하한",
+        "note": "",
+        "passed": true,
+        "threshold": ">=2015-01",
+        "tier": "T0.4",
+        "value": null
+      },
+      "id": "discovery.check.3",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "label 전용 입력 차단",
+        "note": "[]",
+        "passed": true,
+        "threshold": "0개",
+        "tier": "T0.5",
+        "value": 0
+      },
+      "id": "discovery.check.4",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "입력 계약",
+        "note": "[]",
+        "passed": true,
+        "threshold": "누락 0개",
+        "tier": "T0.6",
+        "value": 0
+      },
+      "id": "discovery.check.5",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "출력 타입·인덱스",
+        "note": "",
+        "passed": true,
+        "threshold": "numeric Series / 동일 index",
+        "tier": "T0.8",
+        "value": null
+      },
+      "id": "discovery.check.6",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "유한값",
+        "note": "",
+        "passed": true,
+        "threshold": "±inf 없음",
+        "tier": "T0.9",
+        "value": null
+      },
+      "id": "discovery.check.7",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "결정성",
+        "note": "",
+        "passed": true,
+        "threshold": "동일 입력 2회 일치",
+        "tier": "T0.10",
+        "value": null
+      },
+      "id": "discovery.check.8",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "36개월 인과성",
+        "note": "평가기간 전반의 결정적 anchor 7개에서 36개월 제한 재계산 일치",
+        "passed": true,
+        "threshold": "36개월 이전·미래 행 비의존",
+        "tier": "T0.11",
+        "value": null
+      },
+      "id": "discovery.check.9",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "캐시 정의 일치",
+        "note": "",
+        "passed": true,
+        "threshold": "현재 정의와 캐시 일치",
+        "tier": "T0.12",
+        "value": null
+      },
+      "id": "discovery.check.10",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "전체 커버리지",
+        "note": "",
+        "passed": true,
+        "threshold": ">=50%",
+        "tier": "T1.1",
+        "value": 0.9675766221249972
+      },
+      "id": "discovery.check.11",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "월별 커버리지 하위10%",
+        "note": "",
+        "passed": true,
+        "threshold": ">=30%",
+        "tier": "T1.1",
+        "value": 0.9571803102736388
+      },
+      "id": "discovery.check.12",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "종착수익률 3점 방향",
+        "note": "{'opt': 0.0349, 'mid': 0.034, 'pess': 0.034}",
+        "passed": true,
+        "threshold": "세 시나리오 IC > 0",
+        "tier": "T1.2",
+        "value": null
+      },
+      "id": "discovery.check.13",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "배당 포함 총수익 계약",
+        "note": "",
+        "passed": true,
+        "threshold": "feature=adj_close / label=total_return_close v3(CERTIFIED) / candidate label 차단",
+        "tier": "T1.3",
+        "value": null
+      },
+      "id": "discovery.check.14",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "전체 IC 최소요건",
+        "note": "",
+        "passed": true,
+        "threshold": ">=0.03",
+        "tier": "T2.1",
+        "value": 0.03399266978521635
+      },
+      "id": "discovery.check.15",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "투자가능 IC 최소요건",
+        "note": "",
+        "passed": true,
+        "threshold": ">=0.03",
+        "tier": "T2.1",
+        "value": 0.03415898696769665
+      },
+      "id": "discovery.check.16",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "투자가능 Rank ICIR 최소요건",
+        "note": "",
+        "passed": true,
+        "threshold": ">=0.15 (월평균 Rank IC / 월별 Rank IC 표준편차, 비연율화)",
+        "tier": "T2.1",
+        "value": 0.5407278361717158
+      },
+      "id": "discovery.check.17",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "비중첩 구간 IC 방향",
+        "note": "[0.0275, 0.0278, 0.0255, 0.0566]",
+        "passed": true,
+        "threshold": ">=3/4",
+        "tier": "T3.1",
+        "value": 4
+      },
+      "id": "discovery.check.18",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "IC 레짐 집중도",
+        "note": "",
+        "passed": true,
+        "threshold": "<=0.6",
+        "tier": "T3.1",
+        "value": 0.4118844769474899
+      },
+      "id": "discovery.check.19",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "시장구분·유동성·비의도 규모 노출 제거 후 IC·유지율",
+        "note": "neutral/investable=0.26879",
+        "passed": false,
+        "threshold": "IC>=0.01 & neutral/investable>=0.3 (size category는 규모 노출 보존; HAC p는 진단값)",
+        "tier": "T3.2",
+        "value": 0.009181578726690467
+      },
+      "id": "discovery.check.20",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "다중검정 FDR",
+        "note": "배치 보정 대기",
+        "passed": null,
+        "threshold": "BY q<=0.1",
+        "tier": "T4.3",
+        "value": null
+      },
+      "id": "discovery.check.21",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "Gold 신호 직교성",
+        "note": "최대 상관 팩터=adv20_to_book_equity, 비교월=62",
+        "passed": true,
+        "threshold": "각 Gold 비교월>=36 & max_j median_t |rho|<=0.7",
+        "tier": "T5.1",
+        "value": 0.18046517900313802
+      },
+      "id": "discovery.check.22",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    }
+  ],
+  "provenance": {
+    "campaign": "campaign-20260816-007",
+    "cycle": "cycle-0227-trading_value_turnover_change_3m",
+    "definition_hash": "1de516aad267f8a3",
+    "epoch": "epoch-0001",
+    "result": "research/runs/cycle-0227-trading_value_turnover_change_3m/result.json"
+  },
+  "record_id": "campaign-20260816-007/epoch-0001/trading_value_turnover_change_3m",
+  "review_contract": {
+    "associations_do_not_prove_causation": true,
+    "facts_require_evidence_ids": true,
+    "forward_outcomes_are_diagnostic_only": true,
+    "hypothesis_is_not_verified_mechanism": true,
+    "missing_is_not_failed": true,
+    "raw_evidence_not_for_candidate_generation": true,
+    "same_window_is_not_independent_replication": true
+  },
+  "schema_version": "lesson-evidence-v1",
+  "source_sha256": "1ebea1ae3bee4f29e922bd6afe8e8d815d7693ec0c7a9a43cbdd634ccf65996f"
+}

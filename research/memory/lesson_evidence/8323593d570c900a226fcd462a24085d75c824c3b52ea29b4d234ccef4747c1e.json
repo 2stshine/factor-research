@@ -1,0 +1,292 @@
+{
+  "audience": "TERMINAL_RESULT_REVIEWER_ONLY",
+  "diagnostics": {
+    "charts": {
+      "needed": "위 진단 수치표에서 생성한 이미지와 대응 evidence_id",
+      "status": "NOT_COLLECTED"
+    },
+    "controlled_comparison": {
+      "needed": "업종·규모 통제 전후의 동일 표본 비교와 불확실성",
+      "status": "NOT_COLLECTED"
+    },
+    "economic_outcomes": {
+      "needed": "가설에 맞는 이후 실적 변화·성숙 여부·비교군",
+      "status": "NOT_COLLECTED"
+    },
+    "execution_costs": {
+      "needed": "실제 보유 규칙·회전율·거래비용 전후의 동일 표본 비교",
+      "status": "NOT_COLLECTED"
+    },
+    "input_quality": {
+      "needed": "원시 입력·공개시점·결측·이상치 분포",
+      "status": "NOT_COLLECTED"
+    },
+    "monthly_performance": {
+      "needed": "월별 IC·분위별 수익률·상하위 그룹 성과·비용과 표본 수",
+      "status": "NOT_COLLECTED"
+    },
+    "regime_comparison": {
+      "needed": "월초에 알려진 레짐별 성과·표본 수·독립 발생 구간 수",
+      "status": "NOT_COLLECTED"
+    },
+    "selection_profile": {
+      "needed": "분위별 업종·규모·부채·수익성·유동성 및 기존 신호 노출",
+      "status": "NOT_COLLECTED"
+    }
+  },
+  "evidence": [
+    {
+      "data": {
+        "data_notes": "adj_close, 전월 market·market_cap으로 내부 PIT 시장 벤치마크를 구성하고 결측을 채우지 않는다.",
+        "expected_relationship": "기존 24개월 고유변동성과 관련되지만 시장 공통성분의 민감도 또는 상관을 직접 측정한다.",
+        "falsification": "사전등록 방향이 무결성·입력 커버리지·Discovery IC·강건성·campaign-wide BY·Gold 상관·SQL parity·귀무 보정·봉인 OOS 중 하나라도 통과하지 못하면 기각한다.",
+        "hypothesis": "최근 9개월 correlation가 낮은 종목은 고위험 선호에 따른 과대가격을 피하여 이후 상대수익이 높다.",
+        "inputs": [],
+        "mechanism": "전월 시가총액 가중 시장수익과의 공분산 구조를 사용해 총변동성과 다른 시장위험을 측정한다.",
+        "params": {
+          "benchmark": "lagged_market_cap_weighted",
+          "min_observations": 6,
+          "risk_measure": "correlation",
+          "window_months": 9
+        },
+        "research_spec": {
+          "data_notes": "adj_close, 전월 market·market_cap으로 내부 PIT 시장 벤치마크를 구성하고 결측을 채우지 않는다.",
+          "expected_relationship": "기존 24개월 고유변동성과 관련되지만 시장 공통성분의 민감도 또는 상관을 직접 측정한다.",
+          "factor_name": "market_return_correlation_9m",
+          "falsification": "사전등록 방향이 무결성·입력 커버리지·Discovery IC·강건성·campaign-wide BY·Gold 상관·SQL parity·귀무 보정·봉인 OOS 중 하나라도 통과하지 못하면 기각한다.",
+          "max_lookback_months": 9,
+          "mechanism": "전월 시가총액 가중 시장수익과의 공분산 구조를 사용해 총변동성과 다른 시장위험을 측정한다.",
+          "strategy_file": "factors/candidates/market_return_correlation_9m.py",
+          "strategy_sha256": "353f2412e947963fdc84131f502d17111aa7d904412b0775aa2cd4a1d40a89fe",
+          "thesis": "최근 9개월 correlation가 낮은 종목은 고위험 선호에 따른 과대가격을 피하여 이후 상대수익이 높다."
+        },
+        "source": "def compute(frame):\n    ordered = frame.sort_values([\"asset_id\", \"ym\"], kind=\"mergesort\").copy()\n    asset = ordered[\"asset_id\"]\n    prior_close = ordered[\"adj_close\"].groupby(asset).shift(1)\n    prior_month = ordered[\"ym\"].groupby(asset).shift(1)\n    prior_market = ordered[\"market\"].groupby(asset).shift(1)\n    prior_cap = ordered[\"market_cap\"].groupby(asset).shift(1)\n    asset_return = (ordered[\"adj_close\"] / prior_close.where(prior_close > 0) - 1.0).where(\n        ordered[\"ym\"].eq(prior_month + 1)\n    )\n    weight = prior_cap.where(prior_cap > 0)\n    valid = asset_return.notna() & weight.notna() & prior_market.notna()\n    groups = [ordered[\"ym\"], prior_market]\n    weighted = (asset_return * weight).where(valid).groupby(groups).transform(\"sum\")\n    total = weight.where(valid).groupby(groups).transform(\"sum\")\n    market_return = weighted / total.where(total > 0)\n    paired_asset = asset_return.where(market_return.notna())\n    paired_market = market_return.where(asset_return.notna())\n    product = paired_asset * paired_market\n    asset_square = paired_asset.pow(2)\n    market_square = paired_market.pow(2)\n    rolling_asset = paired_asset.groupby(asset, sort=False).rolling(\n        WINDOW_MONTHS, min_periods=MIN_OBSERVATIONS\n    ).mean().reset_index(level=0, drop=True)\n    rolling_market = paired_market.groupby(asset, sort=False).rolling(\n        WINDOW_MONTHS, min_periods=MIN_OBSERVATIONS\n    ).mean().reset_index(level=0, drop=True)\n    rolling_product = product.groupby(asset, sort=False).rolling(\n        WINDOW_MONTHS, min_periods=MIN_OBSERVATIONS\n    ).mean().reset_index(level=0, drop=True)\n    rolling_asset_square = asset_square.groupby(asset, sort=False).rolling(\n        WINDOW_MONTHS, min_periods=MIN_OBSERVATIONS\n    ).mean().reset_index(level=0, drop=True)\n    rolling_market_square = market_square.groupby(asset, sort=False).rolling(\n        WINDOW_MONTHS, min_periods=MIN_OBSERVATIONS\n    ).mean().reset_index(level=0, drop=True)\n    covariance = rolling_product - rolling_asset * rolling_market\n    asset_variance = rolling_asset_square - rolling_asset.pow(2)\n    market_variance = rolling_market_square - rolling_market.pow(2)\n    value = covariance / np.sqrt(\n            asset_variance.where(asset_variance > 0) * market_variance.where(market_variance > 0)\n        )\n    oldest_month = ordered[\"ym\"].groupby(asset).shift(WINDOW_MONTHS)\n    exact = ordered[\"ym\"].eq(oldest_month + WINDOW_MONTHS)\n    return value.where(exact).reindex(frame.index)\n"
+      },
+      "id": "hypothesis",
+      "kind": "PREREGISTERED_CLAIM_NOT_FACT"
+    },
+    {
+      "data": {
+        "evaluation_phase": "discovery",
+        "research_start": "2018-03"
+      },
+      "id": "discovery.metrics",
+      "kind": "AGGREGATE_METRICS",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "미선언 상수",
+        "note": "[]",
+        "passed": true,
+        "threshold": "0개",
+        "tier": "T0.1",
+        "value": 0
+      },
+      "id": "discovery.check.0",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "단일 팩터 계약",
+        "note": "[]",
+        "passed": true,
+        "threshold": "합성 신호 0개",
+        "tier": "T0.2",
+        "value": 0
+      },
+      "id": "discovery.check.1",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "최대 룩백",
+        "note": "",
+        "passed": true,
+        "threshold": "<=36개월",
+        "tier": "T0.3",
+        "value": 9
+      },
+      "id": "discovery.check.2",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "연구 입력 하한",
+        "note": "",
+        "passed": true,
+        "threshold": ">=2015-01",
+        "tier": "T0.4",
+        "value": null
+      },
+      "id": "discovery.check.3",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "label 전용 입력 차단",
+        "note": "[]",
+        "passed": true,
+        "threshold": "0개",
+        "tier": "T0.5",
+        "value": 0
+      },
+      "id": "discovery.check.4",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "입력 계약",
+        "note": "[]",
+        "passed": true,
+        "threshold": "누락 0개",
+        "tier": "T0.6",
+        "value": 0
+      },
+      "id": "discovery.check.5",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "출력 타입·인덱스",
+        "note": "",
+        "passed": true,
+        "threshold": "numeric Series / 동일 index",
+        "tier": "T0.8",
+        "value": null
+      },
+      "id": "discovery.check.6",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "유한값",
+        "note": "",
+        "passed": true,
+        "threshold": "±inf 없음",
+        "tier": "T0.9",
+        "value": null
+      },
+      "id": "discovery.check.7",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "결정성",
+        "note": "",
+        "passed": true,
+        "threshold": "동일 입력 2회 일치",
+        "tier": "T0.10",
+        "value": null
+      },
+      "id": "discovery.check.8",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "36개월 인과성",
+        "note": "평가기간 전반의 결정적 anchor 7개에서 36개월 제한 재계산 일치",
+        "passed": true,
+        "threshold": "36개월 이전·미래 행 비의존",
+        "tier": "T0.11",
+        "value": null
+      },
+      "id": "discovery.check.9",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "캐시 정의 일치",
+        "note": "",
+        "passed": true,
+        "threshold": "현재 정의와 캐시 일치",
+        "tier": "T0.12",
+        "value": null
+      },
+      "id": "discovery.check.10",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "전체 커버리지",
+        "note": "",
+        "passed": true,
+        "threshold": ">=50%",
+        "tier": "T1.1",
+        "value": 0.981902875194089
+      },
+      "id": "discovery.check.11",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "월별 커버리지 하위10%",
+        "note": "",
+        "passed": true,
+        "threshold": ">=30%",
+        "tier": "T1.1",
+        "value": 0.9693608211779594
+      },
+      "id": "discovery.check.12",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "종착수익률 3점 방향",
+        "note": "{'opt': -0.0566, 'mid': -0.0578, 'pess': -0.0578}",
+        "passed": false,
+        "threshold": "세 시나리오 IC > 0",
+        "tier": "T1.2",
+        "value": null
+      },
+      "id": "discovery.check.13",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "배당 포함 총수익 계약",
+        "note": "",
+        "passed": true,
+        "threshold": "feature=adj_close / label=total_return_close v3(CERTIFIED) / candidate label 차단",
+        "tier": "T1.3",
+        "value": null
+      },
+      "id": "discovery.check.14",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    }
+  ],
+  "provenance": {
+    "campaign": "campaign-20260816-007",
+    "cycle": "cycle-0221-market_return_correlation_9m",
+    "definition_hash": "737f9a0075a59652",
+    "epoch": "epoch-0001",
+    "result": "/Users/mac/Documents/GitHub/factor-research/research/runs/cycle-0221-market_return_correlation_9m/result.json"
+  },
+  "record_id": "campaign-20260816-007/epoch-0001/market_return_correlation_9m",
+  "review_contract": {
+    "associations_do_not_prove_causation": true,
+    "facts_require_evidence_ids": true,
+    "forward_outcomes_are_diagnostic_only": true,
+    "hypothesis_is_not_verified_mechanism": true,
+    "missing_is_not_failed": true,
+    "raw_evidence_not_for_candidate_generation": true,
+    "same_window_is_not_independent_replication": true
+  },
+  "schema_version": "lesson-evidence-v1",
+  "source_sha256": "e6f5318c5f09acf25f0e9cbb3afc6978253acf4e9637a80e887ad62c74dcb2b6"
+}

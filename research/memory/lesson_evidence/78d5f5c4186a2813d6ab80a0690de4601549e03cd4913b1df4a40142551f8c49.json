@@ -1,0 +1,289 @@
+{
+  "audience": "TERMINAL_RESULT_REVIEWER_ONLY",
+  "diagnostics": {
+    "charts": {
+      "needed": "위 진단 수치표에서 생성한 이미지와 대응 evidence_id",
+      "status": "NOT_COLLECTED"
+    },
+    "controlled_comparison": {
+      "needed": "업종·규모 통제 전후의 동일 표본 비교와 불확실성",
+      "status": "NOT_COLLECTED"
+    },
+    "economic_outcomes": {
+      "needed": "가설에 맞는 이후 실적 변화·성숙 여부·비교군",
+      "status": "NOT_COLLECTED"
+    },
+    "execution_costs": {
+      "needed": "실제 보유 규칙·회전율·거래비용 전후의 동일 표본 비교",
+      "status": "NOT_COLLECTED"
+    },
+    "input_quality": {
+      "needed": "원시 입력·공개시점·결측·이상치 분포",
+      "status": "NOT_COLLECTED"
+    },
+    "monthly_performance": {
+      "needed": "월별 IC·분위별 수익률·상하위 그룹 성과·비용과 표본 수",
+      "status": "NOT_COLLECTED"
+    },
+    "regime_comparison": {
+      "needed": "월초에 알려진 레짐별 성과·표본 수·독립 발생 구간 수",
+      "status": "NOT_COLLECTED"
+    },
+    "selection_profile": {
+      "needed": "분위별 업종·규모·부채·수익성·유동성 및 기존 신호 노출",
+      "status": "NOT_COLLECTED"
+    }
+  },
+  "evidence": [
+    {
+      "data": {
+        "data_notes": "adj_close 24개월 창만 사용한다.",
+        "expected_relationship": "12개월 고점 신호와 기간이 다르다.",
+        "falsification": "사전등록 방향이 무결성·입력 커버리지·Discovery IC·강건성·campaign-wide BY·Gold 상관·SQL parity·귀무 보정·봉인 OOS 중 하나라도 통과하지 못하면 기각한다.",
+        "hypothesis": "24개월 고점에 가까운 종목의 추세가 이후에도 지속된다.",
+        "inputs": [],
+        "mechanism": "장기 고점 근접도는 지속적 수요와 정보 확산을 포착한다.",
+        "params": {
+          "window_months": 24
+        },
+        "research_spec": {
+          "data_notes": "adj_close 24개월 창만 사용한다.",
+          "expected_relationship": "12개월 고점 신호와 기간이 다르다.",
+          "factor_name": "high_24m_proximity",
+          "falsification": "사전등록 방향이 무결성·입력 커버리지·Discovery IC·강건성·campaign-wide BY·Gold 상관·SQL parity·귀무 보정·봉인 OOS 중 하나라도 통과하지 못하면 기각한다.",
+          "max_lookback_months": 24,
+          "mechanism": "장기 고점 근접도는 지속적 수요와 정보 확산을 포착한다.",
+          "strategy_file": "factors/candidates/high_24m_proximity.py",
+          "strategy_sha256": "c722788be97f920ec7104d8ae605ae29bac3ac5acc69fa39b098cb7ffa75f3db",
+          "thesis": "24개월 고점에 가까운 종목의 추세가 이후에도 지속된다."
+        },
+        "source": "def compute(frame):\n    ordered = frame.sort_values([\"asset_id\", \"ym\"], kind=\"mergesort\")\n    grouped = ordered.groupby(\"asset_id\", sort=False)\n    anchor = grouped[\"adj_close\"].rolling(\n        WINDOW_MONTHS, min_periods=WINDOW_MONTHS\n    ).max().reset_index(level=0, drop=True)\n    oldest = grouped[\"ym\"].shift(WINDOW_MONTHS - 1)\n    value = ordered[\"adj_close\"] / anchor.where(anchor > 0)\n    return value.where(ordered[\"ym\"].eq(oldest + WINDOW_MONTHS - 1)).reindex(frame.index)\n"
+      },
+      "id": "hypothesis",
+      "kind": "PREREGISTERED_CLAIM_NOT_FACT"
+    },
+    {
+      "data": {
+        "evaluation_phase": "discovery",
+        "research_start": "2018-03"
+      },
+      "id": "discovery.metrics",
+      "kind": "AGGREGATE_METRICS",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "미선언 상수",
+        "note": "[]",
+        "passed": true,
+        "threshold": "0개",
+        "tier": "T0.1",
+        "value": 0
+      },
+      "id": "discovery.check.0",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "단일 팩터 계약",
+        "note": "[]",
+        "passed": true,
+        "threshold": "합성 신호 0개",
+        "tier": "T0.2",
+        "value": 0
+      },
+      "id": "discovery.check.1",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "최대 룩백",
+        "note": "",
+        "passed": true,
+        "threshold": "<=36개월",
+        "tier": "T0.3",
+        "value": 24
+      },
+      "id": "discovery.check.2",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "연구 입력 하한",
+        "note": "",
+        "passed": true,
+        "threshold": ">=2015-01",
+        "tier": "T0.4",
+        "value": null
+      },
+      "id": "discovery.check.3",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "label 전용 입력 차단",
+        "note": "[]",
+        "passed": true,
+        "threshold": "0개",
+        "tier": "T0.5",
+        "value": 0
+      },
+      "id": "discovery.check.4",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "입력 계약",
+        "note": "[]",
+        "passed": true,
+        "threshold": "누락 0개",
+        "tier": "T0.6",
+        "value": 0
+      },
+      "id": "discovery.check.5",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "출력 타입·인덱스",
+        "note": "",
+        "passed": true,
+        "threshold": "numeric Series / 동일 index",
+        "tier": "T0.8",
+        "value": null
+      },
+      "id": "discovery.check.6",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "유한값",
+        "note": "",
+        "passed": true,
+        "threshold": "±inf 없음",
+        "tier": "T0.9",
+        "value": null
+      },
+      "id": "discovery.check.7",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "결정성",
+        "note": "",
+        "passed": true,
+        "threshold": "동일 입력 2회 일치",
+        "tier": "T0.10",
+        "value": null
+      },
+      "id": "discovery.check.8",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "36개월 인과성",
+        "note": "평가기간 전반의 결정적 anchor 7개에서 36개월 제한 재계산 일치",
+        "passed": true,
+        "threshold": "36개월 이전·미래 행 비의존",
+        "tier": "T0.11",
+        "value": null
+      },
+      "id": "discovery.check.9",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "캐시 정의 일치",
+        "note": "",
+        "passed": true,
+        "threshold": "현재 정의와 캐시 일치",
+        "tier": "T0.12",
+        "value": null
+      },
+      "id": "discovery.check.10",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "전체 커버리지",
+        "note": "",
+        "passed": true,
+        "threshold": ">=50%",
+        "tier": "T1.1",
+        "value": 0.9594535677953786
+      },
+      "id": "discovery.check.11",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "월별 커버리지 하위10%",
+        "note": "",
+        "passed": true,
+        "threshold": ">=30%",
+        "tier": "T1.1",
+        "value": 0.954894044190027
+      },
+      "id": "discovery.check.12",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "종착수익률 3점 방향",
+        "note": "{'opt': -0.014, 'mid': -0.0127, 'pess': -0.0127}",
+        "passed": false,
+        "threshold": "세 시나리오 IC > 0",
+        "tier": "T1.2",
+        "value": null
+      },
+      "id": "discovery.check.13",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "배당 포함 총수익 계약",
+        "note": "",
+        "passed": true,
+        "threshold": "feature=adj_close / label=total_return_close v3(CERTIFIED) / candidate label 차단",
+        "tier": "T1.3",
+        "value": null
+      },
+      "id": "discovery.check.14",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    }
+  ],
+  "provenance": {
+    "campaign": "campaign-20260816-001",
+    "cycle": "cycle-0160-high_24m_proximity",
+    "definition_hash": "cd05cc73466c7e16",
+    "epoch": "epoch-001",
+    "result": "research/runs/cycle-0160-high_24m_proximity/result.json"
+  },
+  "record_id": "campaign-20260816-001/epoch-001/high_24m_proximity",
+  "review_contract": {
+    "associations_do_not_prove_causation": true,
+    "facts_require_evidence_ids": true,
+    "forward_outcomes_are_diagnostic_only": true,
+    "hypothesis_is_not_verified_mechanism": true,
+    "missing_is_not_failed": true,
+    "raw_evidence_not_for_candidate_generation": true,
+    "same_window_is_not_independent_replication": true
+  },
+  "schema_version": "lesson-evidence-v1",
+  "source_sha256": "2fe59bb6c7b94b50958e5577472a803c42191048a0c39218b9358f56b2edd7d1"
+}

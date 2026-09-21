@@ -1,0 +1,289 @@
+{
+  "audience": "TERMINAL_RESULT_REVIEWER_ONLY",
+  "diagnostics": {
+    "charts": {
+      "needed": "위 진단 수치표에서 생성한 이미지와 대응 evidence_id",
+      "status": "NOT_COLLECTED"
+    },
+    "controlled_comparison": {
+      "needed": "업종·규모 통제 전후의 동일 표본 비교와 불확실성",
+      "status": "NOT_COLLECTED"
+    },
+    "economic_outcomes": {
+      "needed": "가설에 맞는 이후 실적 변화·성숙 여부·비교군",
+      "status": "NOT_COLLECTED"
+    },
+    "execution_costs": {
+      "needed": "실제 보유 규칙·회전율·거래비용 전후의 동일 표본 비교",
+      "status": "NOT_COLLECTED"
+    },
+    "input_quality": {
+      "needed": "원시 입력·공개시점·결측·이상치 분포",
+      "status": "NOT_COLLECTED"
+    },
+    "monthly_performance": {
+      "needed": "월별 IC·분위별 수익률·상하위 그룹 성과·비용과 표본 수",
+      "status": "NOT_COLLECTED"
+    },
+    "regime_comparison": {
+      "needed": "월초에 알려진 레짐별 성과·표본 수·독립 발생 구간 수",
+      "status": "NOT_COLLECTED"
+    },
+    "selection_profile": {
+      "needed": "분위별 업종·규모·부채·수익성·유동성 및 기존 신호 노출",
+      "status": "NOT_COLLECTED"
+    }
+  },
+  "evidence": [
+    {
+      "data": {
+        "data_notes": "분할조정 adj_close의 정확한 12개월 월수익만 사용한다.",
+        "expected_relationship": "가장 가까운 기존 팩터: positive_return_share_12m — 차이: 상승월 개수가 아니라 상승·하락 월수익의 누적 크기 비율을 측정한다.",
+        "falsification": "자동 gate, BY, 봉인 OOS, 귀무 또는 수익일관성 신호 직교성이 실패하면 기각한다.",
+        "hypothesis": "12개월 월별 양의 수익 합/음의 수익 절대합이 높은 종목의 이후 순위가 높을 것이다.",
+        "inputs": [],
+        "mechanism": "상승월의 크기가 하락월 손실을 지속적으로 압도하면 단순 상승 빈도보다 강한 정보 우위를 나타낸다.",
+        "params": {
+          "window_months": 12
+        },
+        "research_spec": {
+          "data_notes": "분할조정 adj_close의 정확한 12개월 월수익만 사용한다.",
+          "expected_relationship": "가장 가까운 기존 팩터: positive_return_share_12m — 차이: 상승월 개수가 아니라 상승·하락 월수익의 누적 크기 비율을 측정한다.",
+          "factor_name": "return_gain_loss_ratio_12m",
+          "falsification": "자동 gate, BY, 봉인 OOS, 귀무 또는 수익일관성 신호 직교성이 실패하면 기각한다.",
+          "max_lookback_months": 12,
+          "mechanism": "상승월의 크기가 하락월 손실을 지속적으로 압도하면 단순 상승 빈도보다 강한 정보 우위를 나타낸다.",
+          "strategy_file": "factors/candidates/return_gain_loss_ratio_12m.py",
+          "strategy_sha256": "90463663f3183feff15a250d862cda15223834e92317ba05a05b729c29b60d09",
+          "thesis": "12개월 월별 양의 수익 합/음의 수익 절대합이 높은 종목의 이후 순위가 높을 것이다."
+        },
+        "source": "def compute(frame):\n    ordered = frame.sort_values([\"asset_id\", \"ym\"], kind=\"mergesort\")\n    grouped = ordered.groupby(\"asset_id\", sort=False)\n    monthly = ordered[\"adj_close\"] / grouped[\"adj_close\"].shift(1) - 1.0\n    gains = monthly.clip(lower=0).groupby(ordered[\"asset_id\"], sort=False).rolling(WINDOW_MONTHS, min_periods=WINDOW_MONTHS).mean().reset_index(level=0, drop=True)\n    losses = (-monthly.clip(upper=0)).groupby(ordered[\"asset_id\"], sort=False).rolling(WINDOW_MONTHS, min_periods=WINDOW_MONTHS).mean().reset_index(level=0, drop=True)\n    oldest_month = grouped[\"ym\"].shift(WINDOW_MONTHS)\n    value = gains / losses.where(losses > 0)\n    return value.where(ordered[\"ym\"].eq(oldest_month + WINDOW_MONTHS)).reindex(frame.index)\n"
+      },
+      "id": "hypothesis",
+      "kind": "PREREGISTERED_CLAIM_NOT_FACT"
+    },
+    {
+      "data": {
+        "evaluation_phase": "discovery",
+        "research_start": "2018-03"
+      },
+      "id": "discovery.metrics",
+      "kind": "AGGREGATE_METRICS",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "미선언 상수",
+        "note": "[]",
+        "passed": true,
+        "threshold": "0개",
+        "tier": "T0.1",
+        "value": 0
+      },
+      "id": "discovery.check.0",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "단일 팩터 계약",
+        "note": "[]",
+        "passed": true,
+        "threshold": "합성 신호 0개",
+        "tier": "T0.2",
+        "value": 0
+      },
+      "id": "discovery.check.1",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "최대 룩백",
+        "note": "",
+        "passed": true,
+        "threshold": "<=36개월",
+        "tier": "T0.3",
+        "value": 12
+      },
+      "id": "discovery.check.2",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "연구 입력 하한",
+        "note": "",
+        "passed": true,
+        "threshold": ">=2015-01",
+        "tier": "T0.4",
+        "value": null
+      },
+      "id": "discovery.check.3",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "label 전용 입력 차단",
+        "note": "[]",
+        "passed": true,
+        "threshold": "0개",
+        "tier": "T0.5",
+        "value": 0
+      },
+      "id": "discovery.check.4",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "입력 계약",
+        "note": "[]",
+        "passed": true,
+        "threshold": "누락 0개",
+        "tier": "T0.6",
+        "value": 0
+      },
+      "id": "discovery.check.5",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "출력 타입·인덱스",
+        "note": "",
+        "passed": true,
+        "threshold": "numeric Series / 동일 index",
+        "tier": "T0.8",
+        "value": null
+      },
+      "id": "discovery.check.6",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "유한값",
+        "note": "",
+        "passed": true,
+        "threshold": "±inf 없음",
+        "tier": "T0.9",
+        "value": null
+      },
+      "id": "discovery.check.7",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "결정성",
+        "note": "",
+        "passed": true,
+        "threshold": "동일 입력 2회 일치",
+        "tier": "T0.10",
+        "value": null
+      },
+      "id": "discovery.check.8",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "36개월 인과성",
+        "note": "평가기간 전반의 결정적 anchor 7개에서 36개월 제한 재계산 일치",
+        "passed": true,
+        "threshold": "36개월 이전·미래 행 비의존",
+        "tier": "T0.11",
+        "value": null
+      },
+      "id": "discovery.check.9",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "캐시 정의 일치",
+        "note": "",
+        "passed": true,
+        "threshold": "현재 정의와 캐시 일치",
+        "tier": "T0.12",
+        "value": null
+      },
+      "id": "discovery.check.10",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "전체 커버리지",
+        "note": "",
+        "passed": true,
+        "threshold": ">=50%",
+        "tier": "T1.1",
+        "value": 0.9848859177445138
+      },
+      "id": "discovery.check.11",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "월별 커버리지 하위10%",
+        "note": "",
+        "passed": true,
+        "threshold": ">=30%",
+        "tier": "T1.1",
+        "value": 0.9746198039385892
+      },
+      "id": "discovery.check.12",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "종착수익률 3점 방향",
+        "note": "{'opt': -0.0548, 'mid': -0.0534, 'pess': -0.0534}",
+        "passed": false,
+        "threshold": "세 시나리오 IC > 0",
+        "tier": "T1.2",
+        "value": null
+      },
+      "id": "discovery.check.13",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    },
+    {
+      "data": {
+        "name": "배당 포함 총수익 계약",
+        "note": "",
+        "passed": true,
+        "threshold": "feature=adj_close / label=total_return_close v3(CERTIFIED) / candidate label 차단",
+        "tier": "T1.3",
+        "value": null
+      },
+      "id": "discovery.check.14",
+      "kind": "GATE_OBSERVATION",
+      "phase": "discovery"
+    }
+  ],
+  "provenance": {
+    "campaign": "campaign-20260815-015",
+    "cycle": "cycle-0158-return_gain_loss_ratio_12m",
+    "definition_hash": "b1d121f4359b9bd3",
+    "epoch": "epoch-001",
+    "result": "research/runs/cycle-0158-return_gain_loss_ratio_12m/result.json"
+  },
+  "record_id": "campaign-20260815-015/epoch-001/return_gain_loss_ratio_12m",
+  "review_contract": {
+    "associations_do_not_prove_causation": true,
+    "facts_require_evidence_ids": true,
+    "forward_outcomes_are_diagnostic_only": true,
+    "hypothesis_is_not_verified_mechanism": true,
+    "missing_is_not_failed": true,
+    "raw_evidence_not_for_candidate_generation": true,
+    "same_window_is_not_independent_replication": true
+  },
+  "schema_version": "lesson-evidence-v1",
+  "source_sha256": "209f94ab999f44a2e5f5ed89b1eb3cc2599ce27321f710675336c3c8a61ba842"
+}
