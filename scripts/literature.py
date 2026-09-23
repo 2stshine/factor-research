@@ -75,7 +75,8 @@ def render_literature(root: Path | str) -> str:
     lines = [
         "## 외부 문헌 지식",
         "",
-        f"원문 확인: {catalog['reviewed_on']} · 선별 문헌 {len(entries)}건 · 저장 원본: `research/memory/literature.json`.",
+        f"문헌 카탈로그 갱신: {catalog['reviewed_on']} · 선별 문헌 {len(entries)}건 · 저장 원본: `research/memory/literature.json`.",
+        "각 항목에 확인 범위를 표시한다. 갱신일은 모든 문헌의 전문을 그날 다시 읽었다는 뜻이 아니다.",
         "논문 관측과 우리 프로젝트 적용 제안을 구분한다. 국내 실증 교훈·독립 재현·사용 가능한 데이터 인증이 아니다.",
         "현재 시점의 연구 참고자료다. 과거 시점에도 이 문헌을 알았다는 뜻이 아니며, 재사용한 과거 OOS가 새 독립 검증이 되지 않는다.",
         "논문 수익률·최적 파라미터를 옮겨 합격 기준으로 쓰지 않는다. 원문 전체 대신 해당 주장과 한계만 요약했다.",

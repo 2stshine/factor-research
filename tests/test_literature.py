@@ -70,6 +70,8 @@ def test_render_is_deterministic_and_external_claims_are_separate(tmp_path):
     assert (tmp_path / "memory/literature.json").read_bytes() == before
     assert "논문 관측:" in text and "프로젝트 적용 **제안**:" in text
     assert "원저자/출판사 초록 확인" in text
+    assert "문헌 카탈로그 갱신: 2026-09-20" in text
+    assert "모든 문헌의 전문을 그날 다시 읽었다는 뜻이 아니다" in text
     assert "국내 동일 정의 재현은 미확인" in text
     assert "SUPPORTS" not in text
     document["entries"].reverse()

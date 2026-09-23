@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Agent research artifacts; never publishes to Gold."""
+"""Agent research artifacts and explicitly controlled Gold publication."""
 from __future__ import annotations
 
 import argparse
@@ -862,26 +862,32 @@ def cmd_campaign_reveal(args) -> None:
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     memory = _refresh_research_memory()
-    try:
-        publication = run.publish_revealed_campaign(args.campaign, panel)
-        publication_path = epochs.record_gold_publication(
-            "research", args.campaign, publication,
-        )
-    except Exception as exc:
-        raise SystemExit(
-            "OOS 공개는 완료됐지만 Gold 자동 게시 transaction은 rollback됐습니다. "
-            f"campaign-publish로 동일 gate를 재시도할 수 있습니다: {exc}"
-        ) from exc
+    publication = None
+    publication_path = None
+    if not getattr(args, "no_publish", False):
+        try:
+            publication = run.publish_revealed_campaign(args.campaign, panel)
+            publication_path = epochs.record_gold_publication(
+                "research", args.campaign, publication,
+            )
+        except Exception as exc:
+            raise SystemExit(
+                "OOS 공개는 완료됐지만 Gold 자동 게시 transaction은 rollback됐습니다. "
+                f"campaign-publish로 동일 gate를 재시도할 수 있습니다: {exc}"
+            ) from exc
     context = research.write_context(panel, F.REGISTRY)
     print(f"봉인 OOS 공개 및 campaign 종료: {report}")
     print(f"전체 확인 결과: {result}")
     print("이 OOS 결과는 종료된 campaign 후보 수정에 사용할 수 없습니다")
     print(f"다음 루프 컨텍스트 갱신: {context}")
     print(f"시행 전량 메모리 갱신: {memory}")
-    print(
-        f"Gold publication: {publication['status']} "
-        f"({len(publication['published_factors'])}개), {publication_path}"
-    )
+    if publication is None:
+        print("Gold publication: SKIPPED (--no-publish); Gold write 없음")
+    else:
+        print(
+            f"Gold publication: {publication['status']} "
+            f"({len(publication['published_factors'])}개), {publication_path}"
+        )
 
 
 def cmd_campaign_publish(args) -> None:
@@ -1020,6 +1026,10 @@ def main() -> None:
     campaign_verify.add_argument("--campaign", required=True)
     campaign_reveal = commands.add_parser("campaign-reveal", help="충분히 쌓인 봉인 OOS를 한 번 공개")
     campaign_reveal.add_argument("--campaign", required=True)
+    campaign_reveal.add_argument(
+        "--no-publish", action="store_true",
+        help="OOS 확인과 연구 기억만 저장하고 Gold 게시를 하지 않음",
+    )
     campaign_publish = commands.add_parser(
         "campaign-publish",
         help="REVEALED PROMOTE 집합에 batch 직교성 gate 후 원자적 Gold 게시",
