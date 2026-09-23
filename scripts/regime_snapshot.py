@@ -13,6 +13,20 @@ from engine.regime_inputs import load_campaign_context
 from engine.regimes import classify_monthly_market
 
 
+def freshness(source_month: str | None, usable_month: str | None, last: pd.Period,
+              latest_ready: bool) -> dict:
+    """Current source coverage is not historical usability or PIT certification."""
+    lag = (last.ordinal - pd.Period(source_month, freq="M").ordinal
+           if source_month is not None else None)
+    usable_lag = (last.ordinal - pd.Period(usable_month, freq="M").ordinal
+                  if usable_month is not None else None)
+    return {"expected_completed_month": str(last), "source_lag_months": lag,
+            "latest_usable_lag_months": usable_lag,
+            "source_status": "NO_COMPLETED_INPUT" if lag is None else "CURRENT" if lag == 0 else "STALE",
+            "current_state_ready": bool(latest_ready and lag == 0),
+            "scope": "MONTH_END_DIAGNOSTIC_NOT_EXECUTION_READINESS"}
+
+
 def snapshot(registry: Path, *, as_of: str) -> dict:
     registry = Path(registry).resolve()
     if not registry.is_file():
@@ -49,7 +63,7 @@ def snapshot(registry: Path, *, as_of: str) -> dict:
         if frame.empty:
             output.append({"context_id": identity, "status": "NO_COMPLETED_ROWS",
                            "pit_status": "PIT_ASSUMED" if assumed else "PIT_VERIFIED",
-                           "usable_months": 0, "rows": []})
+                           "usable_months": 0, "freshness": freshness(None, None, last, False), "rows": []})
             continue
         frame["month"] = pd.PeriodIndex(frame["month"], freq="M")
         if frame["month"].duplicated().any():
@@ -112,10 +126,17 @@ def snapshot(registry: Path, *, as_of: str) -> dict:
         if not timeline:
             output.append({"context_id": identity, "status": "NO_COMPLETED_ROWS",
                            "pit_status": "PIT_ASSUMED" if assumed else "PIT_VERIFIED",
-                           "usable_months": 0, "rows": []})
+                           "data_first_month": str(frame["month"].min()),
+                           "data_latest_month": str(frame["month"].max()),
+                           "usable_months": 0,
+                           "freshness": freshness(str(frame["month"].max()), None, last, False), "rows": []})
             continue
         usable = [r for r in timeline if r["status"] == "READY"]
         output.append({"context_id": identity, "source_id": source["source_id"], "kind": kind,
+                       "presentation_primary_view": "regime" if kind == "market_index" else "state",
+                       "latest_primary_state": timeline[-1].get("coarse_state", timeline[-1]["state"]),
+                       "primary_state_counts": dict(Counter(r.get("coarse_state", r["state"]) for r in timeline)),
+                       "classification_rules": source.get("classification_rules"),
                        "pit_status": "PIT_ASSUMED" if assumed else "PIT_VERIFIED",
                        "approval_sha256": item["approval_sha256"],
                        "assumption_policy_sha256": acceptance.get("assumption_policy_sha256"),
@@ -127,6 +148,8 @@ def snapshot(registry: Path, *, as_of: str) -> dict:
                        "usable_months": len(usable), "total_months": len(timeline),
                        "state_counts": dict(Counter(r["state"] for r in timeline)),
                        "latest_state": timeline[-1]["state"], "latest_status": timeline[-1]["status"],
+                       "freshness": freshness(str(frame["month"].max()), usable[-1]["month"] if usable else None,
+                                              last, timeline[-1]["status"] == "READY"),
                        "status": "AVAILABLE" if len(usable) == len(timeline) else "PARTIAL" if usable else "UNKNOWN",
                        "rows": timeline})
     assumed_ids = [x["context_id"] for x in output if x["pit_status"] == "PIT_ASSUMED"]
@@ -138,6 +161,10 @@ def snapshot(registry: Path, *, as_of: str) -> dict:
             "verified_context_ids": [x["context_id"] for x in output if x["pit_status"] == "PIT_VERIFIED"],
             "contexts_with_usable_history": sum(x["usable_months"] > 0 for x in output),
             "configured_and_usable": all(x["usable_months"] > 0 for x in output),
+            "configured_and_usable_semantics": "HISTORICAL_COVERAGE_ONLY_NOT_CURRENT_READINESS",
+            "current_ready_contexts": sum(x["freshness"]["current_state_ready"] for x in output),
+            "all_current_states_ready": all(x["freshness"]["current_state_ready"] for x in output),
+            "stale_context_ids": [x["context_id"] for x in output if x["freshness"]["source_status"] == "STALE"],
             "historical_pit_verified_for_all_inputs": not assumed_ids,
             "factor_evaluation_executed": False, "campaign_created_or_modified": False,
             "promotion_gates_changed": False, "contexts": output}
@@ -149,11 +176,14 @@ def render(report: dict) -> str:
              f"기준일: {report['as_of']}; 마지막 완료월: {report['last_completed_month']}",
              f"연결 {report['context_count']}축: 검증 범위 내 {len(report['verified_context_ids'])}, "
              f"PIT 가정 {len(report['assumed_context_ids'])}. 사용 가능한 과거 구간 보유 {report['contexts_with_usable_history']}축.", "",
-             "| Context | PIT basis | Source last month | First usable | Usable months | Latest state |",
-             "|---|---|---|---|---:|---|"]
+             f"최신 완료월 판독 가능: {report['current_ready_contexts']}/{report['context_count']}축. "
+             "과거 구간 사용 가능과 최신 판독 가능은 별개다.", "",
+             "| Context | PIT basis | Source last month | First usable | Usable months | Latest state | Freshness / lag months |",
+             "|---|---|---|---|---:|---|---|"]
     for row in report["contexts"]:
         lines.append(f"| {row['context_id']} | {row['pit_status']} | {row.get('data_latest_month', '-')} | "
-                     f"{row.get('first_usable_month', '-')} | {row['usable_months']} | {row.get('latest_state', 'UNKNOWN')} |")
+                     f"{row.get('first_usable_month', '-')} | {row['usable_months']} | {row.get('latest_state', 'UNKNOWN')} | "
+                     f"{row['freshness']['source_status']} / {row['freshness']['source_lag_months']} |")
     lines += ["", "`UNKNOWN`에는 워밍업·원본 부재·노후화·가용시각 제약이 포함된다. 누락 월은 채우지 않는다.",
               "가정 입력은 검증된 최초 발표본이 아니다. 가정·규칙·출처는 새 캠페인 생성 때 동결된다.",
               "기존 캠페인이나 승격 기준을 변경하지 않는다. 레짐별 팩터 성과는 새 연구 실행 이후에만 생성된다.", ""]

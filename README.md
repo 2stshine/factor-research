@@ -78,7 +78,7 @@ uv run python scripts/research.py campaign-verify-implementations \
   --campaign campaign-001
 # READY_FOR_CONFIRMATION에서 사용자가 요청할 때 한 번만 실행
 uv run python scripts/run.py null --campaign campaign-001 --n 25
-uv run python scripts/research.py campaign-reveal --campaign campaign-001
+uv run python scripts/research.py campaign-reveal --campaign campaign-001 --no-publish
 ```
 
 평가할 때마다 `research/runs/cycle-NNNN-<factor>/`에 JSON과 Markdown 보고서가 생성되고,
@@ -93,6 +93,9 @@ uv run python scripts/research.py campaign-reveal --campaign campaign-001
 검증 artifact에 동결한다. 동결 snapshot의 discovery 구간에서 Python/SQL key·raw value·rank parity를 통과해야
 `READY_FOR_CONFIRMATION`이 된다. 이 SQL은 query-only로 검증하며 Gold write·발행은 하지 않는다.
 OOS reveal은 hash·parity·귀무 보정·discovery 재현을 먼저 확인하고 전 후보에 한 번만 수행한다.
+연구만 요청된 실행에서는 `--no-publish`를 반드시 사용한다. 이 옵션은 확인 결과와 연구 기억은
+저장하되 Gold 게시 및 게시 기록을 생략한다. 기존 CLI 호환 동작은 옵션을 생략하면 게시까지
+시도하므로, Gold 적재가 별도로 승인된 경우에만 생략하거나 종료 후 `campaign-publish`를 사용한다.
 마지막 OOS 수익률월 다음 달이라는 월 표지만으로는 부족하며, 비활성 종목 판정을 위해 마지막
 signal 월말에서 45일이 지난 실제 Silver 관측일까지 확인한다.
 
@@ -142,7 +145,8 @@ content-addressed checkpoint를 재사용하고 campaign별 family evidence dige
 최종 confirmation 판정은 T0·T1·T2·T4·T5 중 하나라도 실패하면 `REJECT`, T3 soft fail이 하나면
 `PROVISIONAL`, soft fail이 없으면 `PROMOTE`다. T3 soft fail이 둘 이상이어도 `REJECT`다.
 discovery 자동 확인 대상은 OOS가 봉인되어 있으므로 soft fail이 없어도 최대 `PROVISIONAL`이다.
-`PROMOTE`는 연구 판정일 뿐이며, 사람 승인 없이 Gold에 자동 발행되지 않는다.
+`PROMOTE`는 연구 판정일 뿐이다. 연구 전용 실행은 위의 `--no-publish`로 Gold 발행을 막으며,
+Gold 적재는 별도 승인 후 게시 계약을 모두 통과해야 한다.
 
 ## 유니버스 계약
 
@@ -298,3 +302,18 @@ REGISTRY.add(Factor(
   원자적으로 결박한 generation digest별 wide cache를 사용한다
 - 구현 parity·campaign reveal·별도 사람 검토 전
   `publish --apply`를 차단한다
+
+## 연구 대시보드
+
+공개 읽기 전용 [Research Observatory](https://teamalpha-research-observatory.vercel.app/)의
+소스와 정제된 스냅샷은 `apps/research-observatory/`에 일반 파일로 함께 버전 관리한다.
+별도 원격이 없는 Git submodule이 아니므로 이 저장소의 clean clone에도 포함된다.
+원래 로컬 Sites checkout의 `.git/`, `.vercel/`, 환경변수와 원시 패널은 포함하지 않는다.
+
+```bash
+node apps/research-observatory/scripts/check-site.mjs
+python3 -m http.server 4173 --bind 127.0.0.1 --directory apps/research-observatory/dist
+```
+
+공개된 기존 근거만 표시하며 새 평가·OOS 공개·Gold 게시를 수행하지 않는다.
+갱신과 Vercel 배포 절차는 [앱 README](apps/research-observatory/README.md)를 따른다.

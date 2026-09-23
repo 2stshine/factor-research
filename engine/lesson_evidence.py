@@ -141,6 +141,10 @@ def build_packet(
             "return_contract": study.get("return_contract"),
             "economic_outcome_notes": study.get("economic_outcome_notes", []),
         }
+        # Additive for new captures only: old content-addressed packets must
+        # rebuild byte-for-byte without a newly invented timing attestation.
+        if "execution_timing_contract" in study:
+            packet["scientist"]["study_context"]["execution_timing_contract"] = study["execution_timing_contract"]
         if study.get("status") == "COLLECTED":
             if study.get("definition_hash") != payload.get("factor", {}).get("definition_hash") or study.get("phase") != "discovery":
                 raise ValueError("Mechanism study binding mismatch")

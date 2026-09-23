@@ -6298,6 +6298,34 @@
       "unresolved_fields": []
     },
     {
+      "calculation": "def compute(frame):\n    ordered = frame.sort_values(['asset_id', 'ym'], kind='mergesort')\n    asset = ordered['asset_id']\n    raw_close = ordered['adj_close']\n    raw_activity = ordered['adv20']\n    close = raw_close.where((raw_close > 0) & (raw_close - raw_close).eq(0))\n    prior_close = close.groupby(asset).shift(1)\n    prior_month = ordered['ym'].groupby(asset).shift(1)\n    returns = (close / prior_close - 1.0).where(ordered['ym'].eq(prior_month + 1))\n    activity = np.log(raw_activity.where((raw_activity > 0) & (raw_activity - raw_activity).eq(0)))\n    valid = returns.notna() & activity.notna()\n    paired_return = returns.where(valid)\n    paired_activity = activity.where(valid)\n    product = paired_return * paired_activity\n    return_mean = paired_return.groupby(asset, sort=False).rolling(WINDOW_MONTHS, min_periods=WINDOW_MONTHS).mean().reset_index(level=0, drop=True)\n    activity_mean = paired_activity.groupby(asset, sort=False).rolling(WINDOW_MONTHS, min_periods=WINDOW_MONTHS).mean().reset_index(level=0, drop=True)\n    product_mean = product.groupby(asset, sort=False).rolling(WINDOW_MONTHS, min_periods=WINDOW_MONTHS).mean().reset_index(level=0, drop=True)\n    return_variance = paired_return.groupby(asset, sort=False).rolling(WINDOW_MONTHS, min_periods=WINDOW_MONTHS).var(ddof=0).reset_index(level=0, drop=True)\n    activity_variance = paired_activity.groupby(asset, sort=False).rolling(WINDOW_MONTHS, min_periods=WINDOW_MONTHS).var(ddof=0).reset_index(level=0, drop=True)\n    covariance = product_mean - return_mean * activity_mean\n    correlation = covariance / np.sqrt(return_variance.where(return_variance > 0) * activity_variance.where(activity_variance > 0))\n    oldest_month = ordered['ym'].groupby(asset).shift(WINDOW_MONTHS)\n    consecutive = ordered['ym'].eq(oldest_month + WINDOW_MONTHS)\n    return correlation.where(consecutive).reindex(frame.index)",
+      "calculation_sha256": "5b2d5475e75c15b791c5a5003e6cefb64bcad2bb86da1bc2c0e8cddb4e86c62a",
+      "category": "other",
+      "definition_status": "SOURCE_PRESENT_NOT_EXECUTED",
+      "exploration_domain": "liquidity_trading",
+      "family": "price_activity_comovement",
+      "group": "trading",
+      "hypothesis_status": "NOT_EXPORTED_UNREVIEWED_NARRATIVE",
+      "name": "return_trading_activity_correlation_12m",
+      "needs": [],
+      "params": {
+        "activity_measure": "log_adv20",
+        "lookback_months": 12,
+        "min_observations": 12,
+        "window_months": 12
+      },
+      "predicted_sign": -1,
+      "rebalance_months": 1,
+      "referenced_fields": [
+        "adj_close",
+        "adv20"
+      ],
+      "source_line": 54,
+      "source_path": "factors/candidates/return_trading_activity_correlation_12m.py",
+      "source_sha256": "04f41601d46bd58c6090c531de908f4cf3f4dd2b3ebad19a0e91246bc51cb4af",
+      "unresolved_fields": []
+    },
+    {
       "calculation": "lambda d: d['adj_close'] / d.groupby('asset_id')['adj_close'].shift(1) - 1",
       "calculation_sha256": "28c91b7d399fad767f29c88209e31249dffcf4c1389a2bf5eb2f90bf442a8249",
       "category": "momentum",
@@ -8887,6 +8915,13 @@
       "needs": "-"
     },
     {
+      "category": "other",
+      "definition_hash": "e0e91e564995c7a2",
+      "family": "price_activity_comovement",
+      "name": "return_trading_activity_correlation_12m",
+      "needs": "-"
+    },
+    {
       "category": "momentum",
       "definition_hash": "d323749c9e833267",
       "family": "rev_1m",
@@ -9379,6 +9414,7 @@
     "factors/candidates/return_persistence_24m.py": "3428cb62b3361c1f643f605858ca64913569e9bdc0dada8417509bc3f6e363a8",
     "factors/candidates/return_seasonality_12m.py": "45c05fa9a4e92a517c08313e403c2c7753b4bfe418003be5402496e20224260f",
     "factors/candidates/return_skewness_24m.py": "d6836b050414d3ec63bb35d8bb8bb09c6a9c2553b17dc7871e14efe8e8ae6a88",
+    "factors/candidates/return_trading_activity_correlation_12m.py": "04f41601d46bd58c6090c531de908f4cf3f4dd2b3ebad19a0e91246bc51cb4af",
     "factors/candidates/revenue_to_capital_stock.py": "580c75870781d8023e741ba6a6a2aedcaf968da4243f6f1f6fcf64a70e3e15a4",
     "factors/candidates/revenue_to_current_assets.py": "f558f231ba2d90d411e72a8697b4c730b5beb5f0c139f326f9b256252358fcea",
     "factors/candidates/revenue_to_current_liabilities.py": "22a7afd5fac02bca3d4125e51c87798e3b6da86f4c3755ddc95877882fdc133f",
@@ -9409,7 +9445,7 @@
     "factors/candidates/working_capital_accruals_6m.py": "754e87fa521f6503678bf76c23f719421201f20b9a114aa13ae8c814119a1d6f",
     "factors/candidates/working_capital_growth_12m.py": "3e5185bf9b19652ee25194418b803b8fc4f3cfa3fd111c335edf2612fffefb28",
     "factors/candidates/working_capital_to_sales.py": "fe4730a3b16d39cf26b5d9770d12f718e67c36b2dac8f1348c5c3ccb2c3132ec",
-    "research/history.jsonl": "43c6e81d411de5b96815aab7c0d563893ff581c9ff7f48d985f0438dd6f7de74"
+    "research/history.jsonl": "4eccbe1f5cee945e40f519ea63edc5c1c144f599982c965d7c654c192820d868"
   },
   "trials": [
     {
@@ -11472,6 +11508,15 @@
       "family": "operating_asset_growth_12m",
       "ruleset_version": "fr-3.16.0",
       "strategy_file": "factors/candidates/operating_asset_growth_12m.py"
+    },
+    {
+      "current_definition_binding": "NOT_VERIFIED",
+      "cycle_id": "cycle-0230-return_trading_activity_correlation_12m",
+      "definition_hash": "e0e91e564995c7a2",
+      "factor": "return_trading_activity_correlation_12m",
+      "family": "price_activity_comovement",
+      "ruleset_version": "fr-3.16.0",
+      "strategy_file": "factors/candidates/return_trading_activity_correlation_12m.py"
     }
   ]
 }

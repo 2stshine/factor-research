@@ -13,6 +13,7 @@ from engine.gate import RESEARCH_START
 
 
 def capture_discovery(panel, frame, factor, result, campaign, spec):
+    from engine.input_profiles import COMMON_MARKET_FIELDS, CONTROL_SOURCES, build_input_profiles, profile_contract
     from engine.mechanism_diagnostics import build_diagnostics
     from engine.regime_inputs import campaign_context, attach_macro_context
 
@@ -32,7 +33,7 @@ def capture_discovery(panel, frame, factor, result, campaign, spec):
         scope &= pd.to_datetime(frame["trade_date"]).le(cutoff).to_numpy()
     # First scope the entire data source, BEFORE any forward joining.
     selected = list(dict.fromkeys([
-        "asset_id", "ym", col, "fwd_mid", *factor.needs,
+        "asset_id", "ym", col, "fwd_mid", *factor.needs, *COMMON_MARKET_FIELDS,
         "market", "market_cap", "adv20", "available_date",
         "net_income_ttm", "total_assets", "revenue_ttm",
     ]))
@@ -89,19 +90,10 @@ def capture_discovery(panel, frame, factor, result, campaign, spec):
             "version": "regime-input-contract-v1",
             "sha256": regime_input_status["input_contract_sha256"],
         })
-    raw_inputs = []
-    for column in factor.needs:
-        if column not in data:
-            raw_inputs.append({"name": column, "status": "NOT_COLLECTED"})
-            continue
-        numeric = pd.to_numeric(data[column], errors="coerce").replace([np.inf, -np.inf], np.nan)
-        raw_inputs.append({"name": column, "n_present": int(numeric.notna().sum()),
-                           "n_missing_or_nonnumeric": int(numeric.isna().sum()),
-                           "n_zero": int(numeric.eq(0).sum()),
-                           "quantiles": {str(q): float(numeric.quantile(q)) if numeric.notna().any() else None
-                                         for q in (.01, .5, .99)}})
     quality = diagnostics["input_quality"]
-    quality["data"]["raw_input_profile"] = raw_inputs
+    control_sources = {source: target for source, target in CONTROL_SOURCES.items() if target in controls}
+    quality["data"]["raw_input_profile"] = build_input_profiles(data, factor.needs, control_sources)
+    quality["data"]["raw_input_profile_contract"] = profile_contract(factor.needs, control_sources)
     if "available_date" in data:
         age = (data["ym"].dt.end_time - pd.to_datetime(data["available_date"], errors="coerce")).dt.days
         quality["data"]["filing_age_days"] = {
@@ -110,9 +102,15 @@ def capture_discovery(panel, frame, factor, result, campaign, spec):
         }
         if age.lt(0).any():
             raise ValueError("Diagnostic financial input published after formation")
-    quality["limitations"].append("Raw input distributions cover factor-declared columns only; filing age is snapshot-level, not per-account audit.")
+    quality["limitations"].extend([
+        "Input profiles distinguish declared factor inputs, common market inputs and auxiliary control sources; runtime factor usage is not traced.",
+        "Profiles cover investable formation rows only, not all trailing-window inputs or excluded securities; missing columns are NOT_COLLECTED and units without source evidence are UNKNOWN.",
+        "Filing age is snapshot-level, not a per-account audit. Input distributions do not certify PIT, units or economic validity.",
+    ])
+    from engine.monthly_execution_timing import CONTRACT as EXECUTION_TIMING_CONTRACT
     return {
         "status": "COLLECTED", "schema_version": "mechanism-study-v1",
+        "execution_timing_contract": dict(EXECUTION_TIMING_CONTRACT),
         "campaign_id": campaign["campaign_id"],
         "phase": "discovery", "analysis_origin": "FIXED_DESCRIPTIVE_PROTOCOL",
         "definition_hash": factor.definition_hash,

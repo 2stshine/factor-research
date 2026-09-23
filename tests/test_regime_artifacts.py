@@ -142,7 +142,7 @@ def test_real_release_loads_with_only_registry_and_runtime_files(tmp_path, monke
     monkeypatch.setattr(Path, "read_bytes", read)
     clean = checker.check_artifacts(tmp_path)
     assert clean["runtime_status"] == "PASS"
-    assert clean["contexts"] == result["contexts"] == 38
-    assert clean["runtime_file_count"] == result["runtime_file_count"] == 41
+    assert clean["contexts"] == result["contexts"] == 39
+    assert clean["runtime_file_count"] == result["runtime_file_count"] == 43
     assert clean["runtime_bytes"] == result["runtime_bytes"]
     assert clean["reaudit"]["outside_checkout"] > 0

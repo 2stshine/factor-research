@@ -1,19 +1,20 @@
 # 레짐 입력의 최소 배포 묶음
 
 이 문서는 **등록된 입력의 실행 이식성**을 설명한다. 원본 데이터를 다시 수집하거나
-PIT를 새로 인증하는 절차가 아니다. 기존 context·approval·registry 바이트와 해시는
-변경하지 않는다. `PIT_ASSUMED`는 계속 사용자 수용 가정이며 최초 발표본 인증이 아니다.
+PIT를 새로 인증하는 절차가 아니다. 기존 context·approval 바이트와 해시는 보존한다.
+registry에는 새 버전의 입력만 명시적으로 추가한다. `PIT_ASSUMED`는 계속 사용자 수용 가정이며 최초 발표본 인증이 아니다.
 
 ## 배포 범위
 
-현재 `regime_sources.json`의 기본 입력은 3개 bundle, 38개 진단 축이다.
-런타임에서 필요한 output 파일은 **41개 JSON, 4,145,453 bytes (약 4 MB)**다.
+2026-09-23 `regime_sources.json`의 기본 입력은 4개 bundle, 39개 진단 축이다.
+런타임에서 필요한 output 파일은 **43개 JSON, 5,626,464 bytes (약 5.6 MB)**다.
 
 | 묶음 (`output/regime_inputs/` 아래) | 필수 파일 | 개수 |
 |---|---|---:|
 | `kr-policy-pit-20260920/silver/` | `context.json`, `approval.json` | 2 |
 | `kospi-assumed-20260921-v1/` | `context.json`, `approval.json` | 2 |
 | `fmp-assumed-20260921-v1/` | `context.json`, 지정된 `approvals/` JSON 36개 | 37 |
+| `kr-production-inflation-20260923-v1/` | `context.json`, `assumption-acceptance.json` | 2 |
 
 registry, 입력 승인 정책, 관련 엔진/스크립트/테스트도 함께 버전 관리한다.
 context 안에 월별 관측값이, approval 안에 검토 또는 가정 수용 내용이 포함되어 있어
@@ -21,15 +22,18 @@ context 안에 월별 관측값이, approval 안에 검토 또는 가정 수용 
 실제 팩터 연구 실행에는 이 묶음과 별개로 기존 인증 패널 등 연구 환경이 필요하다.
 
 `.gitignore`는 output 전체를 기본 제외하고 정확한 파일명만 허용한다. 현재 허용된
-output은 다음 **56개**다. 임의의 새 approval 파일도 자동으로 허용되지 않는다.
+output은 다음 **63개**다. 임의의 새 approval 파일도 자동으로 허용되지 않는다.
 
-- 위 런타임 JSON 41개.
+- 위 런타임 JSON 43개.
 - 정책 README, KOSPI README/summary, FMP README/summary: 5개.
 - `assumed-regime-layer-20260921-v1/README.md`, `snapshot.json`: 2개.
 - 최초 한국 기업 coverage 요청의 `fmp_korea_coverage_all.csv`, `fmp_korea_missing.csv`,
   `fmp_korea_summary.csv`, `fmp_korea_field_completeness.csv`, `fmp_korea_coverage_report.md`: 5개.
 - 기존 감사의 `pit_audit/fmp-20260920/report.md`, `pit_audit/fmp-20260921/report.md`,
   `pit_review_20260921/report.md`: 3개.
+- 한국 생산·물가 파생 방향 `summary.json`: 1개.
+- 실행 일자 정합성 `execution-alignment-20260923-v1/README.md`, `alignment.json`: 2개.
+- 최종 최신성 `remediation-20260923-final/README.md`, `snapshot.json`: 2개.
 
 README·summary·snapshot과 coverage/감사 보고서는 보존된 결과 설명이다. 런타임 의존성은
 아니며, 보고서에 등장하는 모든 로컬 원본이 Git에 포함된다는 의미도 아니다.

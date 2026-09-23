@@ -29,7 +29,7 @@
 가장 가까운 기존 팩터: <4절 목록에서 하나> — 차이: <한 줄>
 ```
 
-붙일 대상이 떠오르지 않으면 4절을 다시 읽는다. 목록이 228건이라 "없다"는 답은 거의 틀린다.
+붙일 대상이 떠오르지 않으면 4절을 다시 읽는다. 목록이 230건이라 "없다"는 답은 거의 틀린다.
 같은 변수를 부호나 표현만 뒤집은 것(예: 고점 대비 근접도 ↔ 고점 대비 낙폭,
 변동성 ↔ 안정성)은 **새 후보가 아니라 같은 후보**다.
 
@@ -48,7 +48,7 @@
 - Short-Term Reversal: 1건 등록
 - Size: 1건 등록
 - Value: 10건 등록
-- (미매칭): 180건
+- (미매칭): 182건
 
 ### 구조적 교훈
 
@@ -377,9 +377,19 @@
 - `market_relative_momentum_6_1` (market_relative_momentum_6_1) — 시행함
 - 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
 
+**campaign-20260920-001 / epoch-001**
+
+- `operating_asset_growth_12m` (operating_asset_growth_12m) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
+
+**campaign-20260921-001 / epoch-001**
+
+- `return_trading_activity_correlation_12m` (price_activity_comovement) — 시행함
+- 결과는 봉인 경계 뒤라 싣지 않는다. 무엇을 시도했는지만 남는다.
+
 ## 4. 시행 전량
 
-시행 228건 · 생략 없음
+시행 230건 · 생략 없음
 
 | cycle | factor | family | ruleset | 테마 | 데이터 |
 |---|---|---|---|---|---|
@@ -611,3 +621,5 @@
 | `cycle-0226-retained_earnings_to_assets_volatility_12m` | `retained_earnings_to_assets_volatility_12m` | `retained_earnings_to_assets_volatility_12m` | `fr-3.16.0` | - | - |
 | `cycle-0227-trading_value_turnover_change_3m` | `trading_value_turnover_change_3m` | `trading_value_turnover_change_3m` | `fr-3.16.0` | - | - |
 | `cycle-0228-market_relative_momentum_6_1` | `market_relative_momentum_6_1` | `market_relative_momentum_6_1` | `fr-3.16.0` | - | - |
+| `cycle-0229-operating_asset_growth_12m` | `operating_asset_growth_12m` | `operating_asset_growth_12m` | `fr-3.16.0` | - | - |
+| `cycle-0230-return_trading_activity_correlation_12m` | `return_trading_activity_correlation_12m` | `price_activity_comovement` | `fr-3.16.0` | - | - |

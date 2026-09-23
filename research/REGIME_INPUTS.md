@@ -12,8 +12,34 @@
 과거 `result.json`이나 교훈을 수정하거나 기존 후보를 재평가하지 않는다.
 
 [월 리밸런싱 문헌 검토·다음 버전 설계 제안](REGIME_DESIGN_REVIEW_20260921.md)은 별도 문서다.
-시장 4국면과 한국 생산·물가 방향 4국면을 권고하지만 **아직 현재 분류기나 registry에 적용하지 않았다**.
-기존 v2·가정 입력은 아래 기록대로 유지한다.
+2026-09-23에 시장 큰 4국면을 기본 표시로 적용하고 한국 생산·물가 방향을 별도 입력으로 등록했다.
+기존 시장 v2 공식·동결 연구는 유지하며 일별 RV63 제안은 아직 구현하지 않았다.
+[실행 기록](REGIME_REMEDIATION_20260923.md)과 아래 추가 규칙을 따른다.
+
+## 2026-09-23 방향 분류·최신성 보완
+
+기본 registry는 **39축: 검증 정책금리 1, PIT_ASSUMED 38**이다. 추가 1축은 새 원본을 수집한 것이
+아니라 기존 한국 산업생산 YoY·CPI YoY에서 파생한 `KR_PRODUCTION_INFLATION_DIRECTION`이다.
+`kr-production-inflation-direction-v1`은 각 월말 가용 snapshot의 최근 세 달 평균에서 앞선 세 달 평균을
+뺀 부호를 결합한다. 연속 여섯 월, 가용시각이 해당 판단월 말 이내, 가용 후 최대 육십 일 조건을 요구한다.
+두 축의 양·음 조합 네 가지, 정확히 영인 축이 있으면 NEUTRAL, 미충족은 UNKNOWN이다.
+가격 성과로 기간·기준을 고르지 않았다. 부모 HIGH/LOW 상태는 이 계산에 사용하지 않는다.
+
+140개월 중 134개월을 분류했다(2015-07~2026-08). GDP 성장이나 공식 침체 분류가 아니라
+생산 증가율의 모멘텀과 CPI 상승률의 방향 대리값이다. 제공자 event date를 통계 기준월로 간주하지 않으며,
+기준월 미제공과 동일 발표값 재사용을 lineage에 기록한다. 최초 발표본 인증은 아니고 PIT 가정 수용을 유지한다.
+새 campaign-start만 해당 context·수용서·정책 hash를 동결한다. 기존 연구에는 사후 결합하지 않는다.
+
+[최신 입력 스냅샷](../output/regime_inputs/remediation-20260923-final/README.md)의 과거 사용 가능 축은 39,
+2026-08 최신 판독 가능 축은 38이다. KOSPI 완전월은 여전히 2026-06이므로 최신 상태를 UNKNOWN/STALE로 남긴다.
+과거 커버리지와 최신성, 최신 입력 상태와 과거 팩터 성과는 별도 항목이다.
+
+```sh
+python -m scripts.build_korea_macro_direction \
+  --parent output/regime_inputs/fmp-assumed-20260921-v1/context.json \
+  --policy research/regime_assumption_policy.json --as-of 2026-09-23 \
+  --output output/regime_inputs/<new-production-inflation-version>
+```
 
 ## 현재 사용 정책: PIT 가정 수용 (2026-09-21)
 
@@ -23,7 +49,7 @@
 `PIT_ASSUMED / ASSUMPTION_ACCEPTED`로 연결한다. 팩터 승격 판단의 보조 진단으로 사용할 수 있으나
 팩터 feature 사용 권한이나 새 합격 gate는 아니다. 이 가정만으로 추가 검증을 실행 선행조건으로 요구하지 않는다.
 
-[실행 결과](../output/regime_inputs/assumed-regime-layer-20260921-v1/README.md): 기본 registry 총 **38축**.
+[당시 실행 결과](../output/regime_inputs/assumed-regime-layer-20260921-v1/README.md): 2026-09-21 registry 총 **38축**.
 
 | 입력 | 축 수 | 월별 구간·실제 판독 |
 |---|---:|---|

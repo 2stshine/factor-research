@@ -51,6 +51,7 @@ EXPECTED_DEFINITIONS = {
     "revenue_to_total_liabilities": (1, "50c3bd228268077e"),
     "retained_earnings_to_assets_volatility_12m": (-1, "b7a8b39202f9a9eb"),
     "retained_earnings_to_equity": (1, "ede7286f5e5ca082"),
+    "return_trading_activity_correlation_12m": (-1, "e0e91e564995c7a2"),
     "short_term_reversal_3m": (-1, "bb5c9a621d0bd540"),
     "trading_turnover_20d": (-1, "c03efb8638407bd6"),
     "trading_value_volatility_12m": (-1, "74ce4f67d200762d"),

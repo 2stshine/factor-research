@@ -49,13 +49,10 @@ def _input_context(sections: dict[str, str]) -> str:
     return text
 
 
-def refresh_knowledge(
-    root: Path | str = "research", *, context_text: str | None = None,
-    context_cutoff: str | None = None,
-) -> Path:
-    from scripts.lessons import _atomic_write_text
+def _knowledge_parts(root: Path, context_text: str | None = None) -> dict:
+    """Read/validate render inputs; not a release-authentication entry point."""
     from scripts.literature import render_literature
-    from scripts.factor_memory import build_factor_index, render_attempt_summary, write_factor_index
+    from scripts.factor_memory import build_factor_index
 
     root = Path(root)
     # Validate the external catalog before any memory regeneration side effects.
@@ -68,20 +65,41 @@ def refresh_knowledge(
     sections = _sections(context_text)
     input_text = _input_context(sections)
     index = build_factor_index(root, registry_rows=_registry_rows(sections))
-    from scripts.candidate_lessons import refresh_candidate_lessons, render_grouped_lessons
-    candidate_records = refresh_candidate_lessons(root)
-    text = (
+    return {"input_text": input_text, "index": index, "literature_text": literature_text}
+
+
+def _render_knowledge(parts: dict, candidate_records: list[dict]) -> str:
+    """Private pure renderer; callers must freshly authenticate lesson records."""
+    from scripts.factor_memory import render_attempt_summary
+    from scripts.candidate_lessons import render_grouped_lessons
+
+    return (
         "# 연구 지식\n\n"
         "> 자동 생성. 지침은 INSTRUCTIONS.md에만 둔다. 외부 문헌과 내부 실증 교훈은 구분한다.\n"
         "> 사용할 데이터 · 기존 가설/계산의 요약 · 검토된 교훈과 문헌만 담는다.\n"
         "> 이 파일 생성은 DB 재인증이 아니다. 입력 경계는 아래, 실행 상태는 해당 campaign 원본에서 확인한다.\n\n"
         "보유 데이터·적재 범위·운영 상태는 [DATA_INVENTORY.md](DATA_INVENTORY.md)를 참조한다. "
         "아래 입력 목록은 현재 연구 패널에 연결된 데이터만 나타낸다.\n\n"
-        + input_text + "\n" + render_attempt_summary(index)
+        + parts["input_text"] + "\n" + render_attempt_summary(parts["index"])
         + "\n" + render_grouped_lessons(candidate_records)
-        + ("\n" + literature_text if literature_text else "")
+        + ("\n" + parts["literature_text"] if parts["literature_text"] else "")
     )
-    write_factor_index(root, index)
+
+
+def refresh_knowledge(
+    root: Path | str = "research", *, context_text: str | None = None,
+    context_cutoff: str | None = None,
+) -> Path:
+    from scripts.lessons import _atomic_write_text
+    from scripts.factor_memory import write_factor_index
+    from scripts.candidate_lessons import refresh_candidate_lessons
+
+    root = Path(root)
+    parts = _knowledge_parts(root, context_text)
+    # Public entry point always authenticates; no CLI/caller-supplied records.
+    candidate_records = refresh_candidate_lessons(root)
+    text = _render_knowledge(parts, candidate_records)
+    write_factor_index(root, parts["index"])
     target = root / "KNOWLEDGE.md"
     _atomic_write_text(target, text)
     return target
