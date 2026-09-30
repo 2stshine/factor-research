@@ -8,6 +8,13 @@ const read=path=>readFile(resolve(root,path),'utf8');
 const research=JSON.parse(await read('dist/data/research-catalog.json'));
 const gold=JSON.parse(await read('dist/data/gold-catalog.json'));
 const code=await read('dist/app.js');
+const index=await read('dist/index.html');
+for(const asset of ['term-help.js','term-help.css']){
+ assert(index.includes(`./${asset}`),`Missing term-help asset reference: ${asset}`);
+ const content=await read(`dist/${asset}`);
+ assert(content.length>0,`Empty term-help asset: ${asset}`);
+ if(asset.endsWith('.js'))new vm.Script(content,{filename:asset});
+}
 assert.equal(research.records.length,research.counts.released_records);
 assert.equal(research.counts.ledger_records,research.counts.released_records+research.counts.withheld_records);
 assert.equal(gold.factors.length,gold.approved_count);

@@ -32,6 +32,14 @@ The portable app snapshot is versioned as ordinary files under `apps/research-ob
 
 The dashboard is reading/navigation only; it has no state-mutating tools, approval buttons, or data-write endpoints.
 
+## Term help
+
+`dist/term-help.js` supplies plain-Korean definitions beside metric labels, table headings, regime diagnostics and verdict badges. The `?` buttons open on hover or keyboard focus; click/tap pins the explanation, and a second click, outside click or Escape dismisses it. In research details, the first Escape closes help without dismissing the detail dialog. Descriptions are also linked with `aria-describedby` for screen readers.
+
+The glossary observes dynamic table/filter/detail rendering and decorates text only: no data refresh, calculation changes, or missing-value imputation. It excludes existing interactive controls, source code and raw evidence values. Tooltips use the browser top layer to avoid table/modal clipping, with a fixed-position fallback. Keep the definitions consistent with the research metric dictionary, especially IC versus returns, Discovery net excess versus OOS performance, %p versus %, and assumed versus verified PIT.
+
+For UI smoke checks, open `#factors`, show the net-excess help, filter the table and check help still works. On `#overview`, open the latest research and test keyboard focus/Escape inside the dialog. On `#regimes`, check PIT and sample-size help. Verify a narrow viewport and reset any test viewport override afterward. Run `node --check dist/term-help.js` and `node scripts/check-site.mjs` before publishing.
+
 ## Optional Vercel deployment
 
 `vercel.json` serves the sanitized `dist/` directory without a build; `.vercelignore` excludes research source, scripts, and credentials. This configuration alone does not create a Vercel project, deploy it, or enable authentication.
