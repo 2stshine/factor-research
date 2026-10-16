@@ -159,6 +159,8 @@ def _load_inputs(verbose: bool = True) -> DailyInputs:
 
 def build_cache(factors: tuple[str, ...] | None = None, verbose: bool = True) -> Path:
     """gold 팩터 중 일별 정의가 있는 것을 계산해 long 형식으로 캐시한다."""
+    from engine.research_transition_guard import require_legacy_read
+    require_legacy_read("legacy daily factor cache build")
     names = tuple(factors) if factors else gold.approved_factors()
     if not names:
         raise SystemExit(
@@ -208,6 +210,8 @@ def build_cache(factors: tuple[str, ...] | None = None, verbose: bool = True) ->
 
 
 def load_daily_factors() -> pd.DataFrame:
+    from engine.research_transition_guard import require_legacy_read
+    require_legacy_read("legacy daily factor cache load")
     if not CACHE.exists():
         raise SystemExit(
             f"일별 팩터 캐시가 없습니다: {CACHE}\n"

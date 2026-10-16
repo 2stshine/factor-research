@@ -32,6 +32,8 @@ ORDER BY factor_key, version
 
 def refresh(verbose: bool = True) -> list[str]:
     """RDS에서 APPROVED 팩터 목록을 받아 캐시한다."""
+    from engine.research_transition_guard import require_legacy_read
+    require_legacy_read("legacy strategy Gold refresh")
     with silver.connect(read_only=True) as conn:
         with conn.cursor() as cur:
             cur.execute(GOLD_SQL)
@@ -80,6 +82,11 @@ def approved_factors(default: tuple[str, ...] = ()) -> tuple[str, ...]:
     사고가 있었다. RDS 캐시는 `python -m strategies.gold`를 다시 돌리면 최신이
     되고, 그러면 다시 그쪽이 이긴다.
     """
+    from engine.research_transition_guard import new_generation_active
+    if new_generation_active():
+        # This legacy loader cannot materialize a new registry. Even the old
+        # hardcoded fallback is forbidden; new consumers use exact v3 entries.
+        return ()
     snapshot: tuple[float, tuple[str, ...]] | None = None
     if CACHE.exists():
         snapshot = (CACHE.stat().st_mtime, tuple(json.loads(CACHE.read_text())))

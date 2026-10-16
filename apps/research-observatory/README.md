@@ -18,6 +18,17 @@ Public, read-only research dashboard (public access explicitly authorized by the
 
 ## Refresh
 
+### Closed research-v2 pilot
+
+`#research-v2` is separate from the historical 177-lesson catalog. Its six lessons require
+actual independent critic acceptance and an authenticated activation receipt. Build the public
+allowlisted summary from the repository root with `python -m scripts.export_research_v2 --help`,
+then `node scripts/build-research-v2.mjs` and `node scripts/check-research-v2.mjs` in this app.
+Do not publish raw frames, reviewer-only statistical bundles or the active memory database.
+This static view separates the real paired diagnostic comparison from the synthetic memory
+comparison. Neither is a new factor approval, an independent OOS result or proof of causality.
+The historical catalog, its metrics, and legacy regime definitions are preserved.
+
 Run the authenticated read-only exporters from the factor-research repository, then:
 
 ```sh
@@ -32,7 +43,33 @@ The portable app snapshot is versioned as ordinary files under `apps/research-ob
 
 The dashboard is reading/navigation only; it has no state-mutating tools, approval buttons, or data-write endpoints.
 
+## Current monthly execution comparison (2026-09-30)
+
+`#comparison` and `data/monthly-comparison.json` display a separate read-only snapshot of all
+49 currently approved **daily** definitions. Their current versions, direction, definition hashes,
+and SQL implementation hashes were frozen in `research/strategy_comparisons/monthly-open-current-20260930/`.
+This does not rebind old `gold-catalog.json` metrics or discovery dates to new definitions.
+The historical factor table and every research/detail view explain that boundary. Of the prior
+definitions, 36 hashes differ and 13 were unknown; all 49 current identities are now bound.
+
+The comparison is registered, **not completed**: 49 independent factors × four fixed portfolio rules,
+0/196 actual performance comparisons. Signal months are 2018-03 through 2026-05, with return support
+through July 2026. Open-to-open asset total returns, first-session timestamps, PIT score/universe/cap
+bindings and matching KRX300 TR inputs still need preparation. Certified stock close TR is not
+certification of opening returns or index TR. No fabricated performance, backfilled old IC, or automatic
+winner selection is shown. The current approval snapshot is not historical approval PIT or pristine OOS.
+
+The parent exporter `scripts/dashboard_exports/export_monthly_comparison.py` validates immutable
+catalog/plan/readiness bindings and publishes only an allowlist. It excludes local paths, connection
+details, DB evaluations, stock-level values and sealed results. It currently rejects performance outputs;
+completed results need a separately tested export path. The JSON is immutable: refresh to a new source
+artifact and deliberately publish a new snapshot, rather than silently overwriting provenance.
+
 ## Term help
+
+Lesson cards and review callouts use Korean titles: the two existing editorial titles are retained, and other titles reuse the first sentence of the authenticated Korean lesson. Cards show the remaining prose without repeating that sentence. Korean factor names and review labels are display-only; the original lesson, factor, family and campaign identifiers remain available under a disclosure and in the unmodified downloadable evidence. Searches accept Korean names/titles/verdicts as well as original IDs. All 177 released lesson titles and related factor labels are checked for Korean coverage.
+
+Lessons default to newest research first in the library, search results and overview: valid campaign-ID dates descending, then numeric research cycle sequence descending, with record ID as a deterministic tie-breaker. Missing/invalid dates stay last. Cards display the campaign date and cycle number. This is campaign chronology, not a claimed research-completion or lesson-review timestamp; the evidence snapshot is not reordered or modified.
 
 `dist/term-help.js` supplies plain-Korean definitions beside metric labels, table headings, regime diagnostics and verdict badges. The `?` buttons open on hover or keyboard focus; click/tap pins the explanation, and a second click, outside click or Escape dismisses it. In research details, the first Escape closes help without dismissing the detail dialog. Descriptions are also linked with `aria-describedby` for screen readers.
 
@@ -45,3 +82,172 @@ For UI smoke checks, open `#factors`, show the net-excess help, filter the table
 `vercel.json` serves the sanitized `dist/` directory without a build; `.vercelignore` excludes research source, scripts, and credentials. This configuration alone does not create a Vercel project, deploy it, or enable authentication.
 
 The owner confirmed personal non-commercial Hobby eligibility and explicitly enabled public access for the existing `teamalpha-research-observatory` project. Preserve that audience; do not use the CLI `--public` source-exposure option. Publish only the sanitized `dist/` allowlist, then verify the deployment and intended anonymous page/data access. For any new project, default to protected/private until separately authorized. Never upgrade to a paid plan automatically. Git auto-deployment is separate from CLI deployment and has not been configured.
+
+
+## 연구 지도 (2026-09-30)
+
+기존 메뉴의 `#map`에 인증된 카탈로그 기반 연구 지도를 추가했다.
+보존용 소스는 `src/research-map/`이며 `dist/research-map.js`, `dist/research-map.css`,
+`dist/data/research-map.json`은 생성 결과다. 기존 단일 사례 시안 `dist/research-map/`과 별개다.
+
+```bash
+node scripts/build-research-map.mjs
+node scripts/check-research-map.mjs
+node scripts/check-network.mjs
+node scripts/check-site.mjs
+```
+
+`sync-snapshot.mjs` 마지막 단계가 지도 생성을 호출한다. upstream exporter의 release 인증,
+packet hash/rebuild, review binding과 pending 제외 절차는 변경하지 않았다. 지도 빌드는 이미
+인증된 `dist/data/research-catalog.json`만 읽으며 ledger, DB, 봉인 원본을 읽지 않는다.
+새 카탈로그를 패키징할 때 출처 링크의 revision은 `src/research-map/snapshot.json`에서
+해당 원본 커밋으로 함께 갱신한다. 상세 설계·공개 범위는 `src/research-map/README.md` 참고.
+
+연구지도 v2는 공개177개 사례의 가설·교훈·미실행 질문531개를 하나의 좌표공간에 유지한다.
+명시적 교훈 활용1건, 원문 비교참조33쌍, frozen 코드 변형64쌍은 서로 다른 선으로 표시하며
+편집 category 연결172개는 기본 해제다. 선을 클릭하면 인용문과 출처를 확인할 수 있다.
+`network.mjs`가 재생성 가능한 관계 projection을, `network-view.js`가 드래그·pan·zoom·키보드·모바일 동작을 보존한다. 531노드 v2는 2026-10-01 기존 공개 사이트에 배포됐다 (dpl_ExsdxbkMcHM59Nf5AtzjJFEeJX6Z).
+
+## 표시 의미와 레짐 점검 (2026-10-01)
+
+`src/research-status/semantics.mjs`와 생성된 `dist/research-semantics.js`는 공개 기록의 표시만 담당한다.
+UNKNOWN을 포함한 레짐 합계를 대사하고 최신 일반 연구와 선택 레짐 연구를 분리한다.
+SUPPORTS는 교훈의 stance이며 ‘교훈과 부합’으로 표시한다. OOS 옆에 캠페인 증거 분류와 등록된
+이전 노출을 연결하며, `IC 레짐 집중도` 원문은 보존하면서 동일 길이 시간 구간 검사임을 설명한다.
+
+입력 원천 스냅샷(2026-09-23, 당시 38/39)과 표시 점검일(2026-10-01, 필요 완료월 2026-09의
+보존 자료 확인 0/39)을 구분한다. 새 수집·백테스트·PIT 인증을 의미하지 않는다. 레짐 원천의
+긴 ID는 한국어 설명과 함께 펼쳐 보며 모든 원래 식별자·기간·상태를 보존한다.
+
+지도는 전체 좌표공간을 유지하며 선택 상세를 접을 수 있다. ‘전체 보기’는 상세를 접고 모든
+노드를 보여준다. 빈 입력 선언은 목록 미수록과 JSON pointer를 표시하고, 방향 있는 관계는
+상세 endpoint에서도 →로 표시한다. 마우스·터치·키보드 인접 연결 선택을 검사한다.
+
+```sh
+node scripts/build-research-status.mjs
+node scripts/check-research-semantics.mjs
+node scripts/check-research-status.mjs
+node scripts/check-site.mjs
+# Playwright가 설치된 환경에서 실제 미리보기와 함께 실행
+OBSERVATORY_PREVIEW_URL=http://127.0.0.1:4173 node scripts/check-semantics-browser.cjs
+```
+
+과거 선언·packet·review·승격 기준은 수정하지 않는다. 관련 소스·부정 사례 검증·표시 기준은
+`src/research-status/README.md`에 있다. 공개 연구 범위는 아래 팩터 공간 페이지에서 확인한다.
+
+## 팩터 공간 · 읽기 전용 coverage (2026-10-01)
+
+`#coverage`는 인증된 공개 177개 시행만 사용한다. 경제 영역 주석 미기록 177개,
+정확한 frozen 코드 146개 묶음(반복 14묶음/45시행), 공통표본 상관·유효차원 미산출을
+분리한다. 미기록은 미탐색 공간이 아니며 코드 묶음은 독립 메커니즘의 개수가 아니다.
+현재 코드 이름이나 성과로 분류하지 않고, immutable identity에 결합한 주석만 허용한다.
+
+보존용 소스는 `src/research-status/view.js`, `view.css`, `projection.mjs`다.
+`build-research-status.mjs`와 기존 `sync-snapshot.mjs`가 같은 생성 경로를 사용한다.
+브라우저도 record ID/definition hash/packet hash 결합 불일치 시 진단 표시를 중단한다.
+
+```sh
+node scripts/build-research-status.mjs
+node scripts/check-research-status.mjs
+node scripts/check-site.mjs
+OBSERVATORY_PREVIEW_URL=http://127.0.0.1:4173 node scripts/check-coverage-browser.cjs
+```
+
+새 연구 결과·score 행렬·성과·원시 입력을 추가하지 않는다. 공개된 원문 코드와 기존
+상태로만 진단을 재생성하며, 세부 레짐의 표시 정책·진단 미수집 상태와 표본 재사용을 보존한다.
+
+## 스냅샷 재생성의 실패 보존
+
+`sync-snapshot.mjs`는 이미 인증된 exporter 묶음으로 임시 공간에서 카탈로그·지도·팩터 공간의
+생성을 모두 마친 뒤 입력 준비 보조 점검을 포함한 11개 생성 파일만 반영한다. 분류 주석·원문 결합·비공개 필드 검사에 실패하면
+현재 `dist`를 바꾸지 않는다. 생성 중 다른 작업이 바꾼 출력/비교 입력은 덮어쓰지 않는다.
+동시 실행은 `.snapshot-sync.lock`으로 거부하며, 같은 입력으로 반복 생성하면 파일을 교체하지 않는다.
+
+파일 반영 도중 오류가 나면 이 실행이 쓴 파일을 되돌린다. 운영체제 강제 종료까지 보장하는
+다중 파일 트랜잭션은 아니다. 실행 중 강제 종료돼 lock이 남으면 다른 실행이 없는지 확인한 뒤
+복구해야 한다. production은 검증된 별도 정적 묶음으로 배포하며 생성기 자체가 배포하지 않는다.
+
+```sh
+node scripts/check-snapshot-publishing.mjs
+```
+
+검사는 늦은 주석 실패·봉인/민감 필드 거부·동시 편집·중간 반영 실패 복구·잠금·재생성 불변을
+확인한다. 배포 묶음은 생성 결과의 바이트 hash를 따로 검증한다. 입력 준비 주석이 다른 계획을 참조하면 생성 단계에서 중단한다.
+
+
+## 월초 비교 입력 준비 상태와 공유 링크
+
+`src/monthly-readiness/review.json`은 수작업 검토한 준비 상태의 별도 주석이다. 원래 공개
+`monthly-comparison.json`·계획·실험 기록은 바꾸지 않는다. 계획/카탈로그 해시가 맞는 경우만
+허용된 상태 코드를 `monthly-preparation.json`으로 내보낸다. 원천 가격·점수·접속 정보와
+로컬 입력 파일을 읽지 않으며, 정해진 키 외 필드는 거부한다. 합성 검사 통과·후보 자료 확보는
+실제 입력 인증과 다르다. 현재 성과는 계속 0/196이고 최종 평가에는 2026년 7월 월초 값이 필요하다.
+
+```sh
+node scripts/build-monthly-readiness.mjs
+node scripts/check-monthly-readiness.mjs
+OBSERVATORY_PREVIEW_URL=http://127.0.0.1:4173 node scripts/check-preparation-browser.cjs
+```
+
+팩터 공간은 `#coverage?section=domains`, `#coverage?section=templates`,
+`#coverage?q=230&repeated=0` 주소를 공유할 수 있다. 기존 `#coverage-domains`와
+`#coverage-templates`도 해석한다. 필터 때문에 검색 결과가 숨겨진 경우 해제 버튼을 제공한다.
+방법론의 입력 개수는 선택한 동결 연구에서 유도하며 연구가 없으면 값을 만들지 않는다.
+
+## Frozen source 입력·계산구조 진단 v1
+
+`#coverage?section=inputs`는 이미 공개·인증된 frozen source/params만 AST로 읽는다.
+보존용 구현은 `src/research-status/source_structure.py`, `source-structure.mjs`, `source-view.js`다.
+Python 표준 라이브러리만 필요하며 `OBSERVATORY_PYTHON`으로 인터프리터를 지정할 수 있다.
+`build-research-status.mjs`가 이 분석을 수행해 기존 `research-status.json`에 별도 부분으로 넣는다.
+기존 staging/publish 흐름을 그대로 사용하고 원천 자료나 연구 실행 경로는 읽지 않는다.
+
+- 반환값으로 이어지는 literal 필드·순서가 보존된 alias·제한된 연산만 추적한다.
+  주석과 죽은 대입은 원시 입력으로 세지 않는다. 숫자/반환 비교·그룹·정렬·조건 역할은 구분한다.
+- 정확한 allowlist 상수와 동명 params만 결합한다. 지역 상수 shadowing, 산술 기간 표현식,
+  동적 입력 선택, 미지원 transform lambda, 반복문·파생 열 쓰기는 미확인/부분으로 남긴다.
+- 177건 중 규칙 내 추출 165, 부분 11, 미해석 1이다. 이 상태는 분석기 지원 범위이지
+  경제적 타당성 등급이 아니다. 현재 경제 영역 미기록과 공통표본 점수 차원 미산출은 그대로다.
+- 원문 줄·표현식과 record/definition/packet/source/params hash를 남긴다. 빌드와 브라우저가
+  frozen source·params 결합을 확인하고 다르면 표시를 중단한다. 범용 수식 동등성, 가중치 및
+  correlation/beta 모티프, 달력 연속성, 실제 데이터 관측·PIT는 인증하지 않는다.
+- `Factor.needs`는 추가 재무 컬럼이다. 빈 배열 58건은 ‘추가 재무입력 없음’이며 공통 시장입력은
+  별도다. 필드 자체가 없는 `NOT_RECORDED`와 구분한다. 과거 inputs를 코드로 보충하지 않는다.
+
+```sh
+python3 -B scripts/check-source-structure.py
+node scripts/check-research-status.mjs
+OBSERVATORY_PREVIEW_URL=http://127.0.0.1:4173 node scripts/check-source-browser.cjs
+```
+
+`#coverage?section=inputs&inputq=230`을 공유할 수 있다. 입력군·추출 상태 필터, 키보드 상세 펼침,
+줄 단위 원문, 기존 연구 상세 연결을 제공한다. 시행 수는 중복 포함 분모이며 독립 증거 수가 아니다.
+
+## 앞으로 등록할 연구의 명시적 교훈 계보
+
+선택적 사전등록 사용법은 [knowledge-lineage.md](../../docs/knowledge-lineage.md)에 있다.
+기존 인증 exporter가 `registered_lineage`를 추가한 신규 공개 연구만 읽고, 양쪽 공개·검토된
+endpoint의 packet 결합이 맞을 때 기존 지도 생성기에서 연결한다. raw `research_spec` 선언을
+연결 근거로 사용하지 않는다. 원문 인용과 등록 참조가 같은 관계면 출처를 합친다.
+교훈 활용·비교 참조·미실행 질문을 구분하며, legacy에 등록 기록을 소급 생성하지 않는다.
+기존 177건의 catalog/graph는 같은 입력에서 byte-for-byte 동일하다.
+
+```sh
+node scripts/check-registered-lineage.mjs
+OBSERVATORY_PREVIEW_URL=http://127.0.0.1:4173 node scripts/check-lineage-browser.cjs
+```
+
+현재 실제 opt-in 등록 사례는 0건이다. 합성 미래 사례는 브라우저 테스트 응답에만 만들며
+공개 dist에 기록하지 않는다. 공개 화면은 legacy 등록 계보를 `NOT_RECORDED`로 설명한다.
+
+## 연구 판정 표시 단순화 (2026-10-01)
+
+공개 연구는 `승격 통과 / 승격 탈락 / 검증 중`으로 표시한다. 원본 `PROVISIONAL` 중
+confirmation이 `EVALUATED`이고 명시적인 T3.2 실패가 있는 6건만
+`승격 탈락 · 고유 예측력 기준 미충족`으로 묶는다. 미평가·봉인·알 수 없는 판정과
+다른 soft failure는 탈락으로 간주하지 않는다. 현재 공개 177건은 통과 29, 탈락 148,
+검증 중 0건이며, 비공개 26건은 별도다.
+
+집계·검색 필터·연구 상세·교훈 카드·연구지도는 공통 `researchVerdict()` 표시 정책을
+사용한다. 상세의 ‘당시 판정과 표시 기준’에는 원본 판정을 보존한다. 이는 표시 변경이며
+연구 재평가, 원본 catalog/packet/metrics 수정, Gold 운영 승인 변경이 아니다.

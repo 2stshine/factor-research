@@ -5444,6 +5444,8 @@ def load_gold_generation(conn) -> dict | None:
 
 def bind_gold_generation(conn, digest: str) -> dict:
     """Bind every APPROVED metadata row to one generation in the transaction."""
+    from engine.research_transition_guard import require_legacy_gold_write
+    require_legacy_gold_write("legacy Gold generation binding")
     if not re.fullmatch(r"[0-9a-f]{64}", str(digest)):
         raise ValueError("gold_generation_digest는 64자리 소문자 hex여야 합니다")
     with conn.cursor() as cursor:

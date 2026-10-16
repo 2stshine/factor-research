@@ -1,0 +1,42 @@
+{
+  "schema_version": "research-comparison-plan-v4",
+  "created_on": "2026-10-01",
+  "status": "FREEZE_BEFORE_FIRST_EPISODE",
+  "objective": "Compare question-aware lean fixed diagnostics and an LLM selecting diagnostics under identical data and budget",
+  "runtime": {"mode": "SYNTHETIC_ONLY", "max_actions": 10, "max_cost_units": 10, "isolation_level": "LOGICAL_ONLY"},
+  "comparison": {
+    "conditions": ["LEAN_FIXED_REFERENCE", "HOST_LLM"],
+    "question_families": {
+      "PREDICTIVE": ["clean", "lookahead", "sector_confounding", "exposure_confounding", "costs", "regime", "mixed", "weak"],
+      "ECONOMIC": ["economic_supported", "economic_null", "economic_missing", "economic_lookahead"]
+    },
+    "replicate_seed_bases": [2026101101, 2026101102],
+    "seed_rule": "base + 100 * family_index before shuffling",
+    "case_order_seed": 2026100105,
+    "episodes_per_planner": 24,
+    "fixed_orders": {
+      "PREDICTIVE": ["input_audit", "controls", "execution_cost", "regime_interaction"],
+      "ECONOMIC": ["input_audit", "economic_link"]
+    },
+    "shared_early_stops": ["invalid input", "observed unavailable required economic outcome triggers data request"],
+    "host_context": "one fresh agent per case; only own public packets; no grader/source/other-case observations",
+    "model_config": "inherited host model and reasoning settings; no override",
+    "host_wrapper_version": "comparison-host-wrapper-v1",
+    "metrics": ["primary_correct", "evidence_supported_primary_correct", "unsupported_conclusion", "unsupported_findings", "false_findings_vs_generator", "data_request_precision_recall", "tool_cost_units", "actions", "invalid_or_failed_actions"],
+    "planner_tokens_and_money": "UNMEASURED; never claim total cost savings",
+    "analysis": "paired per-case and per-family wins/ties/losses; descriptive counts only; no iid significance or general superiority claim",
+    "generator_known_to_designers": true,
+    "new_seeds_are_not_unseen_families_or_independent_market_evidence": true,
+    "post_results_tuning": false,
+    "source_snapshot_required": true
+  },
+  "decision_rule": {
+    "integration_pass": "all episodes finish within budget; no unresolved execution or schema failures",
+    "bounded_pilot_readiness": "complete run; no unsupported terminal conclusions or findings; all required data gaps requested correctly; evidence-supported primary accuracy no lower than fixed; review any generator mismatches",
+    "prefer_adaptive_for_followup": "readiness plus no lower primary correctness than fixed, and at least one paired correct-answer improvement or strictly lower diagnostic costs at equal accuracy; LLM total cost still unmeasured",
+    "if_tied": "retain simpler fixed checklist as default; adaptive is a bounded exception/next-test proposer",
+    "general_superiority": "NOT_ESTABLISHED; needs broader unseen families and measured planner cost",
+    "factor_admission_gold_oos_or_live_trading": "NOT_AUTHORIZED_BY_THIS_COMPARISON"
+  },
+  "legacy_v3": "preserve sources and raw results unchanged; this is a new version not retrospective rescoring"
+}

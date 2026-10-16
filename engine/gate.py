@@ -110,6 +110,9 @@ class Result:
     metrics: dict = field(default_factory=dict)
     labels: list[str] = field(default_factory=list)
     series: dict[str, pd.Series] = field(default_factory=dict, repr=False)
+    # Diagnostic-only, same-run simulation capture. Deliberately excluded from
+    # admission metrics and the legacy serialized gate/evidence identity.
+    diagnostic_execution_artifact: dict | None = field(default=None, repr=False)
 
     @property
     def failed(self) -> list[Check]:
@@ -718,6 +721,7 @@ def backtest(
     cost_multiplier: float = 1.0,
     min_months: int | None = None,
     month_positions: tuple[tuple[pd.Period, np.ndarray], ...] | None = None,
+    capture_evidence: bool = False,
 ) -> dict | None:
     """Fixed-universe long-only portfolio with next-period realized returns.
 
@@ -731,6 +735,7 @@ def backtest(
     minimum = TH["min_months"] if min_months is None else min_months
     current: dict[int, float] = {}
     rows: list[tuple] = []
+    captured_holdings: list[dict] = []
     missing_held = held_observations = 0
     grouped = (
         month_positions
@@ -775,6 +780,9 @@ def backtest(
         tax = SECURITIES_TAX.get(int(ym.year), .0015)
         cost = turn * ((COMMISSION + IMPACT) * 2 + tax) * cost_multiplier
         rows.append((ym, portfolio_return, benchmark_return, turn, cost))
+        if capture_evidence:
+            captured_holdings.extend({"month": str(ym), "asset_id": int(asset), "weight": float(weight)}
+                                     for asset, weight in sorted(current.items()))
 
     if len(rows) < minimum:
         return None
@@ -786,7 +794,7 @@ def backtest(
     sd = excess.std(ddof=1)
     mean, hac_t, hac_p = _hac_mean_test(excess)
     missing_rate = missing_held / max(held_observations, 1)
-    return {
+    output = {
         "months": len(performance),
         "turnover": float(performance["turn"].mean() * 12 * 100),
         "gross": float(gross.mean() * 12 * 100),
@@ -799,6 +807,25 @@ def backtest(
         "_excess": excess,
         "_gross": gross,
     }
+    if capture_evidence:
+        output["_execution_measurement"] = {
+            "schema_version": "same-run-gate-portfolio-v1",
+            "timing_contract": "ORIGINAL_MONTH_END_GATE_SIMULATION_NOT_NEXT_OPEN",
+            "holdings": captured_holdings,
+            "monthly": [{"month": str(month), "gross": float(row.ret - row.bench),
+                "net": float(row.ret - row.bench - row.cost), "cost": float(row.cost),
+                "turnover": float(row.turn), "known_at": str((month + 1).end_time.date())}
+                for month, row in performance.iterrows()],
+            "return_contract": {"forward_label": fwd, "measurement": "portfolio_minus_same_universe_equal_weight_benchmark",
+                "holding_months": hold, "quantile": quantile, "weighting": weighting,
+                "factor_missingness_changes_benchmark": False, "missing_held_return_policy": "skip_month",
+                "within_holding_weight_drift": False, "actual_fills_verified": False},
+            "cost_model": {"commission_one_way": COMMISSION, "fixed_impact_one_way": IMPACT,
+                "securities_tax_by_year": {str(year): rate for year, rate in SECURITIES_TAX.items()},
+                "fallback_tax": .0015, "cost_multiplier": cost_multiplier,
+                "formula": "turnover * (2 * (commission + fixed_impact) + securities_tax)"},
+        }
+    return output
 
 
 def _public_metrics(backtest_result: dict) -> dict:
@@ -1072,6 +1099,7 @@ def evaluate(
     context: EvaluationContext | None = None,
     internal_null_contract: InternalNullSignalContract | None = None,
     include_diagnostics: bool = True,
+    capture_execution_evidence: bool = False,
 ) -> Result:
     """Run the integrity/IC/robustness gate.
 
@@ -1080,6 +1108,8 @@ def evaluate(
     """
     if phase not in EVALUATION_PHASES:
         raise ValueError(f"지원하지 않는 평가 phase={phase!r}: {sorted(EVALUATION_PHASES)}")
+    if capture_execution_evidence and (phase != "discovery" or not include_diagnostics or data_cutoff is None or oos_start is None):
+        raise ValueError("Execution capture requires the enabled, frozen Discovery diagnostic path")
     if oos_start is not None and data_cutoff is not None:
         from engine.boundaries import CampaignWindow
 
@@ -1229,6 +1259,7 @@ def evaluate(
             research, col, "fwd_mid", hold=factor.rebalance_months,
             min_months=TH["min_oos_months"],
             month_positions=full_month_positions,
+            capture_evidence=capture_execution_evidence,
         )
         if include_diagnostics else None
     )
@@ -1240,6 +1271,14 @@ def evaluate(
         result.labels.append("portfolio_diagnostics_unavailable")
     else:
         result.metrics.update(_public_metrics(base))
+        if capture_execution_evidence:
+            result.diagnostic_execution_artifact = {
+                **base["_execution_measurement"],
+                "source_binding": {"factor": factor.name, "definition_hash": factor.definition_hash,
+                    "phase": "DISCOVERY", "signal_start": str(RESEARCH_START),
+                    "signal_end": str(pd.Timestamp(data_cutoff).to_period("M") - 1),
+                    "data_cutoff": str(pd.Timestamp(data_cutoff).date()), "oos_start": str(oos_start)},
+            }
         if base["turnover"] > TH["turnover_warn"]:
             result.labels.append("high_turnover")
         if base["turnover"] > TH["turnover_fail"]:

@@ -6,12 +6,23 @@ current-state view and would leak later restatements into historical months.
 """
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
+from functools import lru_cache
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from engine import silver
+
+
+FUNDAMENTAL_METHODOLOGY_VERSION = "dart-pit-contiguous-fiscal-quarters-v2"
+
+
+def source_sha256() -> str:
+    """Bind a rebuilt panel to the complete implementation, not just a label."""
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
 FLOW = frozenset({
@@ -41,39 +52,125 @@ def _priority(row: Mapping) -> tuple:
     )
 
 
+def is_contiguous_fiscal_quarters(
+    records: list[tuple[pd.Timestamp, str, float]],
+) -> bool:
+    """Recognize consecutive declared quarters under one consistent calendar.
+
+    Calendar-month schedules advance three months from the first endpoint
+    (preserving month-end for month-end schedules).  Weekly schedules use a
+    common weekday and 13-week quarters, with at most one 14-week quarter in
+    the inspected, at-most-one-year chain.  This admits 52/53-week reporting
+    without an arbitrary day tolerance or assuming a December year end.
+
+    This is a structural check, not certification of a fiscal calendar.  The
+    source has no period_start/calendar_id: a calendar change indistinguishable
+    from one of these schedules cannot be diagnosed from these fields alone.
+    Missing values/dates, duplicate endpoints, label discontinuities and
+    unrecognized schedules fail closed.  Callers must not drop such barriers.
+    """
+    if not 2 <= len(records) <= 5:
+        return False
+    order = {"Q1": 1, "Q2": 2, "Q3": 3, "Q4": 4}
+    dates = tuple(pd.Timestamp(row[0]) for row in records)
+    labels = tuple(order.get(row[1]) for row in records)
+    if (
+        any(pd.isna(date) for date in dates)
+        or any(label is None for label in labels)
+        or any(not np.isfinite(row[2]) for row in records)
+    ):
+        return False
+    return _quarter_structure_is_contiguous(dates, labels)
+
+
+@lru_cache(maxsize=8192)
+def _quarter_structure_is_contiguous(
+    dates: tuple[pd.Timestamp, ...], labels: tuple[int, ...],
+) -> bool:
+    """Cache only immutable endpoint structure; never cache financial values.
+
+    Revision replay repeats these calendar checks for many metrics and event
+    dates.  Finite-value checks remain outside the cache so a newly missing
+    value cannot reuse an earlier successful TTM decision.
+    """
+    if (
+        any(right <= left for left, right in zip(dates, dates[1:]))
+        or any(right != left % 4 + 1 for left, right in zip(labels, labels[1:]))
+    ):
+        return False
+
+    if all(date.is_month_end for date in dates):
+        calendar = all(
+            date == dates[0] + pd.offsets.MonthEnd(3 * position)
+            for position, date in enumerate(dates)
+        )
+    else:
+        calendar = all(
+            date == dates[0] + pd.DateOffset(months=3 * position)
+            for position, date in enumerate(dates)
+        )
+    if calendar:
+        return True
+
+    gaps = [(right - left).days for left, right in zip(dates, dates[1:])]
+    return (
+        len({date.dayofweek for date in dates}) == 1
+        and all(gap in {13 * 7, 14 * 7} for gap in gaps)
+        and gaps.count(14 * 7) <= 1
+    )
+
+
 def _standalone_flow(state: dict, metric: str) -> list[tuple[pd.Timestamp, str, float]]:
     records = [
-        (period_end, fiscal_period, float(row["value"]))
+        (period_end, fiscal_period, float(row["value"]) if pd.notna(row["value"]) else np.nan)
         for (period_end, fiscal_period, met), row in state.items()
-        if met == metric and pd.notna(row["value"])
+        if met == metric
     ]
-    records.sort(key=lambda x: x[0])
-    direct = {(pe, fp): value for pe, fp, value in records if fp in {"Q1", "Q2", "Q3", "Q4"}}
+    records.sort(key=lambda x: (x[0], x[1]))
+    by_period: dict[pd.Timestamp, tuple[str, float]] = {}
+    for period_end, fiscal_period, value in records:
+        if fiscal_period == "FY":
+            continue
+        # Different fiscal labels for one endpoint are not a priority choice.
+        # Preserve a NaN barrier so a later rolling window cannot skip it.
+        if period_end in by_period or fiscal_period not in {"Q1", "Q2", "Q3", "Q4"}:
+            by_period[period_end] = ("INVALID", np.nan)
+        else:
+            by_period[period_end] = (fiscal_period, value)
     fiscal_years = [(pe, value) for pe, fp, value in records if fp == "FY"]
 
     previous_fy: pd.Timestamp | None = None
     for fy_end, fy_value in fiscal_years:
-        if (fy_end, "Q4") in direct:
+        explicit = by_period.get(fy_end)
+        if explicit is not None and explicit[0] == "Q4":
+            # An explicit standalone Q4 is not overwritten by an FY residual.
             previous_fy = fy_end
             continue
-        lower = previous_fy if previous_fy is not None else fy_end - pd.Timedelta(days=370)
-        quarters: dict[str, tuple[pd.Timestamp, float]] = {}
-        for pe, fp, value in records:
-            if fp in {"Q1", "Q2", "Q3"} and lower < pe < fy_end:
-                prior = quarters.get(fp)
-                if prior is None or pe > prior[0]:
-                    quarters[fp] = (pe, value)
-        if set(quarters) == {"Q1", "Q2", "Q3"}:
-            direct[(fy_end, "Q4")] = fy_value - sum(v for _, v in quarters.values())
+        prior = [
+            (pe, fp, value)
+            for pe, (fp, value) in sorted(by_period.items()) if pe < fy_end
+        ][-3:]
+        chain = [*prior, (fy_end, "Q4", fy_value)]
+        valid = (
+            explicit is None
+            and [row[1] for row in prior] == ["Q1", "Q2", "Q3"]
+            and is_contiguous_fiscal_quarters(chain)
+        )
+        if valid and previous_fy is not None:
+            # Do not infer a normal annual interval across an observed changed
+            # FY boundary (or an unobserved intervening FY).  Its value is not
+            # used: only the endpoint establishes the same fiscal-year chain.
+            valid = is_contiguous_fiscal_quarters(
+                [(previous_fy, "Q4", 0.0), *chain]
+            )
+        if valid:
+            by_period[fy_end] = ("Q4", fy_value - sum(row[2] for row in prior))
+        else:
+            # A known latest FY with unprovable Q4 must invalidate current TTM,
+            # rather than silently returning the last four older observations.
+            by_period[fy_end] = ("INVALID", np.nan)
         previous_fy = fy_end
 
-    # One standalone observation per period.  Explicit Q4 wins over a derived one.
-    by_period: dict[pd.Timestamp, tuple[str, float]] = {}
-    order = {"Q1": 1, "Q2": 2, "Q3": 3, "Q4": 4}
-    for (period_end, fiscal_period), value in direct.items():
-        prior = by_period.get(period_end)
-        if prior is None or order[fiscal_period] >= order[prior[0]]:
-            by_period[period_end] = (fiscal_period, value)
     return [(pe, fp, value) for pe, (fp, value) in sorted(by_period.items())]
 
 
@@ -104,7 +201,7 @@ def _snapshot(state: dict, asset_id: int, available_date: pd.Timestamp) -> dict:
         recent = series[-4:]
         complete_year = (
             len(recent) == 4
-            and (recent[-1][0] - recent[0][0]).days <= 370
+            and is_contiguous_fiscal_quarters(recent)
         )
         out[f"{metric}_ttm"] = sum(x[2] for x in recent) if complete_year else np.nan
 
@@ -148,7 +245,13 @@ def materialize_pit(rows: pd.DataFrame, *, verbose: bool = True) -> pd.DataFrame
     d["period_end"] = pd.to_datetime(d["period_end"], errors="coerce")
     d["available_date"] = pd.to_datetime(d["available_date"], errors="coerce")
     d["value"] = pd.to_numeric(d["value"], errors="coerce")
-    d = d.dropna(subset=["period_end", "available_date", "value"])
+    # A dated missing/retracted value is an observation, not permission to
+    # skip a fiscal period or keep an older revision of that same flow value.
+    d = d.dropna(subset=["period_end", "available_date"])
+    # This version changes the flow/TTM contract only.  Preserve the existing
+    # stock policy (ignore missing stock rows) rather than changing balance-
+    # sheet revision fallback as an incidental consequence of flow barriers.
+    d = d[d["value"].notna() | d["metric"].isin(FLOW)]
     d = d.sort_values(["asset_id", "available_date", "revision_key", "metric"])
 
     snapshots: list[dict] = []

@@ -1,0 +1,51 @@
+{
+  "schema_version": "research-map-v1",
+  "case_id": "cycle-0230",
+  "factor": "return_trading_activity_correlation_12m",
+  "campaign": "campaign-20260921-001",
+  "snapshot_date": "2026-09-30",
+  "research_date": "2026-09-21",
+  "source_commit": "f06ec1fad72850e27c7c13b12fc285e6c17dd0dd",
+  "scope": "단일 사례의 공개 완료 기록을 정리한 정적 스냅샷. 실시간 연결·전체 지식망·독립 재현을 뜻하지 않는다.",
+  "types": {
+    "hypothesis": {"label":"가설·측정","symbol":"◇"},
+    "evidence": {"label":"관측 사실","symbol":"●"},
+    "limit": {"label":"해석의 한계","symbol":"△"},
+    "question": {"label":"제안된 질문","symbol":"?"}
+  },
+  "sources": {
+    "candidate": {"label":"사전등록 가설과 Python 계산","path":"factors/candidates/return_trading_activity_correlation_12m.py","line":12},
+    "discovery": {"label":"Discovery 평가 보고서","path":"research/runs/cycle-0230-return_trading_activity_correlation_12m/report.md"},
+    "confirmation": {"label":"최종 확인 결과 JSON","path":"research/campaigns/campaign-20260921-001/confirmation/result.json"},
+    "campaign": {"label":"캠페인 기간·노출 기록","path":"research/campaigns/campaign-20260921-001/manifest.json","line":19},
+    "parity": {"label":"Python / SQL 일치 검증","path":"research/campaigns/campaign-20260921-001/implementation-verification.json","line":40},
+    "review": {"label":"검토된 해석·미확인·후속 제안","path":"research/campaigns/campaign-20260921-001/lesson-review-draft.json"},
+    "knowledge": {"label":"다음 연구에 전달한 일반 교훈","path":"research/KNOWLEDGE.md","line":1738},
+    "gate": {"label":"연구 기준과 포트폴리오 진단","path":"engine/gate.py","line":710},
+    "diagnostic_scope": {"label":"Discovery에 결합된 비용 진단","path":"scripts/run.py","line":2487},
+    "test": {"label":"합성 데이터 계산·인과성 테스트","path":"tests/test_return_trading_activity_correlation.py"}
+  },
+  "nodes": [
+    {"id":"hypothesis","type":"hypothesis","x":24,"y":108,"title":"함께 오르면,\n이후엔 덜 오를까?","note":"일시적 수요 압력이라는 가설","summary":"가격이 오를 때 거래대금도 함께 커지는 주식에는 일시적 수요가 섞일 수 있습니다. 그 수요가 완화되면 이후 상대수익이 낮을 것이라는 가설에서 출발했습니다.","sections":[{"title":"왜 만들었나","text":"가격·거래대금의 수준 하나가 아니라, 두 관측이 함께 움직이는 방식을 단일 신호로 측정하려 했습니다. 예상 방향은 검증 전에 음(-)으로 고정했습니다."},{"title":"미리 정한 반증 조건","text":"높은 동행성의 이후 수익이 높거나, 동반 노출을 통제한 뒤 관계가 사라지면 단순 가격압력 해석은 약해집니다."}],"callout":"가설은 출발점입니다. 일시적 수요가 실제 원인이라는 관측은 아직 없습니다.","sources":["candidate"]},
+    {"id":"measurement","type":"hypothesis","x":24,"y":380,"title":"12개월 가격 ×\n거래활동 동행성","note":"상관이 낮을수록 높은 점수","summary":"종목별 월수익률과 같은 월말 log(ADV20)의 최근 12개월 상관입니다. 부호를 반전하므로 낮은 원시 동행성에 높은 예측 점수를 줍니다.","formula":"원시값 = corr(월수익률, log ADV20)\n점수 = −1 × 원시값","metrics":[{"label":"가격 입력","value":"13개월","note":"연속된 조정가격"},{"label":"활동 입력","value":"12개월","note":"양의 ADV20"}],"sections":[{"title":"무엇을 측정했나","text":"ADV20은 최근 20거래일 평균 거래대금입니다. 매매 주식 수, 매수·매도 주문 불균형, 직접 수요 압력과는 다릅니다. 결측·월 공백·0분산은 채우지 않습니다."},{"title":"계산 검증","text":"당시 SQL/Python parity는 126,844행에서 키·값·순위 불일치 0건입니다. 2026.09.30 로컬 점검에서 합성 데이터 테스트 49개가 통과했고 동결 소스 해시도 일치했습니다."}],"sources":["candidate","parity","test"]},
+    {"id":"discovery","type":"evidence","x":288,"y":86,"title":"수익 순위와\n관계가 관측됐다","stat":"IC 0.0487","note":"Discovery · 63개월","summary":"부호를 적용한 점수와 다음 달 총수익률의 순위 사이에 양의 관계가 관측됐습니다. IC는 수익률이 아니라 순위 상관입니다.","metrics":[{"label":"Discovery Rank IC","value":"0.0487","note":"2018.03–2023.05"},{"label":"중립화 후 IC","value":"0.0173","note":"원래 관계의 35.6%"}],"sections":[{"title":"무엇을 봤나","text":"시장구분·규모·유동성을 통제한 뒤에도 양의 관계는 남지만 크기가 줄었습니다. 등록된 기준에서 중립화 후 IC와 유지율 모두 통과했습니다."},{"title":"숫자를 읽는 방법","text":"IC 0.0487은 4.87% 수익을 의미하지 않습니다. 종목을 높은 점수 순으로 정렬했을 때 다음 달 수익 순위와 얼마나 함께 움직였는지를 나타냅니다."}],"callout":"통제 후 관계가 남아도 인과관계나 업종·변동성 중립성을 증명하지는 않습니다.","sources":["discovery","review"]},
+    {"id":"confirmation","type":"evidence","x":288,"y":292,"title":"고정된 연구 기준을\n통과했다","stat":"PROMOTE","note":"확인 IC 0.0682 · 36개월","summary":"2023.07–2026.06의 OOS 신호월에서 IC 0.0682를 기록해 최종 연구 판정은 PROMOTE입니다. 이는 Gold 적재 완료나 투자 수익성의 판정이 아닙니다.","metrics":[{"label":"OOS Rank IC","value":"0.0682","note":"36개월 · 역사 구간"},{"label":"Discovery 대비","value":"1.40배","note":"관측 효과의 유지율"}],"sections":[{"title":"실제로 확인한 검사","text":"SQL/Python 일치 검증, OOS 절대 IC와 Discovery 대비 유지율, BY 보정, 귀무 캠페인 100개 기준을 통과한 기록이 있습니다."},{"title":"판정의 범위","text":"캠페인 manifest에는 별도 Gold 게시 기록이 없습니다. 실제 DB 적재 상태는 이번 지도에서 조회하지 않았습니다."}],"callout":"이 OOS 기간은 과거 연구와 겹칩니다. 재사용 노드와 함께 읽어야 합니다.","sources":["confirmation","campaign","parity"]},
+    {"id":"cost","type":"evidence","x":288,"y":496,"title":"비용을 빼면\n초과수익은 음수","stat":"−0.65%","note":"Discovery 진단 · OOS 아님","summary":"Discovery 63개월의 상위 점수 롱온리 포트폴리오 진단에서, 비용 후 연환산 평균 초과수익은 약 −0.65%입니다. OOS 순수익이나 실제 체결 성과는 아닙니다.","metrics":[{"label":"비용 전 초과수익","value":"+0.97%","note":"연환산 평균"},{"label":"차감한 거래비용","value":"1.62%","note":"연환산 비용"},{"label":"비용 후 초과수익","value":"−0.65%","note":"Discovery 63개월"},{"label":"연환산 회전율","value":"338.8%","note":"고정 진단 전략"}],"sections":[{"title":"왜 PROMOTE와 함께 존재하나","text":"팩터 승격 기준은 IC 예측 관계입니다. 포트폴리오 비용과 수익은 별도 진단으로 남습니다. 따라서 연구 통과와 비용 후 음수는 서로 모순된 기록이 아닙니다."},{"title":"아직 확인하지 않은 것","text":"실제 주문 규모·참여율에 따른 수용력, 월별 상세 체결비용, 이 전략의 OOS 순수익은 확인되지 않았습니다."}],"callout":"이 숫자를 OOS 성과나 확정 손실 예측으로 바꾸어 해석하지 않습니다.","sources":["confirmation","diagnostic_scope","gate"]},
+    {"id":"reused","type":"limit","x":552,"y":156,"title":"처음 보는 데이터의\n확인은 아니다","stat":"이전 노출 22건","note":"HISTORICAL_REUSED_WINDOW","summary":"봉인한 36개월은 다른 연구에서 이미 노출된 역사 구간과 겹칩니다. manifest에 이전 노출 기록 22건과 HISTORICAL_REUSED_WINDOW가 보존돼 있습니다.","metrics":[{"label":"OOS 신호월","value":"36개월","note":"2023.07–2026.06"},{"label":"기존 노출 기록","value":"22건","note":"이 후보를 22회 실행한 뜻 아님"}],"sections":[{"title":"무엇이 제한되나","text":"이번 후보는 사전등록됐지만, 누적 탐색 전체를 새 데이터에서 한 번 검증한 것으로 설명할 수 없습니다. 통계 검사 통과와 독립 검증의 강도는 구분해야 합니다."},{"title":"다음 판단에 남길 경계","text":"같은 과거 표본의 추가 비교는 탐색적 연구로 표시합니다. 새 데이터에서 확인하기 전 독립 재현이나 미래 성과를 주장하지 않습니다."}],"callout":"22건은 겹치는 이전 노출 기록 수입니다. 동일 후보의 OOS를 22번 열었다는 의미가 아닙니다.","sources":["campaign","candidate","review"]},
+    {"id":"mechanism","type":"limit","x":552,"y":410,"title":"일시적 수요가\n원인인지는 모른다","note":"경제적 변화 · UNTESTED","summary":"순위 관계는 보였지만 수요 압력과 그 이후 완화를 직접 관측하지 않았습니다. 명목 거래대금의 가격 성분, 정보 반영, 동반 노출이라는 다른 설명이 남아 있습니다.","sections":[{"title":"경쟁하는 설명","text":"① 일시적 수요가 완화된다. ② 거래활동은 새로운 정보 반영을 나타낸다. ③ 명목 거래대금의 가격 성분과 규모·유동성 노출이 관계를 만든다. 현재 근거만으로 하나를 확정할 수 없습니다."},{"title":"자료가 없는 지점","text":"직접 주문흐름·매수매도 불균형·투자자 관심의 변화가 없습니다. 음성대조도 실행하지 않았고, 원인 연결은 검토본에서 UNTESTED로 남았습니다."}],"callout":"‘관계가 있다’와 ‘왜 그런가를 안다’를 분리합니다.","sources":["review","knowledge"]},
+    {"id":"question_measure","type":"question","x":816,"y":248,"title":"가격 성분과\n거래활동을 구별할까?","note":"제안 · 미실행 · 입력 미확인","summary":"거래대금 대신 매매 주식 수·거래회전율을 비교하면, 명목 가격의 기계적 영향과 거래활동을 구분하는 데 도움이 될까요? 이 화면에서 제안한 연구 질문이며 아직 실행하지 않았습니다.","sections":[{"title":"먼저 물어야 할 것","text":"동일 시점·종목 기준의 매매 주식 수와 적절한 회전율 분모가 인증된 PIT 입력으로 사용 가능한가? 같은 표본을 만들 수 있는가? 필요한 입력의 가용성은 이번에 확인하지 않았습니다."},{"title":"어떤 답을 구별하나","text":"가격 성분을 분리한 관측에서도 관계가 남는다면 일부 대안 설명을 좁힐 수 있습니다. 그래도 일시적 수요의 원인을 직접 증명하는 것은 아닙니다."},{"title":"작은 첫 단계","text":"실험 전에 데이터 사전에서 정의·단위·가용시각·커버리지를 확인하고, 비교가 구별할 수 있는 설명을 적습니다. 입력이 없으면 대체값을 채우지 않고 질문을 보류합니다."}],"callout":"PROPOSED_NOT_RUN · 입력 가용성 미확인. 기존 후보의 기간·부호를 튜닝하거나 OOS를 다시 여는 제안이 아닙니다.","sources":["candidate","review"],"proposal_origin":"UI synthesis grounded in the reviewed alternatives; not a preregistered or executed experiment"},
+    {"id":"question_cost","type":"question","x":816,"y":510,"title":"예측 관계를 실제\n수익으로 옮길 수 있을까?","note":"제안 · 구현 조건 미검증","summary":"순위 예측이 실제 주문 규모와 거래비용 아래에서도 유용한지 별도로 확인해야 합니다. 현재 비용 진단은 이 질문에 불리한 단서지만, 구현 가능성 전체를 검증한 결과는 아닙니다.","sections":[{"title":"먼저 정할 조건","text":"목표 운용금액, 주문금액, 허용 거래 참여율, 고정 보유규칙과 평가할 비용 자료를 결과를 보기 전에 정해야 합니다."},{"title":"작은 첫 단계","text":"기존 비용 진단이 어떤 보유·매매 규칙에서 나온 것인지 설명하고, 필요한 월별 보유·거래 기록의 존재 여부부터 확인합니다. 새 백테스트나 실제 주문은 실행하지 않았습니다."}],"callout":"순위 관계 → 운용 수익은 별도의 질문입니다. PROMOTE를 실행 가능한 투자 전략으로 간주하지 않습니다.","sources":["review","diagnostic_scope","gate"],"proposal_origin":"Reviewed follow-up, proposed not run"}
+  ],
+  "edges": [
+    {"from":"hypothesis","to":"measurement","label":"측정으로 표현","path":"M123 252 L123 380","lx":123,"ly":319},
+    {"from":"hypothesis","to":"discovery","label":"동기","path":"M222 173 C252 173 258 158 288 158","lx":253,"ly":151},
+    {"from":"measurement","to":"discovery","label":"검증","path":"M222 425 C255 425 256 207 288 207","lx":254,"ly":337},
+    {"from":"discovery","to":"confirmation","label":"후속 확인","path":"M387 230 L387 292","lx":387,"ly":265},
+    {"from":"confirmation","to":"reused","label":"해석 제약","path":"M486 347 C521 347 517 252 552 252","lx":519,"ly":281},
+    {"from":"discovery","to":"mechanism","label":"원인 미확인","path":"M486 179 C529 179 514 448 552 448","lx":517,"ly":391},
+    {"from":"reused","to":"question_measure","label":"확인 필요","path":"M750 228 C780 228 786 275 816 275","lx":783,"ly":229,"future":true},
+    {"from":"mechanism","to":"question_measure","label":"구별 필요","path":"M750 459 C789 459 778 351 816 351","lx":784,"ly":405,"future":true},
+    {"from":"mechanism","to":"question_cost","label":"구현 질문","path":"M750 510 C780 510 786 555 816 555","lx":784,"ly":516,"future":true},
+    {"from":"cost","to":"question_cost","label":"비용 후 관측이 제기한 질문","path":"M486 605 C525 605 518 674 570 674 L778 674 Q800 674 810 636 L816 618","lx":650,"ly":674,"future":true}
+  ]
+}

@@ -26,6 +26,8 @@ def _fmt(m: dict) -> str:
 
 
 def main(cfg: StrategyConfig | None = None) -> None:
+    from engine.research_transition_guard import require_legacy_read
+    require_legacy_read("legacy strategy backtest")
     cfg = cfg or StrategyConfig()
     unit = "월" if cfg.sample_frequency == "monthly" else "일"
     print("=== 설정 ===")

@@ -117,6 +117,8 @@ def load_signed(factors: tuple[str, ...] | None = None,
     값은 그대로 옮긴다 — 발행 시점에 이미 방향이 적용돼 있다(모듈 docstring 참조).
     반환 컬럼: `asset_id`, `ym`(period[M]), `f_<factor>`...
     """
+    from engine.research_transition_guard import require_legacy_read
+    require_legacy_read("legacy signed Gold values")
     keys = tuple(factors) if factors else approved_factors()
     if not keys:
         raise SystemExit(

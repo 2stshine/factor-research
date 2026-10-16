@@ -24,6 +24,7 @@ sys.path.insert(0, str(REPO))
 from engine import epochs
 from engine.lesson_evidence import build_packet, digest, portable_provenance, validate_review
 from scripts.candidate_lessons import reviewed_text
+from scripts.dashboard_exports.registered_lineage import public_spec, retained_lineage, resolve_public_lineage
 
 
 def read_json(path):
@@ -134,7 +135,7 @@ def export(root, as_of):
         else:
             release_reason[cid] = "CAMPAIGN_NOT_RELEASED"
 
-    records, withheld = [], Counter()
+    records, withheld, pending_lineage = [], Counter(), {}
     for rid, record in sorted(unique.items()):
         # This decision precedes opening any raw result or evidence packet.
         if rid in conflict:
@@ -243,7 +244,7 @@ def export(root, as_of):
                 "exploration_domain": factor.get("exploration_domain"),
                 "calculation_summary": h.get("hypothesis") or factor.get("hypothesis"),
                 "meaning_status": "PREREGISTERED_HYPOTHESIS_NOT_VERIFIED_CAUSE",
-                "research_spec": payload.get("research_spec", {}),
+                "research_spec": public_spec(payload.get("research_spec", {})),
             },
             "validation": {**record["validation"], "discovery_verdict": candidate.get("verdict"),
                            "confirmation_verdict": final.get("verdict") if final else None,
@@ -267,6 +268,11 @@ def export(root, as_of):
                            "review_basis": record["review_basis"]},
         })
 
+        lineage = retained_lineage(root, epoch, name, payload)
+        if lineage is not None:
+            pending_lineage[rid] = lineage
+
+    resolve_public_lineage(records, pending_lineage, safe)
     released_by_campaign = Counter(r["campaign_id"] for r in records)
     campaign_output = []
     for cid, campaign in campaigns.items():

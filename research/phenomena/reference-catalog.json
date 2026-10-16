@@ -1,0 +1,136 @@
+{
+  "schema_version": "phenomena-reference-library-v1",
+  "reviewed_at": "2026-10-02",
+  "purpose": "Literature-backed measurement/control library for phenomenon research; not a profitability ranking, causal finding, exact US factor replication, or strategy approval.",
+  "selection_policy": "Foundational benchmark families plus independently published momentum, profitability, liquidity, lottery and accounting measurements. Definitions chosen before Korean return evaluation. No historical Gold values or alpha approvals imported.",
+  "definitions": [
+    {
+      "id": "kr_size_issue_v1", "name_ko": "기업 규모 대용: 종목 시가총액", "family": "size", "object_type": "STOCK_CHARACTERISTIC", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "ln(market_cap_KRW_t)", "orientation": -1, "lookback": {"months": 0},
+      "required_columns": ["market_cap"],
+      "sources": [{"title": "Kenneth French: Fama/French 5 Factors", "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/f-f_5_factors_2x3.html", "review_scope": "Official factor construction, not a full paper replication"}],
+      "adaptation": "Issue-level common-stock capitalization, not issuer sum across share classes and not SMB portfolio returns. Negative orientation denotes smaller size, not proven alpha.",
+      "readiness": {"status": "IMPLEMENTED_REQUIRES_ATTESTATION", "blockers": []}
+    },
+    {
+      "id": "kr_momentum_12_2_price_v1", "name_ko": "최근 한 달 제외 12–2 가격 모멘텀", "family": "momentum", "object_type": "STOCK_CHARACTERISTIC", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "adj_close_(t-1) / adj_close_(t-12) - 1, with every monthly price t-12..t-1 finite and positive", "orientation": 1, "lookback": {"months": 12, "skip_latest_months": 1, "included_returns": 11},
+      "required_columns": ["adj_close"],
+      "sources": [{"title": "Kenneth French: Monthly Momentum Factor", "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/det_mom_factor.html", "review_scope": "Official prior 2–12 return construction"}],
+      "adaptation": "Price-only KRX characteristic, not dividend-inclusive US Mom return. At formation month-end t for holding month t+1, latest return t is skipped. Missing calendar months invalidate the path; never use observation-row shifts across gaps.",
+      "readiness": {"status": "IMPLEMENTED_REQUIRES_ATTESTATION", "blockers": []}
+    },
+    {
+      "id": "kr_reversal_1m_price_v1", "name_ko": "직전 한 달 가격 반전", "family": "reversal", "object_type": "STOCK_CHARACTERISTIC", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "adj_close_t / adj_close_(t-1) - 1; oriented_value = -raw", "orientation": -1, "lookback": {"months": 1},
+      "required_columns": ["adj_close"],
+      "sources": [{"title": "Kenneth French: Short-Term Reversal", "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/det_st_rev_factor.html", "review_scope": "Official prior one-month return construction"}],
+      "adaptation": "Monthly price return characteristic rather than dividend-inclusive ST_Rev portfolio return. This is a control for recent performance; gross reversal need not survive transaction costs.",
+      "readiness": {"status": "IMPLEMENTED_REQUIRES_ATTESTATION", "blockers": []}
+    },
+    {
+      "id": "kr_low_volatility_252d_v1", "name_ko": "일간 저변동성", "family": "low_risk", "object_type": "STOCK_CHARACTERISTIC", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "sample_std(price_daily_return) over last 252 observed source rows; require >=200 finite returns; oriented_value=-raw", "orientation": -1, "lookback": {"observed_daily_rows": 252, "minimum_valid_returns": 200},
+      "required_columns": ["daily_volatility_252d", "daily_return_observations_252d"],
+      "sources": [{"title": "AQR: Betting Against Correlation", "url": "https://www.aqr.com/Insights/Perspectives/Betting-Against-Correlation", "review_scope": "Author discussion distinguishing total volatility, correlation and beta"}],
+      "adaptation": "Local 252-observed-row total-volatility estimator and 200-observation rule, not BAB beta, idiosyncratic volatility, or minimum-variance optimization. Gaps/suspensions may lengthen calendar span. No annualization.",
+      "readiness": {"status": "IMPLEMENTED_REQUIRES_ATTESTATION", "blockers": []}
+    },
+    {
+      "id": "kr_amihud_1m_v1", "name_ko": "Amihud 거래대금 대비 가격 충격", "family": "liquidity", "object_type": "STOCK_CHARACTERISTIC", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "mean_d(abs(price_daily_return_d)/trading_value_KRW_d) in month t, only positive trading value, require >=15 valid days", "orientation": 1, "lookback": {"months": 1, "minimum_valid_days": 15},
+      "required_columns": ["amihud_illiquidity_1m", "amihud_observations_1m"],
+      "sources": [{"title": "Amihud (2002): Illiquidity and stock returns", "url": "https://archive.nyu.edu/jspui/bitstream/2451/27420/2/S-AM-00-10.pdf", "review_scope": "Author-hosted working paper; ILLIQ measurement"}],
+      "adaptation": "Monthly KRW price-return ratio, not the paper's annual dollar-volume measure. Zero trading value is not zero illiquidity; units are inverse KRW, no implicit scaling. Higher orientation describes a possible illiquidity premium, not trading desirability.",
+      "readiness": {"status": "IMPLEMENTED_REQUIRES_ATTESTATION", "blockers": []}
+    },
+    {
+      "id": "kr_high_252d_v1", "name_ko": "52주 고점 근접도", "family": "momentum", "object_type": "STOCK_CHARACTERISTIC", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "adj_close_t / max(adj_close_d, last 252 observed rows), require 252 positive price observations", "orientation": 1, "lookback": {"observed_daily_rows": 252, "minimum_valid_prices": 252},
+      "required_columns": ["adj_close", "price_high_252d", "price_high_observations_252d"],
+      "sources": [{"title": "George and Hwang (2004): The 52-Week High and Momentum Investing", "url": "https://doi.org/10.1111/j.1540-6261.2004.00695.x", "review_scope": "Publisher primary abstract and defining price/high characteristic"}],
+      "adaptation": "252 observed-row adjusted-price maximum is a local approximation to 52 calendar weeks. Not a reconstruction of the paper's complete portfolio sorts/holding rules; gaps can extend the calendar span.",
+      "readiness": {"status": "IMPLEMENTED_REQUIRES_ATTESTATION", "blockers": []}
+    },
+    {
+      "id": "kr_max_1m_v1", "name_ko": "복권형 극단 상승: 월간 최대 일수익", "family": "lottery", "object_type": "STOCK_CHARACTERISTIC", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "max(price_daily_return_d) in month t, require >=15 finite daily returns; oriented_value=-raw", "orientation": -1, "lookback": {"months": 1, "minimum_valid_days": 15},
+      "required_columns": ["max_daily_return_1m", "max_daily_return_observations_1m"],
+      "sources": [{"title": "Bali, Cakici and Whitelaw (2011): Maxing out", "url": "https://pages.stern.nyu.edu/~rwhitela/papers/max%20jfe11.pdf", "review_scope": "Author PDF; previous-month maximum daily return definition"}],
+      "adaptation": "Price-only Korean MAX with a frozen 15-day measurement floor. Negative literature orientation is not a finding for Korea; not the multi-day averaged MAX variants.",
+      "readiness": {"status": "IMPLEMENTED_REQUIRES_ATTESTATION", "blockers": []}
+    },
+    {
+      "id": "kr_book_to_market_pit_v1", "name_ko": "장부가치 대비 시가 가치", "family": "value", "object_type": "STOCK_CHARACTERISTIC", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "latest_available_common_book_equity / matched_issuer_market_equity; both positive", "orientation": 1, "lookback": {"fiscal_basis": "latest available comparable annual statement"},
+      "required_columns": ["common_book_equity", "issuer_market_equity", "financial_period_end", "financial_known_at", "accounting_scope"],
+      "sources": [{"title": "Kenneth French: Size and Book-to-Market", "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/six_portfolios.html", "review_scope": "Official annual fiscal/year-end market-equity mapping"}],
+      "adaptation": "Monthly PIT refresh differs from June annual US formation. Total equity is not automatically common book equity; issue cap cannot silently replace reconciled issuer equity.",
+      "readiness": {"status": "BLOCKED", "blockers": ["Common-equity account and preferred/minority adjustments not authenticated", "Paired issuer capitalization, filing vintage and accounting scope adapter absent"]}
+    },
+    {
+      "id": "kr_earnings_yield_pit_v1", "name_ko": "이익수익률", "family": "value", "object_type": "STOCK_CHARACTERISTIC", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "latest_available_FY_earnings_before_extraordinary_items / matched_issuer_market_equity", "orientation": 1, "lookback": {"fiscal_basis": "latest available annual"},
+      "required_columns": ["earnings_before_extraordinary_items", "issuer_market_equity", "financial_period_end", "financial_known_at", "accounting_scope"],
+      "sources": [{"title": "Kenneth French: Portfolios Formed on Earnings/Price", "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/det_port_form_ep.html", "review_scope": "Official earnings and price denominator definition"}],
+      "adaptation": "Monthly availability-aware Korean variant, not the annually rebalanced US portfolios. Net income or EPS is not silently substituted for source-defined earnings. Negative-earnings treatment must be fixed with the account adapter.",
+      "readiness": {"status": "BLOCKED", "blockers": ["Historical source-defined earnings mapping and ownership scope unverified", "Account/period/vintage/issuer adapter absent"]}
+    },
+    {
+      "id": "kr_gross_profitability_pit_v1", "name_ko": "매출총이익 자산 수익성", "family": "profitability", "object_type": "STOCK_CHARACTERISTIC", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "(FY_revenue - FY_cost_of_goods_sold) / same_FY_total_assets", "orientation": 1, "lookback": {"fiscal_basis": "latest available annual"},
+      "required_columns": ["fy_revenue", "fy_cost_of_goods_sold", "fy_total_assets", "financial_period_end", "financial_known_at", "accounting_scope"],
+      "sources": [{"title": "Novy-Marx: The Other Side of Value (author manuscript, June 2012)", "url": "https://mysimon.rochester.edu/novy-marx/research/OSoV.pdf", "review_scope": "Sections 1 and 2.1, gross profits/assets and annual convention"}],
+      "adaptation": "Monthly Korean PIT availability update instead of source June annual formation. Gross profit is not operating or net income. Financial-industry applicability must be explicitly scoped.",
+      "readiness": {"status": "BLOCKED", "blockers": ["COGS and aligned annual numerator/denominator not authenticated", "Industry and accounting-scope adapter absent"]}
+    },
+    {
+      "id": "kr_operating_profitability_pit_v1", "name_ko": "영업 수익성 구성요소", "family": "profitability", "object_type": "STOCK_CHARACTERISTIC", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "(FY_revenue-FY_COGS-FY_SGA-FY_interest_expense)/positive_common_book_equity", "orientation": 1, "lookback": {"fiscal_basis": "latest available annual"},
+      "required_columns": ["fy_revenue", "fy_cost_of_goods_sold", "fy_sga", "fy_interest_expense", "common_book_equity", "financial_period_end", "financial_known_at", "accounting_scope"],
+      "sources": [{"title": "Kenneth French: Size and Operating Profitability", "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/six_portfolios_me_op.html", "review_scope": "Official OP definition"}],
+      "adaptation": "Korean component-based annual ratio refreshed on publication. Not operating-income/assets and not RMW returns. Missing cost components cannot be assumed zero without a frozen source reconciliation policy.",
+      "readiness": {"status": "BLOCKED", "blockers": ["COGS/SGA/interest components and book-equity mapping unverified", "Same-period/accounting-scope/vintage adapter absent"]}
+    },
+    {
+      "id": "kr_asset_growth_pit_v1", "name_ko": "보수적 자산 투자", "family": "investment", "object_type": "STOCK_CHARACTERISTIC", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "FY_assets_y / FY_assets_(y-1) - 1, comparable consecutive fiscal years; oriented_value=-raw", "orientation": -1, "lookback": {"fiscal_years_required": 2},
+      "required_columns": ["fy_assets", "prior_fy_assets", "financial_period_end", "prior_financial_period_end", "financial_known_at", "accounting_scope"],
+      "sources": [{"title": "Kenneth French: Size and Investment", "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/six_portfolios_me_inv.html", "review_scope": "Official two-fiscal-year asset growth definition"}],
+      "adaptation": "Monthly publication refresh, not CMA returns. Repeated monthly carried-forward balance-sheet stocks do not constitute two annual observations. Do not sum asset stocks or blindly shift monthly rows.",
+      "readiness": {"status": "BLOCKED", "blockers": ["Paired consecutive FY/same-scope/known-at ledger not bound", "Monthly total_assets alone is insufficient"]}
+    },
+    {
+      "id": "kr_accruals_balance_sheet_pit_v1", "name_ko": "발생액: 이익의 현금성 진단", "family": "quality", "object_type": "STOCK_CHARACTERISTIC", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "[(delta_current_assets-delta_cash)-(delta_current_liabilities-delta_short_term_debt-delta_income_tax_payable)-depreciation] / mean(total_assets_y,total_assets_(y-1)); oriented_value=-raw", "orientation": -1, "lookback": {"fiscal_years_required": 2},
+      "required_columns": ["fy_current_assets", "fy_cash", "fy_current_liabilities", "fy_short_term_debt", "fy_income_tax_payable", "fy_depreciation", "prior_fy_matched_accounts", "average_assets", "financial_period_end", "financial_known_at", "accounting_scope"],
+      "sources": [{"title": "Sloan (1996): Do Stock Prices Fully Reflect Information in Accruals and Cash Flows?", "url": "https://www.cuhk.edu.hk/acy2/workshop/June2009Wasley/1996TAR%29.pdf", "review_scope": "Original paper archived by academic institution; balance-sheet accrual definition"}],
+      "adaptation": "Original balance-sheet approach recorded; no cash-flow proxy silently replaces it. Requires matched annual components and explicitly signed expense mapping, not quarterly cumulative differencing.",
+      "readiness": {"status": "BLOCKED", "blockers": ["Matched current-asset/liability/tax/debt/depreciation accounts unavailable in authenticated monthly schema", "Balance-sheet versus cash-flow accrual definition not interchangeable"]}
+    },
+    {
+      "id": "kr_low_beta_reference_v1", "name_ko": "저베타·BAB 문헌 기준", "family": "low_risk", "object_type": "REFERENCE_ESTIMATOR_NOT_EXECUTABLE", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "Source beta estimator = shrunk(correlation_i,m * sigma_i/sigma_m); BAB additionally beta-scales low/high portfolios and excess returns", "orientation": -1, "lookback": {"volatility_years": 1, "correlation_years": 5},
+      "required_columns": ["daily_stock_returns", "daily_market_returns", "daily_risk_free", "paired_session_identity"],
+      "sources": [{"title": "Frazzini and Pedersen (2014): Betting Against Beta", "url": "https://pages.stern.nyu.edu/~afrazzin/pdf/Betting%20Against%20Beta%20-%20Frazzini%20and%20Pedersen.pdf", "review_scope": "Author paper; beta estimation and beta-scaled long/short structure"}],
+      "adaptation": "No executable Korean estimator selected. Do not label 252-day OLS or total volatility as canonical BAB. Leverage/borrow, market matching, risk-free and estimator details require a separate contract.",
+      "readiness": {"status": "BLOCKED", "blockers": ["Paired daily stock/market/RF contract absent", "Exact beta estimator/shrinkage/weighting not implemented"]}
+    },
+    {
+      "id": "kr_quality_qmj_reference_v1", "name_ko": "종합 품질·QMJ 문헌 기준", "family": "quality", "object_type": "REFERENCE_COMPOSITE_NOT_EXECUTABLE", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "Version-specific QMJ component standardization, quality score and size-balanced long/short portfolio; no substitute composite defined", "orientation": 1, "lookback": {"component_specific": true},
+      "required_columns": ["version_pinned_quality_components", "historical_accounting_periods", "component_known_at", "source_normalization_and_missingness_rules"],
+      "sources": [{"title": "AQR: Quality Minus Junk Factors Monthly", "url": "https://www.aqr.com/Insights/Datasets/Quality-Minus-Junk-Factors-Monthly", "review_scope": "Official dataset scope; not a complete executable component appendix"}],
+      "adaptation": "Literature reference only until paper/data vintage and component rules are fully reconciled. Do not hand-select available ratios and call them QMJ. Ranks/composites belong to a separately frozen implementation.",
+      "readiness": {"status": "BLOCKED", "blockers": ["Full version-pinned components and multi-year accounts not mapped", "Composite and portfolio implementations absent"]}
+    },
+    {
+      "id": "kr_market_excess_reference_v1", "name_ko": "시장 총수익·원화 무위험 초과수익", "family": "market", "object_type": "COMMON_FACTOR_RETURN_NOT_STOCK_CHARACTERISTIC", "role": "MEASUREMENT_CONTROL", "alpha_approved": false,
+      "formula": "matched_Korean_market_total_return_t - KRW_risk_free_return_t", "orientation": 1, "lookback": {"months": 1},
+      "required_columns": ["market_total_return", "risk_free_return", "holding_interval", "known_at", "benchmark_universe"],
+      "sources": [{"title": "Kenneth French: Market excess return in Fama/French Factors", "url": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/Data_Library/f-f_5_factors_2x3.html", "review_scope": "Official Rm-Rf definition; Korean benchmark is separately specified"}],
+      "adaptation": "KOSPI/KOSDAQ or explicitly matched combined universe and KRW RF, not US Mkt-RF. Realized t+1 market returns are contemporaneous explanatory controls, never t predictors. Price-only KOSPI is not TR; one common value repeated across stocks is not a stock-selection characteristic.",
+      "readiness": {"status": "BLOCKED", "blockers": ["Universe-matched market TR and RF certification absent", "Separate factor-return input/output schema required"]}
+    }
+  ]
+}

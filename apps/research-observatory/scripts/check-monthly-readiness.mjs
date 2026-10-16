@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import vm from 'node:vm';
+import {projectPreparation} from '../src/monthly-readiness/projection.mjs';
+const read=async p=>JSON.parse(await readFile(new URL(p,import.meta.url),'utf8'));
+const c=await read('../dist/data/monthly-comparison.json'),r=await read('../src/monthly-readiness/review.json');
+const before=JSON.stringify([c,r]),out=projectPreparation(c,r);
+assert.deepEqual(out,await read('../dist/data/monthly-preparation.json'));
+assert.deepEqual(out.period,{signal_start:'2018-03',signal_end:'2026-05',signal_months:99,first_opening_month:'2018-04',final_opening_month:'2026-07',required_opening_months:100});
+assert.equal(out.completed_comparisons,0);assert.equal(out.planned_comparisons,196);assert.equal(out.execution_certified,false);
+for(const key of ['comparison_id','plan_sha256','catalog_sha256'])assert.throws(()=>projectPreparation(c,{...r,[key]:'mismatch'}),/Stale/);
+assert.throws(()=>projectPreparation(c,{...r,password:'SYNTHETIC_PRIVATE'}),/Unexpected/);
+assert.throws(()=>projectPreparation(c,{...r,observations:r.observations.map(x=>({...x,raw_rows:[999]}))}),/Unexpected/);
+assert.throws(()=>projectPreparation(c,{...r,observations:[r.observations[0],...r.observations.slice(0,5)]}),/Unsupported/);
+assert.throws(()=>projectPreparation(c,{...r,observations:r.observations.map(x=>({...x,status:'READY'}))}),/Unsupported/);
+assert.throws(()=>projectPreparation({...c,real_performance_computed:true},r),/unexecuted/);
+assert.throws(()=>projectPreparation({...c,completed_comparisons:196},r),/unexecuted/);
+assert.throws(()=>projectPreparation({...c,planned_comparisons:195},r),/counts/);
+assert.throws(()=>projectPreparation({...c,return_support_end:'2026-06-30'},r),/final valuation/);
+assert.equal(JSON.stringify([c,r]),before);
+assert(!JSON.stringify(out).match(/password|source_files|raw_rows|postgres|localhost|\.parquet|AKIA/));
+// The browser must reject a stale sidecar independently of build-time validation.
+const ctx=vm.createContext({window:{},fetch:()=>new Promise(()=>{})});vm.runInContext(await readFile(new URL('../dist/monthly-readiness.js',import.meta.url),'utf8'),ctx);
+assert.equal(ctx.window.MonthlyReadiness.bind(out,c),out);
+for(const field of ['plan_sha256','catalog_sha256'])assert.throws(()=>ctx.window.MonthlyReadiness.bind({...out,[field]:'changed'},c),/Stale/);
+assert.throws(()=>ctx.window.MonthlyReadiness.bind({...out,period:{...out.period,final_opening_month:'2026-06'}},c),/period/);
+assert.throws(()=>ctx.window.MonthlyReadiness.bind({...out,execution_certified:true},c),/claim/);
+console.log('PASS: plan/catalog binding, 99 signals and 100 opening months through July, strict public allowlist, no performance promotion, duplicate/status rejection, browser fail-closed validation.');
