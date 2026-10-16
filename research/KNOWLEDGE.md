@@ -9,18 +9,18 @@
 ## Frozen research state
 
 - Silver source: `RDS public Silver`
-- Raw Silver period inside context boundary: `1995-05` ~ `2026-09`
-- Visible Silver data period: `2015-01` ~ `2026-09`
+- Raw Silver period inside context boundary: `1995-05` ~ `2023-07`
+- Visible Silver data period: `2015-01` ~ `2023-07`
 - Research input floor: `2015-01`
 - Maximum factor lookback: `36` months
-- Discovery signal evaluation period: `2018-03` ~ `2026-09`
-- Discovery return-support cutoff: `-`
-- Rows/months/assets: `320,189` / `141` / `3,155`
+- Discovery signal evaluation period: `2018-03` ~ `2023-06`
+- Discovery return-support cutoff: `2023-07-31`
+- Rows/months/assets: `220,767` / `103` / `2,785`
 - Historical feature return: `adj_close` / `krx_split_adjusted_price_return_v1`
 - Forward-label return: `total_return_close` / `krx_gross_dividend_reinvested_v3` / `forward_return_labels_only` / revision=`latest_revision_ex_post_realized` / candidate_access=`False`
 - Gate ruleset: `fr-3.16.0`
 - Research protocol: `epoch-1.9`
-- Strategy context cutoff: `-`
+- Strategy context cutoff: `2023-07-31`
 
 ## Available strategy inputs
 
@@ -30,43 +30,43 @@
 |---|---:|---:|
 | `adj_close` | 100.0% | 100.0% |
 | `adv20` | 100.0% | 100.0% |
-| `amihud_illiquidity_1m` | 97.3% | 96.8% |
+| `amihud_illiquidity_1m` | 97.6% | 96.6% |
 | `amihud_observations_1m` | 100.0% | 100.0% |
-| `capital_stock` | 80.7% | 99.2% |
-| `comprehensive_income` | 28.0% | 98.7% |
-| `comprehensive_income_ttm` | 17.7% | 94.8% |
-| `current_assets` | 86.2% | 97.1% |
-| `current_liabilities` | 86.2% | 97.0% |
+| `capital_stock` | 72.7% | 92.9% |
+| `comprehensive_income` | 0.0% | 0.1% |
+| `comprehensive_income_ttm` | 0.0% | 0.0% |
+| `current_assets` | 81.8% | 93.2% |
+| `current_liabilities` | 81.8% | 93.2% |
 | `daily_return_observations_252d` | 100.0% | 100.0% |
 | `daily_volatility_252d` | 99.9% | 100.0% |
 | `market` | 100.0% | 100.0% |
 | `market_cap` | 100.0% | 100.0% |
 | `max_daily_return_1m` | 100.0% | 100.0% |
 | `max_daily_return_observations_1m` | 100.0% | 100.0% |
-| `net_income` | 85.7% | 99.2% |
-| `net_income_ttm` | 74.5% | 95.6% |
-| `net_income_yoy_change` | 71.8% | 94.3% |
-| `noncurrent_assets` | 86.0% | 96.7% |
-| `noncurrent_liabilities` | 86.1% | 97.0% |
-| `operating_income` | 85.7% | 99.2% |
-| `operating_income_ttm` | 74.6% | 95.7% |
-| `pretax_income` | 85.7% | 99.2% |
-| `pretax_income_ttm` | 74.5% | 95.6% |
+| `net_income` | 80.1% | 93.1% |
+| `net_income_ttm` | 67.0% | 88.1% |
+| `net_income_yoy_change` | 63.9% | 88.0% |
+| `noncurrent_assets` | 81.6% | 93.2% |
+| `noncurrent_liabilities` | 81.6% | 93.1% |
+| `operating_income` | 80.1% | 93.1% |
+| `operating_income_ttm` | 67.0% | 88.1% |
+| `pretax_income` | 80.2% | 93.1% |
+| `pretax_income_ttm` | 66.9% | 88.1% |
 | `price_high_252d` | 100.0% | 100.0% |
 | `price_high_observations_252d` | 100.0% | 100.0% |
-| `retained_earnings` | 86.5% | 99.4% |
-| `revenue` | 84.7% | 97.2% |
-| `revenue_ttm` | 73.1% | 92.6% |
+| `retained_earnings` | 81.1% | 93.1% |
+| `revenue` | 79.8% | 92.3% |
+| `revenue_ttm` | 66.1% | 86.8% |
 | `shares` | 100.0% | 100.0% |
-| `sue_score` | 62.5% | 89.3% |
-| `total_assets` | 87.0% | 99.4% |
-| `total_equity` | 87.0% | 99.4% |
-| `total_liabilities` | 87.0% | 99.4% |
+| `sue_score` | 52.5% | 84.0% |
+| `total_assets` | 81.8% | 93.2% |
+| `total_equity` | 81.8% | 93.2% |
+| `total_liabilities` | 81.8% | 93.2% |
 | `trading_value` | 100.0% | 100.0% |
 
 ## 무엇을 이미 정의·시도했나
 
-소스 정의 278개 · 원장 시행 230건. 코드 존재는 평가·사용 승인·Gold 승격이 아니다.
+소스 정의 279개 · 원장 시행 230건. 코드 존재는 평가·사용 승인·Gold 승격이 아니다.
 아래는 이름·입력·계산 선언 중심의 탐색 요약이다. 가설 해석을 자동 추출한 것이 아니며 같은 그룹이 같은 신호라는 판정이나 경제적 교훈도 아니다.
 가설 원문의 과거 성과 혼입을 막기 위해 검토되지 않은 자연어는 색인에 복사하지 않는다.
 
@@ -94,6 +94,7 @@
 | 극단 수익·분포 비대칭 (`extremes`) | 10/9 | 시차 변화·불안정성·기간 평균·기간 6/12/18/24개월 | `max_daily_return_1m`, `max_daily_return_change_12m` |
 | 시장 민감도·동조성 (`market_exposure`) | 11/8 | 기간 6/9/12/18/24/36개월 | `market_beta_12m`, `market_beta_18m` |
 | 수익률 변동성·안정성 (`volatility`) | 10/8 | 시차 변화·변동성·불안정성·기간 6/12/18/24/36개월 | `daily_volatility_change_12m`, `downside_vol_12m` |
+| 계산 유형 미분류 (`unknown`) | 1/0 | 수준·비율 정의 | `operating_cost_intensity` |
 
 전체 이름·계산 코드·입력·params·정의 파일·모든 시행 식별자는 `memory/factor_index.json`에 보존한다.
 조회: `python -m scripts.factor_memory --query total_assets` 또는 `--group investment`, `--factor NAME`.

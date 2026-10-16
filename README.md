@@ -1,5 +1,34 @@
 # factor-research
 
+> **전략 탐색 기본값: 보유 데이터로 오프라인 실행, 자동 갱신 없음 (2026-10-16).**
+> `.venv/bin/python -m scripts.run_reference_snapshot run --output output/phenomena/my-snapshot-run`
+> 이미 고정한 108개 측정치와 월말 가격을 사용하며 AWS 로그인·DB 재조회가 필요 없습니다.
+> [사용법과 결과 해석](docs/reference-snapshot-strategy.md). 월말 가격수익 탐색이지 월초 체결/TR 승인이 아닙니다.
+
+> **2026-10-02: 새 기본 경로는 현상 중심 연구 `phenomenon-research-v1`입니다.**
+> [구조·사용법·한계](docs/phenomenon-research.md) · [연구 운영 지침](research/phenomena/INSTRUCTIONS.md) ·
+> [레퍼런스 정의·입력](docs/reference-library-phenomena.md) ·
+> [실제 구현·Gold 적재·검증 완료 보고서](docs/phenomenon-research-completion-20261002.md).
+> 데이터 탐색 → 경쟁 가설·검사 → 독립 검토 지식 그래프 → 월별 전략 실행을 연결했습니다.
+> 전략 경로에는 직접 레퍼런스 신호와 학습 구간 안에서만 선택·PCA·릿지를 적합하는 경로가 있습니다.
+> 합성 전체 실행은 실제 시장 성과 확인이 아닙니다. 새 지식과 alpha 승인은 빈 상태에서 시작합니다.
+> 기존 코드·연구·Gold와 중간 v3 설계는 보존하고 자동 승계하지 않습니다.
+> 아래 기존 campaign 명령은 레거시 설명이며 명시적 `--legacy` 없이 차단됩니다.
+
+> **2026-10-03 현재 레퍼런스 Gold: 108개 측정치, 27,734,862행, 66개 불변 dataset.**
+> [기존 100개](docs/reference-expansion-100-completion-20261003.md)를 보존하고 수급 4개·공매도 2개·R&D 1개·고용 1개를 추가했습니다.
+> 신규 1,798,154행의 커밋·전수 대조·활성 소비 경로 검증을 완료했습니다.
+> [후속 적재 보고서](docs/reference-new-information-20261003.md)를 참고하세요.
+> 고용 원자료 23,671건 수집을 완료했습니다. 과거 컨센서스는 빈티지·내부 저장 권한 미확보로 미적재입니다.
+> 실제 사용 목록은 [활성 program](research/phenomena/program.json)이 결정합니다.
+> `PIT_ASSUMED`이며 최초 발표 빈티지는 미입증입니다. 측정치 적재는 알파 승인이 아닙니다.
+> 이번 적재는 **2026-09 월말 기준 일회성 스냅샷**으로, 일일 갱신 배포가 아니며 기존 레거시는 보존합니다.
+
+```bash
+uv run python -m scripts.research_generation active --repo-root "$PWD"
+uv run python -m scripts.phenomenon_demo --output output/phenomena/my-software-demo
+```
+
 TeamAlpha의 **DQ 인증된 RDS Silver(`public`)만** 읽어 팩터를 만들고 Gold 승격 여부를 판정하는 엔진.
 Bronze는 Silver 품질 대사 외에는 리서치 입력으로 사용하지 않는다.
 
@@ -18,6 +47,14 @@ uv run python scripts/research.py campaign-start --campaign campaign-001 --epoch
 
 환경변수: `SILVER_DB_URL`(필수), `CACHE_DIR`(기본 `.cache`).
 RDS가 SSM 터널 뒤에 있으면 Silver build·평가·SQL parity 전에 터널을 연다.
+
+연구 v2의 별도 개발 경로는 [적응형 진단 실행기](docs/research-v2-adaptive-runtime.md)에 정리했다.
+새 캠페인의 기본 v2 연결은 [일반 연구 운영 안내](docs/research-v2-production.md)를 따른다.
+같은 평가의 증거를 재사용하며 실제 호스트 진단·독립 교훈 검토는 별도 상태로 기록한다.
+합성 절차 비교에 이어 실제 여섯 정의의 동결 Discovery 진단과 독립 교훈 검토를 실행했다.
+아래 운영 campaign과 팩터 승인 기준을 대체하지 않으며 기존 기록·OOS·Gold는 변경하지 않는다.
+최신 범위와 결과는 [2026-10-02 실행 보고서](docs/research-v2-completion-20261002.md),
+앞 단계 기록은 [2026-10-01 실행 결과](docs/research-v2-progress-20261001.md)에서 확인한다.
 
 build는 월말 `(trade_date, asset_id, ticker)`를
 `krx_month_end_asset_ticker_v1`로 해시해 패널에 묶는다. 기존 활성 캐시는

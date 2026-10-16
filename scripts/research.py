@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -329,6 +330,13 @@ def cmd_campaign_start(args) -> None:
             )
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
+    v2_config = None
+    if not getattr(args, "legacy_diagnostics", False):
+        from engine.research_production import freeze_campaign, read
+        from engine.regime_inputs import freeze_context
+        v2_config = freeze_campaign(read(getattr(args, "v2_policy", None) or REPO_ROOT / "research/v2/production-policy.json"),
+            window=window, macro_context=freeze_context(diagnostic_regimes,
+                data_cutoff=window.discovery_data_cutoff, oos_start=str(window.oos_signal_start)) if diagnostic_regimes else None)
     path = epochs.start_campaign(
         "research", args.campaign,
         discovery_data_cutoff=window.discovery_data_cutoff,
@@ -356,6 +364,7 @@ def cmd_campaign_start(args) -> None:
         expected_candidate_count=args.expected_candidates,
         input_generation=input_generation,
         diagnostic_regimes=diagnostic_regimes,
+        research_v2=v2_config,
     )
     context = research.write_context(panel, F.REGISTRY)
     memory = context
@@ -401,12 +410,82 @@ def cmd_candidate_input_check(args) -> None:
         raise SystemExit(str(exc)) from exc
 
 
+def _checkpoint_registration_preflight(campaign, epoch_id, factors, specs,
+                                       input_feasibility, gold_signal_preflight, *,
+                                       stage="COLLECTED_BEFORE_REGISTRATION_ASSERTIONS", root="research"):
+    """Append actual preflight evidence before an assertion can discard it.
+
+    This is not registration, a passing gate, a factor return evaluation, or a
+    post-failure reconstruction. No exception message/traceback is serialized.
+    """
+    campaign_id = epochs._validate_id(campaign["campaign_id"], "campaign id")
+    epoch_id = epochs._validate_id(epoch_id, "epoch id")
+    root = Path(root).resolve()
+    payload = {
+        "schema_version": "candidate-registration-preflight-checkpoint-v1",
+        "captured_at": epochs._now(), "stage": stage,
+        "campaign_id": campaign_id, "epoch_id": epoch_id,
+        "campaign_manifest_sha256": epochs._payload_digest(campaign),
+        "discovery_snapshot_sha256": campaign["snapshot"]["discovery_input_digest"],
+        "protocol_version": campaign.get("protocol_version"),
+        "ruleset_version": campaign.get("ruleset_version"),
+        "source_sha256": {
+            "scripts/research.py": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "scripts/run.py": hashlib.sha256(Path(run.__file__).read_bytes()).hexdigest(),
+            "engine/research_policy.py": hashlib.sha256(Path(research_policy.__file__).read_bytes()).hexdigest(),
+            "engine/gate.py": hashlib.sha256(Path(gate.__file__).read_bytes()).hexdigest(),
+            "engine/silver.py": hashlib.sha256(Path(silver.__file__).read_bytes()).hexdigest(),
+        },
+        "candidates": [{"name": factor.name, "definition_hash": factor.definition_hash,
+                        "strategy_sha256": specs[factor.name]["strategy_sha256"],
+                        "strategy_file": specs[factor.name].get("strategy_file")}
+                       for factor in factors],
+        "input_feasibility": input_feasibility,
+        "gold_signal_preflight": gold_signal_preflight,
+        "registration_authorized": False, "return_evaluations": 0,
+        "oos_reads": 0, "gold_writes": 0,
+    }
+    checkpoint_sha = epochs._payload_digest(payload)
+    payload["checkpoint_sha256"] = checkpoint_sha
+    path = root / "campaigns" / campaign_id / "registration-preflight" / epoch_id / f"{checkpoint_sha}.json"
+    if not path.resolve().is_relative_to(root):
+        raise ValueError("Registration checkpoint path escapes research root")
+    if path.exists():
+        if epochs._read(path) != payload:
+            raise ValueError("Immutable registration checkpoint changed")
+    else:
+        epochs._write_new(path, payload)
+    print(f"등록 사전검사 체크포인트(당시 계산 원본, 등록 승인 아님): {path}")
+    return path
+
+
 def cmd_epoch_start(args) -> None:
     run.load_registry()
     missing = [name for name in args.factors if name not in F.REGISTRY]
     if missing:
         raise SystemExit(f"등록되지 않은 팩터: {missing}")
     factors = [F.REGISTRY[name] for name in args.factors]
+    # New opt-in failures precede even TrialLedger initialization (which writes SQLite).
+    lineage_options = {}
+    capture_id = getattr(args, "knowledge_capture", None)
+    specs = {factor.name: RESEARCH_SPECS.get(factor.name, {}) for factor in factors}
+    if capture_id is not None or any("knowledge_lineage" in spec for spec in specs.values()):
+        from engine.knowledge_registration import prepare_registration
+        try:
+            prepare_registration(
+                "research", capture_id, factors, specs,
+                {factor.name: specs[factor.name].get("strategy_sha256") for factor in factors},
+                cutoff=epochs._now(),
+            )
+        except (ValueError, OSError) as exc:
+            raise SystemExit(f"계보 사전검사 실패: {exc}") from exc
+        lineage_options = {"knowledge_capture_id": capture_id, "knowledge_specs": specs}
+    v2_options = {}
+    campaign = epochs.load_campaign("research", args.campaign)
+    if campaign.get("research_v2"):
+        from engine.research_production import prepare_memory_bindings
+        v2_options = {"research_v2_specs": specs, "research_v2_memory": prepare_memory_bindings(
+            "research", campaign, args.epoch, factors, specs)}
     attempted = run.trials.TrialLedger(run.TRIAL_DB).definition_hashes()
     attempted_names = research.attempted_factor_names("research")
     attempted_factors = [
@@ -430,11 +509,21 @@ def cmd_epoch_start(args) -> None:
         )
         research_policy.assert_candidate_batch_policy(batch_policy)
         campaign = epochs.load_campaign("research", args.campaign)
-        input_feasibility, gold_signal_preflight = (
-            run.preflight_candidate_registration(
-                campaign, run._load(), factors,
+        try:
+            input_feasibility, gold_signal_preflight = (
+                run.preflight_candidate_registration(
+                    campaign, run._load(), factors,
+                )
             )
-        )
+        except run.CandidateInputPreflightError as exc:
+            _checkpoint_registration_preflight(campaign, args.epoch, factors, specs,
+                exc.input_feasibility, {
+                    "status": "NOT_RUN", "reason": "INPUT_FEASIBILITY_ASSERTION_REJECTED",
+                    "live_identity_checked": False, "gold_queried": False,
+                }, stage="INPUT_ASSERTION_REJECTED_BEFORE_LIVE_GOLD")
+            raise
+        _checkpoint_registration_preflight(campaign, args.epoch, factors, specs,
+            input_feasibility, gold_signal_preflight)
         research_policy.assert_input_feasibility_artifact(
             input_feasibility,
             factors,
@@ -447,7 +536,7 @@ def cmd_epoch_start(args) -> None:
             threshold=gate.TH["max_gold_corr"],
             minimum_comparison_months=gate.TH["min_gold_corr_months"],
         )
-    except (ValueError, RuntimeError) as exc:
+    except (ValueError, RuntimeError, OSError) as exc:
         raise SystemExit(str(exc)) from exc
     try:
         path = epochs.start_epoch(
@@ -460,12 +549,16 @@ def cmd_epoch_start(args) -> None:
             gold_signal_preflight=gold_signal_preflight,
             existing_factors=attempted_factors,
             comparison_registry=research.registry_snapshot(F.REGISTRY),
+            **lineage_options,
+            **v2_options,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     print(f"epoch 사전등록: {path}")
     print(f"후보 {len(factors)}개 정의·방향·해시 동결")
     print("기존 APPROVED Gold 0.70 신호 상관 사전검사: PASS")
+    if lineage_options:
+        print("선택한 신규 후보의 지식 캡처·교훈 참조를 사전등록 시각에 결합했습니다")
     print("최종 OOS: SEALED")
 
 
@@ -510,6 +603,7 @@ def cmd_evaluate(args) -> None:
             ),
             record_ledger=False,
             input_generation=campaign.get("input_generation"),
+            capture_discovery_execution=bool(campaign.get("research_v2")),
         )
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
@@ -548,6 +642,16 @@ def _persist_discovery_result(args, panel, factor, result, relationships, *, fra
             # Diagnostic failures must be visible, but do not reinterpret gates
             # or force a second candidate evaluation just to persist the verdict.
             mechanism_study = {"status": "ERROR", "reason": f"{type(exc).__name__}: {exc}"}
+        if campaign.get("research_v2"):
+            from engine.research_production import handoff
+            try:
+                v2 = handoff("research", campaign, epochs.load_epoch("research", args.campaign, args.epoch),
+                             panel, frame, factor, result)
+            except (ValueError, KeyError, TypeError, ArithmeticError, OSError) as exc:
+                v2 = {"status": "ERROR", "reason": f"{type(exc).__name__}: {exc}",
+                      "candidate_reevaluation_allowed": False, "reviewed_lesson": False}
+            mechanism_study["research_v2"] = v2
+            print(f"v2 진단: {v2['status']} (본 판정/OOS/Gold와 별도)")
     report, context = research.record_cycle(
         panel, F.REGISTRY, factor, result, RESEARCH_SPECS[factor.name],
         relationships, campaign_id=args.campaign, epoch_id=args.epoch,
@@ -622,6 +726,7 @@ def cmd_epoch_evaluate(args) -> None:
             data_cutoff=campaign["discovery"]["data_cutoff"],
             oos_start=campaign["oos"]["start"],
             factor_names=names,
+            capture_discovery_execution=bool(campaign.get("research_v2")),
             record_ledger=False,
             defer_multiple_testing=True,
             discovery_snapshot_digest=(
@@ -633,6 +738,7 @@ def cmd_epoch_evaluate(args) -> None:
             input_generation=campaign.get("input_generation"),
         )
         started = time.perf_counter()
+        # Execution diagnostics have no authority over discovery admission.
         relationships = research.factor_relationships_batch(
             panel, df, targets, comparison_registry,
             cache_root=run.CACHE / "registry-signals",
@@ -943,6 +1049,8 @@ def cmd_gold_cache_bootstrap(_args) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--legacy", action="store_true",
+                        help="보존된 이전 연구 경로를 명시적으로 선택 (Gold 쓰기는 허용하지 않음)")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("context", help="다음 루프가 읽을 현재 연구 상태 생성")
     commands.add_parser(
@@ -963,6 +1071,8 @@ def main() -> None:
     campaign_abort.add_argument("--reason", required=True)
     campaign_start = commands.add_parser("campaign-start", help="봉인 OOS campaign 시작")
     campaign_start.add_argument("--campaign", required=True)
+    campaign_start.add_argument("--v2-policy", type=Path, help="새 campaign의 v2 진단 정책 (기본 활성화)")
+    campaign_start.add_argument("--legacy-diagnostics", action="store_true", help="새 campaign을 기존 진단 경로로만 명시적 실행")
     regime_options = campaign_start.add_mutually_exclusive_group()
     regime_options.add_argument(
         "--regime-context", type=Path,
@@ -1001,6 +1111,9 @@ def main() -> None:
     epoch_start.add_argument("--campaign", required=True)
     epoch_start.add_argument("--epoch", required=True)
     epoch_start.add_argument("--factors", nargs="+", required=True)
+    epoch_start.add_argument(
+        "--knowledge-capture", help="Opt-in SHA-256 from knowledge_lineage capture; validate new candidate declarations before registration",
+    )
     evaluate = commands.add_parser("evaluate", help="후보 하나를 평가하고 영구 산출물 기록")
     evaluate.add_argument("--factor", required=True)
     evaluate.add_argument("--campaign", required=True)
@@ -1045,6 +1158,11 @@ def main() -> None:
         help="기존 APPROVED 값은 바꾸지 않고 generation과 wide cache를 1회 생성",
     )
     args = parser.parse_args()
+    from engine.research_transition_guard import require_legacy_cli
+    writes_gold = args.command in {
+        "campaign-publish", "campaign-reconcile-gold-batch", "gold-cache-bootstrap",
+    } or (args.command == "campaign-reveal" and not args.no_publish)
+    require_legacy_cli(args.command, explicit=args.legacy, writes_gold=writes_gold)
     {
         "context": cmd_context,
         "identity-audit": cmd_identity_audit,

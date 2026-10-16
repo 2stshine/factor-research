@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +45,9 @@ GOLD_FACTORS: tuple[str, ...] = _gold_factors()
 @dataclass(frozen=True)
 class StrategyConfig:
     # --- 입력 팩터 ---
-    factors: tuple[str, ...] = GOLD_FACTORS
+    # Recheck the active generation at construction, including processes that
+    # imported this module before the legacy cutover.
+    factors: tuple[str, ...] = field(default_factory=_gold_factors)
 
     # --- 표본 주기 ---
     # "daily"   README의 확정 설계. 일별 표본으로 학습하며 daily_* 캐시가 필요하다.

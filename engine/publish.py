@@ -186,6 +186,9 @@ def publish(conn, rows: list[dict], *, apply: bool = False) -> list[dict]:
     같은 factor_key 의 기존 APPROVED 는 RETIRED 로 내린다
     (팀 스키마가 계열당 APPROVED 하나만 허용하므로 필수).
     """
+    if apply:
+        from engine.research_transition_guard import require_legacy_gold_write
+        require_legacy_gold_write("legacy metadata publish")
     out = []
     for r in rows:
         payload = dict(r, config=json.dumps(r["config"], ensure_ascii=False),
@@ -216,6 +219,8 @@ def upsert_approved_metadata_atomic(conn, rows: list[dict]) -> list[dict]:
         raise ValueError("Gold 자동 게시 factor_key는 고유해야 합니다")
     if any(row.get("status") != "APPROVED" for row in rows):
         raise ValueError("Gold 자동 게시에는 최종 PROMOTE만 허용됩니다")
+    from engine.research_transition_guard import require_legacy_gold_write
+    require_legacy_gold_write("legacy atomic metadata publish")
     output: list[dict] = []
 
     def research_config(value: dict) -> dict:

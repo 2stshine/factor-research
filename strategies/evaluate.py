@@ -37,6 +37,8 @@ def _ic_stats(ic: pd.Series, ppy: int = 12) -> dict:
 
 
 def main(cfg: StrategyConfig | None = None) -> None:
+    from engine.research_transition_guard import require_legacy_read
+    require_legacy_read("legacy strategy evaluation")
     cfg = cfg or StrategyConfig()
     print(f"[load] 패널... (팩터 {len(cfg.factors)}개)")
     panel = data.load_panel()

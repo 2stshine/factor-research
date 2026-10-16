@@ -18,6 +18,7 @@ import shutil
 import sys
 import tempfile
 import time
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from engine import factors as F
 from engine import (
     epochs,
+    fundamental_contract,
     fundamentals,
     gate,
     implementation,
@@ -328,6 +330,7 @@ def _activate_panel_cache(panel: P.Panel) -> tuple[Path, Path | None]:
     CACHE.mkdir(parents=True, exist_ok=True)
     P.verify_return_roles(panel)
     evidence = P.verify_asset_identity(panel)
+    fundamental_contract.verify(panel)
     temporary_path: Path | None = None
     previous_archive: Path | None = None
     try:
@@ -343,6 +346,7 @@ def _activate_panel_cache(panel: P.Panel) -> tuple[Path, Path | None]:
             persisted = pickle.load(fh)
         P.verify_return_roles(persisted)
         P.verify_asset_identity(persisted)
+        fundamental_contract.verify(persisted)
         # Persist the content-addressed version before changing the active file.
         _archive_panel(
             temporary_path, key=evidence["asset_identity_digest"],
@@ -432,7 +436,8 @@ def cmd_build(args):
     load_registry()
     with silver.connect(read_only=True) as conn:
         pan = P.build(conn)
-        fund = fundamentals.build(conn)
+        fundamental_rows = silver.load_fundamentals(conn, sorted(fundamentals.ALL_METRICS))
+        fund = fundamental_contract.materialize(fundamental_rows)
     # Materializing the Silver revision ledger is the expensive part of a build.
     # Cache every PIT feature produced from that same immutable ledger so a newly
     # pre-registered factor does not force another full RDS transfer merely
@@ -444,6 +449,7 @@ def cmd_build(args):
     for tag, term in (("opt", 0.0), ("mid", -0.50), ("pess", -1.00)):
         df[f"fwd_{tag}"] = P.forward_returns(pan, terminal=term)   # 인덱스 정렬 (위치대입 금지)
     pan.monthly = df
+    fundamental_contract.bind(pan, fundamental_rows, materialized=fund)
     active, previous_archive = _activate_panel_cache(pan)
     if previous_archive is not None:
         print(f"\n기존 캐시 보존: {previous_archive}")
@@ -454,6 +460,13 @@ def cmd_build(args):
 def _load():
     with PANEL_CACHE.open("rb") as fh:
         panel = pickle.load(fh)
+    try:
+        fundamental_contract.verify(panel, require_financial=True)
+    except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+        raise SystemExit(
+            "캐시의 재무 TTM 방법론/원장/내용 계약이 없거나 다릅니다. "
+            "기존 캐시는 보존하고 인증 재무 원장에서 새 버전 패널을 만드세요."
+        ) from exc
     required = {
         "asset_id", "adj_close", "total_return_close", "quality_run_id",
         "total_return_quality_run_id",
@@ -632,6 +645,18 @@ def preflight_candidate_inputs(
     )
 
 
+class CandidateInputPreflightError(ValueError):
+    """Carry the already-computed input artifact, never a reconstructed result.
+
+    Preserve the existing assertion message for CLI compatibility. Checkpoint
+    writers persist only the typed artifact, not this message or traceback.
+    """
+
+    def __init__(self, artifact, error):
+        self.input_feasibility = deepcopy(artifact)
+        super().__init__(str(error))
+
+
 def preflight_candidate_registration(
     campaign: dict,
     panel: P.Panel,
@@ -650,9 +675,12 @@ def preflight_candidate_registration(
     )
     # A failed local input gate cannot register a candidate. Stop before any
     # live identity or Gold query; neither can repair missing candidate inputs.
-    research_policy.assert_input_feasibility_artifact(
-        feasibility, factors, snapshot_digest=snapshot_digest,
-    )
+    try:
+        research_policy.assert_input_feasibility_artifact(
+            feasibility, factors, snapshot_digest=snapshot_digest,
+        )
+    except ValueError as exc:
+        raise CandidateInputPreflightError(feasibility, exc) from exc
     with silver.connect(read_only=True) as conn:
         if campaign.get("input_generation") is not None:
             silver.verify_live_research_generation(
@@ -879,6 +907,8 @@ def _approved_signals(conn, df: pd.DataFrame) -> dict[str, pd.Series]:
 
 def bootstrap_gold_signal_cache() -> dict:
     """Bind/cache legacy APPROVED rows without changing values or statuses."""
+    from engine.research_transition_guard import require_legacy_gold_write
+    require_legacy_gold_write("legacy Gold generation bootstrap")
     conn = silver.connect(read_only=False)
     try:
         conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
@@ -993,6 +1023,7 @@ def _rebuild_scoped_panel(
     }
     meta.update(_research_policy_metadata())
     meta.update(meta_updates)
+    meta.update(fundamental_contract.scoped_metadata(pan))
     output = P.Panel(monthly=scoped, dead=dead, meta=meta)
     P.bind_asset_identity(output)
     for tag, terminal in (("opt", 0.0), ("mid", -0.50), ("pess", -1.00)):
@@ -1186,6 +1217,7 @@ def _scope_confirmation_panel(
         "confirmation_closure_month": str(closure_month),
         "confirmation_closure_as_of": str(closure_as_of.date()),
     })
+    meta.update(fundamental_contract.scoped_metadata(pan))
     _bind_closure_asset_identity(meta, closure_identity)
     output = P.Panel(monthly=scoped, dead=dead, meta=meta)
     P.bind_asset_identity(output)
@@ -1762,6 +1794,8 @@ def publish_revealed_campaign(
     panel: P.Panel,
 ) -> dict:
     """Atomically publish deterministic batch-orthogonal PROMOTE survivors."""
+    from engine.research_transition_guard import require_legacy_gold_write
+    require_legacy_gold_write("publish_revealed_campaign")
     load_registry()
     campaign = epochs.load_campaign("research", campaign_id)
     confirmation_panel = _scope_confirmation_panel(
@@ -2002,6 +2036,8 @@ def reconcile_gold_batch_orthogonality(
     panel: P.Panel,
 ) -> dict:
     """Atomically retire previously published factors suppressed by batch T5."""
+    from engine.research_transition_guard import require_legacy_gold_write
+    require_legacy_gold_write("reconcile_gold_batch_orthogonality")
     load_registry()
     campaign = epochs.load_campaign("research", campaign_id)
     confirmation_panel = _scope_confirmation_panel(
@@ -2220,6 +2256,7 @@ def _evaluate(
     confirmation_mode: str | None = None,
     preloaded_panel: P.Panel | None = None,
     input_generation: dict | None = None,
+    capture_discovery_execution: bool = False,
 ):
     total_started = time.perf_counter()
     if phase == "discovery" and (
@@ -2532,7 +2569,8 @@ def _evaluate(
                 prior_sharpes=summary.sharpes, oos_start=frozen_oos,
                 oos_end=frozen_oos_end, data_cutoff=data_cutoff, phase=phase,
                 context=evaluation_context,
-                include_diagnostics=(phase != "discovery"),
+                include_diagnostics=(phase != "discovery" or capture_discovery_execution),
+                capture_execution_evidence=(phase == "discovery" and capture_discovery_execution),
             ))
             _log_timing(
                 "evaluation.gate", started, factor=f.name, phase=phase,
@@ -2670,6 +2708,7 @@ def cmd_publish(args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--legacy", action="store_true", help="보존된 이전 경로를 명시적으로 선택")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("build")
     g = sub.add_parser("gate"); g.add_argument("--factor")
@@ -2681,6 +2720,8 @@ def main():
     p.add_argument("--only-approved", action="store_true",
                    help="PROMOTE 만 적재 (기본은 판정 전체를 기록)")
     a = ap.parse_args()
+    from engine.research_transition_guard import require_legacy_cli
+    require_legacy_cli(a.cmd, explicit=a.legacy, writes_gold=a.cmd == "publish")
     {"build": cmd_build, "gate": cmd_gate, "null": cmd_null,
      "publish": cmd_publish}[a.cmd](a)
 

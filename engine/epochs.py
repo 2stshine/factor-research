@@ -222,6 +222,14 @@ def _assert_current_state(campaign: dict, epoch: dict | None = None) -> None:
     """Refuse to reinterpret finalized research with a newer protocol/ruleset."""
     from engine.regime_inputs import frozen_digest
     regime_digest = frozen_digest(campaign)
+    from engine.research_production import validate_campaign
+    v2_digest = validate_campaign(campaign.get("research_v2"), require_live_code=True)
+    if epoch is not None and epoch.get("research_v2_sha256") != v2_digest:
+        raise ValueError("사전등록 후 v2 진단 정책이 변경됐습니다")
+    if epoch is not None and v2_digest is not None:
+        from engine.adaptive_research import digest
+        if epoch.get("research_v2_plans_sha256") != digest(epoch.get("research_v2_plans")):
+            raise ValueError("사전등록 후 후보 진단 계획·기억 결합이 변경됐습니다")
     if epoch is not None and epoch.get("diagnostic_regimes_sha256") != regime_digest:
         raise ValueError("사전등록 후 진단 레짐 입력이 변경됐습니다")
     if campaign.get("protocol_version") != PROTOCOL_VERSION:
@@ -277,6 +285,7 @@ def start_campaign(
     expected_candidate_count: int | None = None,
     input_generation: dict | None = None,
     diagnostic_regimes: dict | None = None,
+    research_v2: dict | None = None,
 ) -> Path:
     """Create one historical or prospective holdout without exposing it."""
     campaign_id = _validate_id(campaign_id, "campaign id")
@@ -453,6 +462,10 @@ def start_campaign(
             diagnostic_regimes, data_cutoff=window.discovery_data_cutoff,
             oos_start=str(window.oos_signal_start),
         )
+    if research_v2 is not None:
+        from engine.research_production import validate_campaign
+        validate_campaign(research_v2)
+        payload["research_v2"] = research_v2
     _write(path, payload)
     return path
 
@@ -657,6 +670,10 @@ def start_epoch(
     gold_signal_preflight: dict,
     existing_factors: list[Factor] | tuple[Factor, ...] = (),
     comparison_registry: dict | None = None,
+    knowledge_capture_id: str | None = None,
+    knowledge_specs: dict | None = None,
+    research_v2_specs: dict | None = None,
+    research_v2_memory: dict | None = None,
 ) -> Path:
     """Freeze every candidate name and definition hash before any result is seen."""
     epoch_id = _validate_id(epoch_id, "epoch id")
@@ -738,15 +755,31 @@ def start_epoch(
     path = _epoch_path(root, campaign_id, epoch_id)
     if path.exists():
         raise ValueError(f"이미 존재하는 epoch입니다: {epoch_id}")
+    created_at = _now()
+    v2_plans = None
+    if campaign.get("research_v2") is not None:
+        from engine.research_production import freeze_candidate_plans
+        v2_plans = freeze_candidate_plans(campaign, factors, research_v2_specs or {},
+            memory_bindings=research_v2_memory or {}, epoch_id=epoch_id, strategy_digests=strategy_digests)
+    lineage = None
+    if knowledge_capture_id is not None or knowledge_specs is not None:
+        from engine.knowledge_registration import prepare_registration
+        lineage = prepare_registration(
+            root, knowledge_capture_id, factors, knowledge_specs, strategy_digests,
+            cutoff=created_at,
+        )
     payload = {
         "protocol_version": PROTOCOL_VERSION,
         "campaign_id": campaign_id,
         "epoch_id": epoch_id,
         "status": "OPEN",
-        "created_at": _now(),
+        "created_at": created_at,
         "ruleset_version": campaign["ruleset_version"],
         "discovery_data_cutoff": campaign["discovery"]["data_cutoff"],
         "diagnostic_regimes_sha256": campaign.get("diagnostic_regimes", {}).get("sha256"),
+        "research_v2_sha256": campaign.get("research_v2", {}).get("sha256"),
+        "research_v2_plans": v2_plans,
+        "research_v2_plans_sha256": None,
         "oos_status": "SEALED",
         "candidate_batch_policy": batch_policy,
         "input_feasibility": input_feasibility,
@@ -778,6 +811,11 @@ def start_epoch(
         "closed_at": None,
         "reflection": None,
     }
+    if v2_plans is not None:
+        from engine.adaptive_research import digest
+        payload["research_v2_plans_sha256"] = digest(v2_plans)
+    if lineage is not None:
+        payload["knowledge_lineage"] = {**lineage, "status": "RECORDED_AT_REGISTRATION"}
     _write(path, payload)
     campaign["epochs"].append({"epoch_id": epoch_id, "status": "OPEN"})
     _write(_campaign_path(root, campaign_id), campaign)

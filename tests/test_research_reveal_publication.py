@@ -15,6 +15,10 @@ from scripts import research as cli
 
 @pytest.mark.parametrize("no_publish", [True, False])
 def test_cli_passes_publication_choice_to_reveal(monkeypatch, no_publish):
+    # Preserve this legacy dispatch regression in an uninitialized fixture,
+    # not in the actual workspace's new-generation cutover policy.
+    from engine import research_transition_guard
+    monkeypatch.setattr(research_transition_guard, "new_generation_active", lambda: False)
     callback = Mock()
     argv = ["research.py", "campaign-reveal", "--campaign", "synthetic-campaign"]
     if no_publish:
